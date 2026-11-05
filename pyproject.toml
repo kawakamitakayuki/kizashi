@@ -13,6 +13,7 @@ kizashi = "kizashi.cli:main"
 
 [dependency-groups]
 dev = [
+    "pdfplumber>=0.11.10",
     "pytest",
     "ruff",
 ]
