@@ -21,6 +21,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# D-014・D-016：.python-version の 3.13 を、この端末の /usr/local/bin/python3.13（SQLite 3.44.2）から選ぶ。
+# 端末に 3.13 がなければ uv が入れる 3.13 を使う。SQLite が3.44未満なら kizashi は起動時に E_USAGE で止まる。
+python-preference = "system"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/kizashi"]
 
