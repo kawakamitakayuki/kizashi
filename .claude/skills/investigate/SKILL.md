@@ -51,6 +51,7 @@ argument-hint: "[分野] | [run_id]"
 - 資料は kizashi fetch <run_id> <URL> で取得する（WebFetch は使えない）。
   リンクをたどるだけのページは --index、項目の定義や記入要領は --definition。
 - 取得した資料のページ別テキストは data/runs/<run_id>/evidence/ にある。Grep と Read で読む。
+  公表一覧のPDFにはページ別テキストがない。その記載は kizashi inspect でCSVのレコードを読み、row_ref で引用する。
 - 6つの型（T1〜T5、T6a・T6b・T6c）を一つずつ当てる。T6a（取り込みの誤り）とT6b（公表形式間の食い違い）は
   kizashi が照合の結果から判定するので、提案しない。それ以外は kind: explanation で判定と根拠を登録する。
   未確認には探した範囲を書く。随意契約の理由の欄そのものを、説明の支持の根拠にしない。

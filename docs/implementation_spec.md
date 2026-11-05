@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 言語 | Python 3.12 以上 | 標準の csv・decimal・sqlite3・hashlib・unicodedata で大半を書ける |
 | パッケージ管理 | uv（`pyproject.toml` と `uv.lock`） | 依存の固定。調査中は `uv run` を使わず `.venv/bin/kizashi` を呼ぶ（設計書9.5） |
-| 依存（実行） | `pyyaml`（`dataset.yaml`）、`httpx`（取得。リダイレクトを1段ずつ検査するため自動追跡を切って使う）、PDF抽出のライブラリ1つ | PDFは初日に `pdfplumber` を第一候補として試し、だめなら `pypdfium2` を試す（U13）。決めたら `docs/decisions.md` に書き、版を固定する |
+| 依存（実行） | `pyyaml`（`dataset.yaml`）、`httpx`（取得。リダイレクトを1段ずつ検査するため自動追跡を切って使う）、`pdfplumber==0.11.10`（PDF） | PDFは初日に `pdfplumber` を第一候補として試し、だめなら `pypdfium2` を試す（U13）。→ pdfplumber 0.11.10 に決め、版を固定した。罫線の座標で表のセルを切り出す（D-002。アダプタ仕様7章）。pdfplumber は pdfminer.six、pypdfium2、Pillow などを依存として入れる |
 | 依存（開発） | `pytest`、`ruff` | 設計書9.4 |
 | SQLite | Pythonに組み込まれた `sqlite3` の SQLite 3.44 以上 | 検出SQLが集約の中の `ORDER BY`（`group_concat(x, '\|' ORDER BY x)`）を使う（アダプタ仕様9章）。uv が入れる Python では通常満たす。満たさなければ起動時に `E_USAGE` で止め、版を案内する |
 | ビルド | `pyproject.toml` に `[build-system]`（`hatchling`）を書く | `[project.scripts]` の `kizashi` を `.venv/bin` に入れるため、パッケージとして導入する必要がある |
@@ -40,7 +40,7 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 | `independent_reader.py` | 別経路の読み込み処理（見出しの文字列で列を特定する）。T6aの照合とV3(b)で共有する | `read_by_headers(path, expected)` |
 | `normalize.py` | NFKC、空白の除去、和暦の日付、金額、法人番号、件名の正規化 | `wareki_to_iso("R6.4.1")` |
 | `quality.py` | 品質検査（アダプタ仕様の Q 項目）と品質レポート | `run_quality(conn, run)` |
-| `pdftext.py` | PDFのページ別テキストの抽出、行の範囲の特定、項目の照合 | `extract_pages(pdf)`, `locate_row(...)`, `match_field(...)` |
+| `pdftext.py` | 追加資料のPDFのページ別テキストの抽出。公表一覧のPDFの表のセルの切り出し（照合に使う列だけを残し、担当官の列などの文字は捨てる）、行の対応、項目の照合（アダプタ仕様7章。D-002） | `extract_pages(pdf)`, `extract_cells(pdf, spec)`, `locate_row(...)`, `match_field(...)` |
 | `reconcile.py` | 取り込みの照合（T6a）と原本照合（T6b）を `computations`（種類 `reconcile`）に記録 | `reconcile_import(...)`, `reconcile_source(...)` |
 | `detect.py` | 検出SQLの実行、候補の登録、自動の基礎集計、同じ区分の件数、年度の系列 | `run_screens(conn, run)` |
 | `calc.py` | 基礎集計（SQLで行を選び、Decimalで合計）、派生計算（決まった演算だけ）、文書値（引用の中の数値との照合） | `base_aggregate(req)`, `derive(op, args)` |
@@ -219,7 +219,7 @@ kizashi fetch <run_id> --recheck <source_id>
 - 許可リスト（`dataset.yaml` の `fetch.allowed_hosts`。初期値は `*.go.jp` と `*.lg.jp`）のHTTPSだけ。リダイレクトは自動で追わず、1段ずつ許可リストで検査する（最大5段）。名前解決先の検査はP1。
 - 1応答25MBを超えたら打ち切って `failed`。実行全体の合計が100MBを超えたら `E_LIMIT_BYTES`。
 - 一時ファイルに保存し、形式（拡張子と中身の先頭）、空でないこと、HTMLのエラーページでないこと、期待する見出し・年度（データの場合）を検査してから、`data/raw/<sha256>.<拡張子>` に移し、`sources` に登録する。
-- PDFとHTMLは、ページ別テキストを `evidence/<source_id>/pages/<n>.txt` に保存する。HTMLは1ページ扱いで、ページ内のリンクの一覧も返す。
+- PDFとHTMLは、ページ別テキストを `evidence/<source_id>/pages/<n>.txt` に保存する。HTMLは1ページ扱いで、ページ内のリンクの一覧も返す。ただし、公表一覧のPDF（`kind='dataset'`）はページ別テキストを作らない。担当官の氏名をファイルに書き出さないためである。原本照合は、PDFから照合に使う列のセルだけを切り出して行う（アダプタ仕様7.1。D-021）。
 - `--index`：リンクをたどるためのページ。上限に数えず、`sources.kind='index'`。主張の根拠にできない（V2）。
 - `--definition`：項目の定義や記入要領。上限に数えず、根拠に使える。
 - 指定なし：追加資料（`kind='evidence'`）。`MAX_EVIDENCE_FETCH` に数える。
@@ -490,7 +490,7 @@ CREATE TABLE events (
 {"source_id": "S004", "position": {"row_ref": "S004:000042", "column": "amount_raw"}, "quote": "7,793,940", "role": "support"}
 ```
 
-`role` は `support`（支持）・`oppose`（反対）・`background`（背景）。PDFとWebページは `page` を、CSVは `row_ref` と `column` を使う。`column` は `dataset.yaml` の `take` のキー（例 `amount_raw`。`records.cells_json` のキーと同じ）で書く。見出しの文字列（`契約金額`）は受け付けない。`cells_json` にないキーは `E_REF_NOT_FOUND` とし、エラーには使えるキーと見出しの対応を返す。メモの記者の確認リストでは、キーを `take` の `header`（原本の見出し）に置き換えて表示する。
+`role` は `support`（支持）・`oppose`（反対）・`background`（背景）。PDFとWebページは `page` を、CSVは `row_ref` と `column` を使う。公表一覧のPDF（`kind='dataset'`）は `page` で根拠にできない（`E_BAD_EVIDENCE_SOURCE`。ページ別テキストがないため。同じ記載は同じ年度・方式のCSVの `row_ref` で引用する。D-021）。`column` は `dataset.yaml` の `take` のキー（例 `amount_raw`。`records.cells_json` のキーと同じ）で書く。見出しの文字列（`契約金額`）は受け付けない。`cells_json` にないキーは `E_REF_NOT_FOUND` とし、エラーには使えるキーと見出しの対応を返す。メモの記者の確認リストでは、キーを `take` の `header`（原本の見出し）に置き換えて表示する。
 
 ### 6.2 種類
 
@@ -581,14 +581,14 @@ CREATE TABLE events (
  "counts": {"rows": 858, "matched": 840, "unmatched": 3, "unverifiable": 15}}
 ```
 
-項目の結果は `match`（一致）・`mismatch`（不一致）・`unverifiable`（照合不能）。行の結果は `matched`・`not_found`・`ambiguous`。
+項目の結果は `match`（一致）・`mismatch`（不一致）・`unverifiable`（照合不能）。行の結果は `matched`・`not_found`・`ambiguous`。1件が複数の罫線の行に分かれたおそれがある場合は `ambiguous` とし、`"row_reason": "split_row"` を添える（アダプタ仕様7.1）。項目のキーと照らし方はアダプタ仕様7.3（`dataset.yaml` の `reconcile.pdf_fields`）による。
 
 ## 8. 引用の照合（`quotes.py`）
 
 - 資料のページ別テキスト（CSVは `records.cells_json` の `column` のキーの値）と引用を、どちらもNFKCで正規化し、空白と改行を除いて比べる。部分一致でよい。
 - 引用は文末（。．！？で終わる、または資料の段落・セルの終わり）まで含むこと。途中で切れていれば `E_QUOTE_TRUNCATED`。
 - 主張の種類が「原資料の記載」で、主張の `fiscal_year` と資料の年度（データの資料は論理資料のキーの年度）がどちらも分かり、食い違えば `E_QUOTE_YEAR`。追加資料の年度は機械では決めず、`review-lead` で確かめる。
-- `sources.kind='index'` の資料、`references/` の知識ファイルは根拠にできない（`E_BAD_EVIDENCE_SOURCE`）。知識ファイルの引用を照合するのは、係数の提案の手がかり（6.4）のときだけである。
+- `sources.kind='index'` の資料、公表一覧のPDF（`kind='dataset'` で形式がPDFの資料。D-021）、`references/` の知識ファイルは根拠にできない（`E_BAD_EVIDENCE_SOURCE`）。公表一覧のPDFを指した場合は、`next_action` で同じ年度・方式のCSVの `row_ref` を使うよう案内する。知識ファイルの引用を照合するのは、係数の提案の手がかり（6.4）のときだけである。
 
 ## 9. 検証（`check.py`）
 
@@ -699,6 +699,7 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 
 - 実行の `procurement_contracts.counterparty_raw` から受注者名の一覧を作り、法人番号（13桁）と合わせて、メモの中の出現を「受注者A」「受注者B」…（実行の中で同じ名前には同じ記号）と「法人番号（伏せ字）」に置き換える。
 - `examples/disclosure.allow`（1行に1つの名前。記者が書く）にある名前は伏せない。
+- CSVの受注者名にASCIIの `?` がある場合（PDFの文字が置き換わったもの。アダプタ仕様2章）、`?` を空白以外の任意の1文字として照らす。元の表記と、NFKCにした表記の両方から、`?` 以外の文字を `re.escape` し `?` を `\S` にした正規表現を作り、メモの原文に当てる。`?` の位置が違う文字で書かれた出現（例：架空の `（公財）テスト?研究所` に対して `（公財）テスト−研究所`）にも、同じ名前として同じ記号を付ける。`?` 以外の文字が3文字未満の名前は、任意の1文字として照らさず、元の表記どおりにだけ照らす（短い名前で照らしすぎないため）。D-022
 - 写しの冒頭に「受注者名は伏せている」と書く。
 
 ### 12.2 `check --publish`
@@ -716,6 +717,8 @@ kizashi check --publish examples/publish.manifest --run <run_id> [--run <run_id>
 | 検査の対象のテキストに、氏名の一覧（原本から作る）と取り込まない列の値がない | P0 |
 | 検査の対象のテキストに、`disclosure.allow` にない受注者名・法人番号がない | P0 |
 | APIキーなどの秘密の書式、個人の絶対パス、表計算で数式として評価される文字列（`=`・`+`・`-`・`@` で始まるセル） | P1 |
+
+受注者名と取り込まない列の値にASCIIの `?` がある場合は、12.1と同じ規則（`?` を空白以外の任意の1文字として照らす。`?` 以外の文字が3文字未満なら元の表記どおりだけ）で検査する。氏名（担当官の列）には `?` がない（アダプタ仕様2章。D-022）。
 
 **検査の対象**：Gitで公開されるのはファイル名の一覧ではなく、ステージとコミットの中身である。そこで次の3つの中身をすべて対象にする。
 
