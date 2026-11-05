@@ -480,6 +480,7 @@ CREATE TABLE explanations (
   evidence_json TEXT NOT NULL DEFAULT '[]',
   searched TEXT,
   recalc_calc_id TEXT REFERENCES computations(calc_id),
+  residual_calc_id TEXT REFERENCES computations(calc_id),
   scope TEXT CHECK (scope IN ('full','part','unknown')),
   no_quant_reason TEXT,
   context TEXT NOT NULL DEFAULT 'main_session',
@@ -531,8 +532,8 @@ CREATE TABLE events (
 | `hypothesis` | `lead_id`、`text`、`withdraw_if`。結果を書くときは `result`（`kept` / `withdrawn`） | 最初の登録で候補を `investigating` にする（調べる候補が3件を超えるなら `E_LIMIT_LEADS`） |
 | `match` | `lead_id`、`left`・`right`（`row_ref` の配列）、`relation`（`1:1` / `1:n` / `n:1` / `n:m`）、`reason`、`evidence`、`status`（`confirmed` / `pending`） | 分野の対応表に登録する |
 | `claim` | `lead_id`、`type`、`text`、`calc_ids`、`evidence`。`type` が `record` のときは `fiscal_year` | 主張を `draft` で登録する |
-| `explanation` | `lead_id`、`type`（T1〜T5、T6c）、`judgment`、`evidence`、`searched`。支持のT1・T3・T4では `scope` と、`recalc_calc_id` または `no_quant_reason` | 型ごとに上書きする（前の値は `events` に残る）。T6a・T6bはCLIが照合の計算から登録するため、提案では受け付けない（9章の末尾） |
-| `question` | `lead_id`、`to`、`question`、`documents`、`decision_impact`。任意で `foia` | `leads.questions_json` に足す |
+| `explanation` | `lead_id`、`type`（T1〜T5、T6c）、`judgment`、`evidence`、`searched`。支持のT1・T3・T4では `scope` と、`recalc_calc_id` または `no_quant_reason`。任意で `residual_calc_id`（説明を反映した後に残る差、または条件をそろえた後に残る行の件数の計算ID。説明の状況を「全部」「一部」にするときは必須。9章の `V8_EXPLANATION_STATUS`。D-041⑩） | 型ごとに上書きする（前の値は `events` に残る）。T6a・T6bはCLIが照合の計算から登録するため、提案では受け付けない（9章の末尾） |
+| `question` | `lead_id`、`to`、`question`、`documents`、`decision_impact`、`purposes`（質問の目的の空でない配列：`verify_record` 元の記載の確認、`reason_breakdown` 理由・内訳の確認、`missing_documents` 不足資料の照会、`other` そのほか。D-041⑩）。任意で `foia` | `leads.questions_json` に足す |
 | `coefficient` | `lead_id`、`key`（短い名前）、`value`（十進数の文字列）、`meaning`、`why_needed`、`apply_to`（どの計算にどう使うか）、`basis`（推測の手がかり。6.4）、`status`（`proposed` / `accepted` / `declined`）。`accepted`・`declined` では `reporter_note`（記者の判断の要約） | 係数の提案として `leads.coefficients_json` に `(lead_id, key)` で上書きする（前の値は `events` に残る）。計算には使わない（6.4。D-012） |
 | `conclusion` | `lead_id`、`outcome`、`comparison_state`。`change` なら `explanation_status`、`adjusted` なら `adjustment`（方法、補正前後の計算ID）、`hold` なら `hold_reason`。任意で `reopen_condition`、`comparison`（比較の条件のうち既定値と違うもの） | 結論の案として登録する。`comparison` は `leads.comparison_json` に上書きする。確定は `render` |
 | `withdraw` | `target`（主張ID・対応ID・計算ID）、`reason` | 取り下げ。主張は `withdrawn` にし、参照している主張を `stale` にする。訂正は新しい主張を登録したうえで古い主張を取り下げる |
@@ -645,19 +646,19 @@ CREATE TABLE events (
 
 | 検査 | エラーコード | 条件 |
 | --- | --- | --- |
-| V1 | `V1_INPUT_EMPTY` | 候補が依存する資料の有効行が0 |
+| V1 | `V1_INPUT_EMPTY` | 候補が依存する資料の有効行が0。依存する資料は、取得できた行からではなく、集計の条件・年度・分野の規則から決める（この表の後の「依存する資料」。D-041⑤） |
 | V1 | `V1_QUALITY_NOT_RUN` | 必須の品質検査が未実行 |
 | V1 | `V1_RUN_FAILED` | 実行が `failed`、または候補が依存する検出が欠けた `partial` |
 | V2 | `V2_REF_MISSING` | 存在しない資料・計算・レコード・主張への参照 |
-| V2 | `V2_HASH_MISMATCH` | 原本のファイルのハッシュが台帳と違う |
+| V2 | `V2_HASH_MISMATCH` | 原本のファイルがないか、ハッシュが台帳と違う。対象は検証が依存する資料のすべて（候補の行と率の分母の行のCSV、T6a・T6bの照合の計算が読んだCSVとPDF、根拠・文書値の資料。D-041⑥） |
 | V2 | `V2_STALE_OR_WITHDRAWN` | `stale`・`withdrawn` の主張、取り下げた計算・対応への参照 |
 | V2 | `V2_BAD_EVIDENCE_SOURCE` | 知識ファイル・索引ページを根拠にした主張。「原資料の記載」に取得した公的資料の位置がない |
 | V2 | `E_RULE_VERSION` | 規則の版の食い違い（3.5。終了コード3） |
 | V3 | `V3A_RECALC_MISMATCH` | 基礎集計を同じ台帳で計算し直すと一致しない |
-| V3 | `V3B_REAGG_MISMATCH` | メモに出る基礎集計（派生計算が参照するものを含む）を、別経路の読み込み処理で原本から数え直すと一致しない |
+| V3 | `V3B_REAGG_MISMATCH` | メモに出る基礎集計（派生計算が参照するものを含む）を、別経路の読み込み処理で原本から数え直すと一致しない。数え直すのは `row_refs` が指す原本の行の値（件数、合計と空欄の行の数）で、条件（`filter`）を原本で当て直して行の選び方を独立に確かめるものではない（設計書5.5の限界。D-041⑦） |
 | V3 | `V3B_HEADER_UNRESOLVED` | 見出しの文字列で列を一意に特定できない、または見出しが空の列を使っている |
 | V3 | `V3C_DERIVE_MISMATCH` | 派生計算を演算どおりに計算し直すと一致しない |
-| V3 | `V3_UNCITED_NUMBER` | メモに出る数値が基礎集計・文書値・派生計算のどれでもない（`{calc:ID}` の参照先が探索SQLの結果など） |
+| V3 | `V3_UNCITED_NUMBER` | メモに出る数値が基礎集計・文書値・派生計算のどれでもない（`{calc:ID}` の参照先が探索SQLの結果や照合の計算など）。メモが `{calc:ID}` を展開する欄のすべて（この表の後の「メモに出る計算」）を見る（D-041⑧） |
 | V3 | `V3_NO_MEANING` | 計算に意味・単位がない |
 | V4 | `V4_QUOTE_NOT_FOUND`・`V4_QUOTE_TRUNCATED`・`V4_QUOTE_YEAR` | 8章 |
 | V5 | `V5_CONDITION_MISSING` | `leads.comparison_json` の項目（母集団、1行の意味、期間、単位、主体の対応、算式）に空欄。既定値は検出のときに `dataset.yaml` から入る |
@@ -677,15 +678,22 @@ CREATE TABLE events (
 | V8 | `V8_COEFFICIENT_PENDING` | 比較成立なのに、係数の提案が `proposed` か `accepted` のまま残っている（6.4） |
 | V8 | `V8_CHANGE_NOT_NEGATED` | 比較成立なのに、T6a・T6b（アダプタが対象外とした場合を除く）が否定されていない。T2（受注先の変化の区分ではT5も）が否定されていない、かつ `adjusted` で補正前後の値がない |
 | V8 | `V8_ARTIFACT_NO_FACTOR` | 見かけの変化なのに、T2・T5・T6a・T6bのどれも根拠付きで支持されていない |
-| V8 | `V8_EXPLANATION_STATUS` | T1・T3・T4のどれかが支持なのに説明の状況が `none`。`full`・`part` なのに再計算と残る差がない。`unknown` なのに理由と内訳を尋ねる質問がない |
+| V8 | `V8_EXPLANATION_STATUS` | T1・T3・T4のどれかが支持なのに説明の状況が `none`。`full`・`part` なのに、支持の T1・T3・T4（`scope` が `full`・`part`）のどれにも、説明を反映した値（`recalc_calc_id`。候補の比べる2年度と系列の計算そのものは不可）と残る差（`residual_calc_id`：`recalc_calc_id` を引数に含む派生計算、または条件をそろえた後に残る行を数えた基礎集計の件数）がない。`unknown` なのに目的が `reason_breakdown` の質問がない（D-041⑩） |
 | V8 | `V8_NO_WITHDRAW_RESULT` | 比較成立なのに取り下げ条件の結果がない |
-| V8 | `V8_HOLD_REASON` | 保留なのに `hold_reason` がない、または足りない資料と照会先・情報公開請求の候補がない |
-| V8 | `V8_T6C_QUESTION` | 比較成立なのに元の記載を確かめる質問がない |
+| V8 | `V8_HOLD_REASON` | 保留なのに `hold_reason` がない、または目的が `missing_documents`（不足資料の照会）の質問がない（照会先は質問の `to`、情報公開請求の候補は `foia`。D-041⑩） |
+| V8 | `V8_T6C_QUESTION` | 比較成立なのに、目的が `verify_record`（元の記載の確認）の質問がない（質問の中身の十分さは記者が確かめる。D-041⑩） |
 
 T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations` に登録する（`context='cli'`、根拠は照合の計算ID）。候補の行（メモに出る基礎集計の `row_refs` から、率の分母だけに使う行を除いたもの）について：
 
 - T6a：すべてが取り込みの照合で一致なら「否定」、1つでも不一致なら「支持」。
-- T6b：すべてが原本照合で `matched` で、変化の区分ごとの照合項目（アダプタ仕様7.4）がすべて `match` なら「否定」。1つでも `mismatch` があれば「支持」（見かけの変化の検討へ）。`mismatch` がなく `unverifiable`・`not_found`・`ambiguous` があれば「未確認」（保留の理由 `source_check`）。分野アダプタが原本照合を対象外とした場合は「対象外」。
+- T6b：すべてが原本照合で `matched` で、変化の区分ごとの照合項目（アダプタ仕様7.4）がすべて `match` なら「否定」。照合項目から除くのは、分野の規則でその行に当たらない項目（その年度・方式の `take` に `pdf_fields` の列がない項目。競争入札の行の `reason_raw` など）だけとし、当たる項目の照合の結果がなければ「未確認」とする（D-041④）。1つでも `mismatch` があれば「支持」（見かけの変化の検討へ）。`mismatch` がなく `unverifiable`・`not_found`・`ambiguous` があれば「未確認」（保留の理由 `source_check`）。分野アダプタが原本照合を対象外とした場合は「対象外」。
+- CLIの判定の行（`context='cli'`）は、判定・根拠・`searched` が前と同じなら `updated_at` を変えない（内容の同じ再検査で検証記録のハッシュを変えないため。検査の日時は `events` に残る。D-041⑬）。
+
+**依存する資料**（V1。D-041⑤）：候補が依存する資料（CSV）は、メモに出る基礎集計ごとに、年度と方式から決める。年度は条件の `fiscal_year`（`=`・`in`）、なければ実行の `series_years` のすべて。方式は、`run` の検出の計算（`request_json` に `screen_id` がある）なら `dataset.yaml` の `screens.<名前>.requires`、`record` の計算なら条件の `method_family`（`=`・`in`）、どちらでも方式を限ると機械で確かめられなければ分野の方式のすべて（内閣府では競争入札と随意契約）。取得できなかった資料（`partial`）は `V1_RUN_FAILED`、品質検査の結果がなければ `V1_QUALITY_NOT_RUN`、採用の行が0なら `V1_INPUT_EMPTY`。取得できた行の資料から方式を推し量らない。
+
+**メモに出る計算**（V2・V3・11章で共有。D-041③⑧）：候補が持つ計算、`calc_from`・`calc_to`・系列、主張の `calc_ids`、補正の前後、判定の再計算と残る差、派生計算が参照する計算（入れ子）と、メモが `{calc:ID}` を展開する欄のすべての参照。展開する欄は、主張の本文、判定の `searched`・`no_quant_reason`、仮説・取り下げ条件・候補の注記・再開の条件、質問のすべての文字列、比較の条件の6項目、補正の方法、係数の提案の文字列、対応の理由で、`render` は同じ一覧を展開する。取り下げた計算への参照は `V2_STALE_OR_WITHDRAWN`。
+
+**検証が依存する資料**（V2・11章・メモの資料の一覧で共有。D-041⑥）：メモに出る基礎集計の行の資料（率の分母だけに使う行も含む。候補の行から除くことと、依存から除くことは別）、T6a・T6bの根拠の照合の計算が読んだCSVとPDF（`request_json` の `source`・`csv_source`・`pdf_source`）、主張・判定・対応の根拠と文書値の資料。
 
 ## 10. メモと実行の概要の書式
 
@@ -715,6 +723,8 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 - 6つの型と状態は日本語の名前で表示する（T1 制度・定義の変更、T2 集計範囲・期間の違い、T3 業務・数量の変化、T4 価格・市場の条件、T5 主体の同一性、T6a 取り込みの誤り、T6b 公表形式間の食い違い、T6c 元の記載の誤り。支持・否定・未確認・対象外）。
 - 「CSVとPDFの一致は元の記載の正しさを示さない」を5節に定型文で入れる。
 - 母集団の絞り込み（6.3）があれば、1節に記者の指示と条件を出す。係数の提案（6.4）は4節と7節の先頭に出す。
+- 3節の末尾に「資料の一覧」を置き、検証が依存する資料（9章）のすべてについて、資料ID、URL、取得日時、保存場所（`data/raw/<sha256>.<拡張子>`）、SHA-256を出す。引用と行の表示は資料IDでこの一覧を引く（D-041⑭）。
+- 8節の版：Skill とルールのファイル（`CLAUDE.md`、`.claude/skills/` の Markdown）の版は、記録した git のコミットで代える。このとき、`render` の時点のファイルがそのコミットの内容と同じかを確かめて出す（違う、または確かめられなければそう書く。D-041⑭）。
 - 7節の各行：ファイル名、手元の原本の場所（`data/raw/<sha256>.csv`）、「NO」の値、表計算ソフトで開いたときの行番号（見出し4行＋論理レコード番号。セル内の改行がある行より後はずれうるため「目安」と書く）、PDFのページ、確かめる項目と値。照合できなかった行と項目を先頭に置く。
 
 ### 10.2 失効と規則の版
@@ -737,7 +747,7 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 
 ## 11. 失効のハッシュ（`hashing.py`）
 
-1. 候補について、`render` が読む行をすべて集める：`leads` の行（`memo_no`・`memo_hash`・`rounds` を除く全列。`state` は含める）、その候補の `claims`（`withdrawn` を除く）、`explanations`、主張・判定・候補が参照する `computations` と、その `row_refs` のレコードの `cells_sha256`、対応表の行、根拠の資料の `sha256`、`runs.rule_versions_json`。
+1. 候補について、`render` が読む行をすべて集める：`leads` の行（`memo_no`・`memo_hash`・`rounds` を除く全列。`state` は含める）、その候補の `claims`（`withdrawn` を除く）、`explanations`、メモに出る計算（9章）と T6a・T6b の根拠の照合の計算の `computations` と、その `row_refs` のレコードの `cells_sha256`、対応表の行、検証が依存する資料（9章。照合のPDFを含む）の `sha256`、`runs.rule_versions_json`。
 2. それぞれを、キーを並べ替え、区切りの空白をなくしたJSON（`json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`）にし、表の名前とIDの順に並べて連結する。
 3. 連結したUTF-8のバイト列のSHA-256を「検証記録のハッシュ」とする。
 4. `render` は、主張と候補の状態を更新した後に計算する（4.7）。`inspect` は同じ手順で計算し直して比べる。

@@ -51,10 +51,56 @@ def _calc_refs(text: str | None) -> list[str]:
     return CALC_REF_RE.findall(text or "")
 
 
+def lead_texts(conn: sqlite3.Connection, lead_id: str) -> list[tuple[str, str]]:
+    """メモが {calc:ID} を展開する欄のすべて（欄の名前, 文字列）。render は同じ欄を展開し、check と検証記録の
+    ハッシュは同じ欄から参照を集める（実装仕様9章の「メモに出る計算」。D-041③⑧）。"""
+    (lead,) = dict_rows(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
+    texts: list[tuple[str, str]] = []
+
+    def add(name: str, value: object) -> None:
+        if isinstance(value, str) and value:
+            texts.append((name, value))
+
+    for claim in dict_rows(
+        conn,
+        "SELECT claim_id, text FROM claims WHERE lead_id = ? AND state <> 'withdrawn' ORDER BY claim_id",
+        (lead_id,),
+    ):
+        add(f"{claim['claim_id']}.text", claim["text"])
+    for exp in dict_rows(
+        conn, "SELECT * FROM explanations WHERE lead_id = ? ORDER BY type", (lead_id,)
+    ):
+        add(f"{exp['type']}.searched", exp["searched"])
+        add(f"{exp['type']}.no_quant_reason", exp["no_quant_reason"])
+    for key in ("hypothesis", "withdraw_if", "note", "reopen_condition"):
+        add(key, lead[key])
+    for i, question in enumerate(json.loads(lead["questions_json"])):
+        for key, value in question.items():
+            add(f"questions[{i}].{key}", value)
+    for key, value in json.loads(lead["comparison_json"]).items():
+        add(f"comparison.{key}", value)
+    if lead["adjustment_json"]:
+        add("adjustment.method", json.loads(lead["adjustment_json"]).get("method"))
+    for coef in json.loads(lead["coefficients_json"]):
+        for key in ("meaning", "why_needed", "apply_to", "reporter_note"):
+            add(f"coefficients.{coef.get('key')}.{key}", coef.get(key))
+    for match in dict_rows(
+        conn, "SELECT match_id, reason FROM procurement_matches WHERE lead_id = ?", (lead_id,)
+    ):
+        add(f"{match['match_id']}.reason", match["reason"])
+    return texts
+
+
+def text_calc_refs(conn: sqlite3.Connection, lead_id: str) -> list[str]:
+    """メモが展開する欄の {calc:ID} の参照（順に、重複なし）。"""
+    refs = [r for _, text in lead_texts(conn, lead_id) for r in _calc_refs(text)]
+    return list(dict.fromkeys(refs))
+
+
 def direct_calc_ids(conn: sqlite3.Connection, lead_id: str) -> list[str]:
-    """候補のメモに直接出る計算（順に、重複なし）：比べる2年度、系列、候補が持つ計算、主張の計算と本文の
-    {calc:ID}、判定の再計算、補正の前後、仮説・質問の本文の {calc:ID}。存在しない ID も含めて返す
-    （check が V2_REF_MISSING にする）。"""
+    """候補のメモに直接出る計算（順に、重複なし）：比べる2年度、系列、候補が持つ計算、主張の計算、判定の再計算と
+    残る差、補正の前後、メモが展開する欄の {calc:ID}。存在しない ID も含めて返す（check が V2_REF_MISSING に
+    する）。"""
     (lead,) = dict_rows(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
     ids: list[str] = [lead["calc_from"], lead["calc_to"], *json.loads(lead["calc_ids_json"])]
     ids += [
@@ -67,26 +113,21 @@ def direct_calc_ids(conn: sqlite3.Connection, lead_id: str) -> list[str]:
     ]
     for claim in dict_rows(
         conn,
-        "SELECT calc_ids_json, text FROM claims WHERE lead_id = ? AND state <> 'withdrawn'"
+        "SELECT calc_ids_json FROM claims WHERE lead_id = ? AND state <> 'withdrawn'"
         " ORDER BY claim_id",
         (lead_id,),
     ):
-        ids += json.loads(claim["calc_ids_json"]) + _calc_refs(claim["text"])
-    ids += [
-        r[0]
-        for r in conn.execute(
-            "SELECT recalc_calc_id FROM explanations WHERE lead_id = ? AND recalc_calc_id IS NOT NULL"
-            " ORDER BY type",
-            (lead_id,),
-        )
-    ]
+        ids += json.loads(claim["calc_ids_json"])
+    for exp in dict_rows(
+        conn,
+        "SELECT recalc_calc_id, residual_calc_id FROM explanations WHERE lead_id = ? ORDER BY type",
+        (lead_id,),
+    ):
+        ids += [exp["recalc_calc_id"], exp["residual_calc_id"]]
     if lead["adjustment_json"]:
         adjustment = json.loads(lead["adjustment_json"])
         ids += [adjustment.get("before"), adjustment.get("after")]
-    ids += _calc_refs(lead["hypothesis"]) + _calc_refs(lead["withdraw_if"])
-    for question in json.loads(lead["questions_json"]):
-        for value in question.values():
-            ids += _calc_refs(value if isinstance(value, str) else None)
+    ids += text_calc_refs(conn, lead_id)
     return list(dict.fromkeys(i for i in ids if isinstance(i, str) and i))
 
 
@@ -113,6 +154,67 @@ def _evidence_sources(items: list) -> set[str]:
     }
 
 
+def t6_calc_ids(conn: sqlite3.Connection, lead_id: str) -> list[str]:
+    """T6a・T6b の材料の照合の計算ID：メモに出る基礎集計の行を含む照合の計算と、T6 の判定（CLI）の根拠の計算。"""
+    rows: set[str] = set()
+    for calc_id in memo_calc_ids(conn, lead_id):
+        for comp in dict_rows(
+            conn, "SELECT kind, row_refs_json FROM computations WHERE calc_id = ?", (calc_id,)
+        ):
+            if comp["kind"] == "base":
+                rows |= set(json.loads(comp["row_refs_json"] or "[]"))
+    ids = [
+        c["calc_id"]
+        for c in dict_rows(
+            conn,
+            "SELECT calc_id, row_refs_json FROM computations WHERE kind = 'reconcile'"
+            " AND state = 'active' ORDER BY calc_id",
+        )
+        if rows & set(json.loads(c["row_refs_json"] or "[]"))
+    ]
+    for exp in dict_rows(
+        conn,
+        "SELECT evidence_json FROM explanations WHERE lead_id = ? AND type IN ('T6a', 'T6b')"
+        " ORDER BY type",
+        (lead_id,),
+    ):
+        ids += [
+            e["calc_id"]
+            for e in json.loads(exp["evidence_json"])
+            if isinstance(e, dict) and isinstance(e.get("calc_id"), str)
+        ]
+    return list(dict.fromkeys(ids))
+
+
+def dependency_sources(conn: sqlite3.Connection, lead_id: str) -> list[str]:
+    """検証が依存する資料（実装仕様9章。D-041⑥）：メモに出る基礎集計の行の資料（率の分母だけに使う行を含む）、
+    T6a・T6b の根拠の照合の計算が読んだ CSV と PDF、主張・判定・対応・係数の根拠と文書値の資料。"""
+    sources: set[str] = set()
+    for calc_id in [*memo_calc_ids(conn, lead_id), *t6_calc_ids(conn, lead_id)]:
+        for comp in dict_rows(
+            conn,
+            "SELECT kind, request_json, row_refs_json FROM computations WHERE calc_id = ?",
+            (calc_id,),
+        ):
+            request = json.loads(comp["request_json"])
+            if comp["kind"] == "base":
+                sources |= {r.split(":", 1)[0] for r in json.loads(comp["row_refs_json"] or "[]")}
+            elif comp["kind"] == "doc_value":
+                sources.add(request.get("source_id"))
+            elif comp["kind"] == "reconcile":
+                sources |= {request.get(k) for k in ("source", "csv_source", "pdf_source")}
+    for table in ("claims", "explanations", "procurement_matches"):
+        where = " AND state <> 'withdrawn'" if table == "claims" else ""
+        for row in dict_rows(
+            conn, f"SELECT evidence_json FROM {table} WHERE lead_id = ?{where}", (lead_id,)
+        ):
+            sources |= _evidence_sources(json.loads(row["evidence_json"]))
+    (lead,) = dict_rows(conn, "SELECT coefficients_json FROM leads WHERE lead_id = ?", (lead_id,))
+    for coef in json.loads(lead["coefficients_json"]):
+        sources |= _evidence_sources(coef.get("basis") or [])
+    return sorted(s for s in sources if isinstance(s, str) and s)
+
+
 def check_hash(conn: sqlite3.Connection, lead_id: str) -> str:
     """検証記録のハッシュ（11章）。render が読む行を集め、表の名前と ID の順に正規化JSONで連結した SHA-256。"""
     items: list[tuple[str, str, object]] = []
@@ -120,43 +222,26 @@ def check_hash(conn: sqlite3.Connection, lead_id: str) -> str:
     items.append(
         ("leads", lead_id, {k: v for k, v in lead.items() if k not in LEAD_COLUMNS_NOT_HASHED})
     )
-    sources: set[str] = set()
     for claim in dict_rows(
         conn, "SELECT * FROM claims WHERE lead_id = ? AND state <> 'withdrawn'", (lead_id,)
     ):
         items.append(("claims", claim["claim_id"], claim))
-        sources |= _evidence_sources(json.loads(claim["evidence_json"]))
     for exp in dict_rows(conn, "SELECT * FROM explanations WHERE lead_id = ?", (lead_id,)):
         items.append(("explanations", exp["type"], exp))
-        sources |= _evidence_sources(json.loads(exp["evidence_json"]))
     for match in dict_rows(conn, "SELECT * FROM procurement_matches WHERE lead_id = ?", (lead_id,)):
         items.append(("procurement_matches", match["match_id"], match))
-        sources |= _evidence_sources(json.loads(match["evidence_json"]))
     record_ids: set[str] = set()
-    calc_ids = set(memo_calc_ids(conn, lead_id))
-    for exp in dict_rows(
-        conn, "SELECT evidence_json FROM explanations WHERE lead_id = ?", (lead_id,)
-    ):
-        calc_ids |= {
-            e["calc_id"]
-            for e in json.loads(exp["evidence_json"])
-            if isinstance(e, dict) and "calc_id" in e
-        }
-    for calc_id in sorted(calc_ids):
+    for calc_id in sorted({*memo_calc_ids(conn, lead_id), *t6_calc_ids(conn, lead_id)}):
         for comp in dict_rows(conn, "SELECT * FROM computations WHERE calc_id = ?", (calc_id,)):
             items.append(("computations", calc_id, comp))
             record_ids |= set(json.loads(comp["row_refs_json"] or "[]"))
-            request = json.loads(comp["request_json"])
-            if comp["kind"] == "doc_value":
-                sources.add(request.get("source_id"))
     for record_id in sorted(record_ids):
         row = conn.execute(
-            "SELECT source_id, cells_sha256 FROM records WHERE record_id = ?", (record_id,)
+            "SELECT cells_sha256 FROM records WHERE record_id = ?", (record_id,)
         ).fetchone()
         if row is not None:
-            items.append(("records", record_id, {"cells_sha256": row[1]}))
-            sources.add(row[0])
-    for source_id in sorted(s for s in sources if s):
+            items.append(("records", record_id, {"cells_sha256": row[0]}))
+    for source_id in dependency_sources(conn, lead_id):
         row = conn.execute(
             "SELECT sha256 FROM sources WHERE source_id = ?", (source_id,)
         ).fetchone()

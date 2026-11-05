@@ -33,7 +33,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #    の結果・列名・SQLite のエラーの文にも氏名の検査）。run・query の結果が変わる。
 # 9：P0-6 で check（V1〜V4・V8、T6a・T6b の機械の判定）と render（候補のメモ、検証記録のハッシュ）を足した。
 #    check・render の結果が変わる。
-RULES_VERSION = "9"
+# 10：D-041（照合の PDF を原本の検査と検証記録のハッシュに入れる、依存する資料を条件と分野の規則から決める、
+#     メモが展開する欄のすべての {calc:ID} を検査する、内容の同じ再検査でハッシュを変えない、質問の目的と残る差、
+#     T6b の当たる項目）。check・render・record の結果が変わる。
+RULES_VERSION = "10"
 
 
 def code_version() -> str:
@@ -107,3 +110,36 @@ def drift(recorded: dict, root: Path, domain: str) -> list[str]:
     """開始時に記録した版と、いまの版で違う項目（照合するものだけ）。"""
     current = rule_versions(root, domain)
     return [k for k in COMPARED_VERSIONS if recorded.get(k) != current.get(k)]
+
+
+def rule_files(root: Path) -> list[Path]:
+    """Skill とルールのファイル（CLAUDE.md と .claude/skills/ の Markdown）。"""
+    files = [root / "CLAUDE.md"] if (root / "CLAUDE.md").is_file() else []
+    skills = root / ".claude" / "skills"
+    if skills.is_dir():
+        files += sorted(skills.rglob("*.md"))
+    return files
+
+
+def rule_files_state(root: Path, commit: str | None) -> tuple[str, list[tuple[str, str]]]:
+    """Skill とルールのファイルの SHA-256 と、それらが記録したコミットの内容と同じか（メモの8節。D-041⑭）。"""
+    files = [(p.relative_to(root).as_posix(), sha256_file(p)) for p in rule_files(root)]
+    if not commit or commit == "unknown":
+        return "確かめられない（実行にコミットの記録がない）", files
+    different: list[str] = []
+    for rel, sha in files:
+        try:
+            proc = subprocess.run(
+                ["git", "show", f"{commit}:{rel}"],
+                cwd=root,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "確かめられない（git で読めない）", files
+        if proc.returncode != 0 or sha256_bytes(proc.stdout) != sha:
+            different.append(rel)
+    if different:
+        return f"違う（コミット {commit} の内容と違うファイル：{'・'.join(different)}）", files
+    return f"同じ（コミット {commit} の内容と同じ）", files

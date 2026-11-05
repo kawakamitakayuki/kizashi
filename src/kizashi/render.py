@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from kizashi import check, hashing, ledger, paths
+from kizashi import check, hashing, ledger, paths, versions
 from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
 from kizashi.hashing import dict_rows
@@ -89,6 +89,12 @@ SOURCE_STATUS_NAMES = {
 }
 ROLE_NAMES = {"support": "支える", "oppose": "反する", "background": "背景"}
 FIELD_STATE_NAMES = {"match": "一致", "mismatch": "不一致", "unverifiable": "照合不能"}
+PURPOSE_NAMES = {
+    "verify_record": "元の記載の確認",
+    "reason_breakdown": "理由・内訳の確認",
+    "missing_documents": "不足資料の照会",
+    "other": "そのほか",
+}
 FIXED_NOTICE = "調査用・記者未確認。調査の端緒であり、不正の指摘ではない。"
 FIXED_CSV_PDF = "CSVとPDFの一致は元の記載の正しさを示さない。"
 FIXED_SAME_CONTEXT = (
@@ -210,11 +216,17 @@ class _Memo:
             outcome += f"（説明の状況：{EXPLANATION_STATUS_NAMES.get(lead['explanation_status'], '未記録')}）"
         elif lead["state"] == "hold":
             outcome += f"（理由：{HOLD_REASON_NAMES.get(lead['hold_reason'], '未記録')}）"
+        reopen = (
+            [f"- 再開の条件：{self.expand(lead['reopen_condition'])}"]
+            if lead.get("reopen_condition")
+            else []
+        )
         years = [int(lead["period_from"]), int(lead["period_to"])]
         lines = [
             "## 1 状態と範囲",
             "",
             f"- 結論：{outcome}",
+            *reopen,
             f"- 問い：{self.config.get('question', '（未記録）')}",
             (
                 f"- 比べた年度：{_year_ja(years[0])}と{_year_ja(years[1])}"
@@ -292,7 +304,10 @@ class _Memo:
         comparison = json.loads(lead["comparison_json"])
         state = COMPARISON_STATE_NAMES.get(lead["comparison_state"], "未記録")
         lines.append(f"- 比較の条件（{state}）：")
-        lines += [f"  - {COMPARISON_NAMES[k]}：{comparison.get(k, '')}" for k in COMPARISON_NAMES]
+        lines += [
+            f"  - {COMPARISON_NAMES[k]}：{self.expand(comparison.get(k, ''))}"
+            for k in COMPARISON_NAMES
+        ]
         reasons = json.loads(lead["incomparable_reasons_json"])
         lines.append(f"- 比較できない理由：{'・'.join(reasons) if reasons else 'なし'}")
         lines.append(
@@ -352,8 +367,33 @@ class _Memo:
                     lines.append(f"  - 合計から除いた行：{dropped}")
                 for ref in json.loads(comp["row_refs_json"] or "[]"):
                     lines.append(f"  - {self.row_line(ref)}")
+        lines += ["", "### 資料の一覧", ""]
+        lines.append(
+            "引用・行・照合の根拠の資料IDは、この一覧で引く（検証が依存する資料のすべて）。"
+        )
+        lines.append("")
+        for source_id in hashing.dependency_sources(self.conn, self.lead["lead_id"]):
+            lines.append(self.source_line(source_id))
         lines.append("")
         return lines
+
+    def source_line(self, source_id: str) -> str:
+        source = self.source(source_id)
+        if not source:
+            return f"- {source_id}：（台帳にない）"
+        path = check.raw_path(self.root, source)
+        where = path.relative_to(self.root).as_posix() if path is not None else "（原本がない）"
+        kind = {
+            "dataset": "公表データ",
+            "evidence": "追加資料",
+            "definition": "定義の資料",
+            "index": "索引",
+        }
+        return (
+            f"- {source_id}：{kind.get(source['kind'], source['kind'])}。{self.file_name(source)}。"
+            f"URL {source.get('final_url') or source.get('url')}。取得 {source.get('fetched_at')}。"
+            f"保存場所 {where}。SHA-256 {source.get('sha256')}"
+        )
 
     def evidence_text(self, e: dict) -> str:
         if "calc_id" in e:
@@ -388,8 +428,14 @@ class _Memo:
             lines.append("")
             for c in coefs:
                 lines.append(
-                    f"- {c['key']}：{c['value']}（{c['meaning']}。状態 {COEF_STATUS_NAMES.get(c['status'], c['status'])}）。"
-                    f"必要と考えた理由：{c['why_needed']}。使い方：{c['apply_to']}"
+                    f"- {c['key']}：{c['value']}（{self.expand(c['meaning'])}。"
+                    f"状態 {COEF_STATUS_NAMES.get(c['status'], c['status'])}）。"
+                    f"必要と考えた理由：{self.expand(c['why_needed'])}。使い方：{self.expand(c['apply_to'])}"
+                    + (
+                        f"。記者の判断：{self.expand(c['reporter_note'])}"
+                        if c.get("reporter_note")
+                        else ""
+                    )
                 )
                 for b in c.get("basis", []):
                     where = (
@@ -417,13 +463,15 @@ class _Memo:
                 lines.append(f"  - 説明が及ぶ範囲：{SCOPE_NAMES[exp['scope']]}")
             if exp.get("recalc_calc_id"):
                 lines.append(f"  - 説明を反映した再計算：{self.calc_text(exp['recalc_calc_id'])}")
+            if exp.get("residual_calc_id"):
+                lines.append(f"  - 残る差：{self.calc_text(exp['residual_calc_id'])}")
             if exp.get("no_quant_reason"):
-                lines.append(f"  - 定量化できない理由：{exp['no_quant_reason']}")
+                lines.append(f"  - 定量化できない理由：{self.expand(exp['no_quant_reason'])}")
         if lead.get("adjustment_json"):
             adjustment = json.loads(lead["adjustment_json"])
             lines += [
                 "",
-                f"- 補正の方法：{adjustment.get('method')}",
+                f"- 補正の方法：{self.expand(adjustment.get('method'))}",
                 f"  - 補正前：{self.calc_text(adjustment.get('before'))}",
                 f"  - 補正後：{self.calc_text(adjustment.get('after'))}",
             ]
@@ -470,13 +518,14 @@ class _Memo:
             lines.append("- 取材質問はない。")
         for i, q in enumerate(questions, 1):
             lines += [
-                f"{i}. 相手：{q['to']}",
+                f"{i}. 相手：{self.expand(q['to'])}",
                 f"   - 問い：{self.expand(q['question'])}",
-                f"   - 必要な資料：{q['documents']}",
-                f"   - 何が分かれば判断が変わるか：{q['decision_impact']}",
+                f"   - 目的：{'・'.join(PURPOSE_NAMES.get(x, x) for x in q.get('purposes') or []) or '未記録'}",
+                f"   - 必要な資料：{self.expand(q['documents'])}",
+                f"   - 何が分かれば判断が変わるか：{self.expand(q['decision_impact'])}",
             ]
             if q.get("foia"):
-                lines.append(f"   - 情報公開請求の候補：{q['foia']}")
+                lines.append(f"   - 情報公開請求の候補：{self.expand(q['foia'])}")
         lines += ["", "連絡は記者が行う。", ""]
         return lines
 
@@ -516,7 +565,7 @@ class _Memo:
                 lines.append(
                     f"- {m['match_id']}（{MATCH_STATUS_NAMES.get(m['status'], m['status'])}。{m['relation']}）："
                     f"{'・'.join(json.loads(m['left_json']))} と {'・'.join(json.loads(m['right_json']))}。"
-                    f"理由：{m['reason']}"
+                    f"理由：{self.expand(m['reason'])}"
                 )
             lines.append("")
         return lines
@@ -550,7 +599,7 @@ class _Memo:
         )
 
     def section8(self, memo_no: int, digest: str) -> list[str]:
-        versions = json.loads(self.run["rule_versions_json"])
+        recorded = json.loads(self.run["rule_versions_json"])
         lines = [
             "## 8 再現情報",
             "",
@@ -566,16 +615,17 @@ class _Memo:
                 f"  - {calc_id}（{comp['kind']}）：依頼 {comp['request_json']}。"
                 f"row_refs のハッシュ {comp['row_refs_sha256'] or 'なし'}"
             )
-        sources = sorted({r.split(":", 1)[0] for r in self.rows})
-        lines.append("- 原本のハッシュ：")
-        lines += [f"  - {s}：{self.source(s).get('sha256')}" for s in sources]
+        lines.append("- 原本のハッシュ：3節の資料の一覧のとおり（検証が依存する資料のすべて）")
+        state, files = versions.rule_files_state(self.root, versions_json_commit(self.run))
+        lines.append(f"- Skill とルールのファイル（render の時点）：{state}")
+        lines += [f"  - {rel}：{sha}" for rel, sha in files]
         lines += [
             (
-                f"- 版：コード {versions.get('code_version')}（コミット {versions.get('git_commit')}。Skill と"
-                f"ルールのファイルを含む）、規則 {versions.get('rules_version')}、分野の規則 {versions.get('parser_version')}、"
-                f"dataset.yaml {versions.get('dataset_yaml_sha256')}、分野のSQL {versions.get('sql_sha256')}"
+                f"- 版：コード {recorded.get('code_version')}（コミット {recorded.get('git_commit')}。Skill と"
+                f"ルールのファイルを含む）、規則 {recorded.get('rules_version')}、分野の規則 {recorded.get('parser_version')}、"
+                f"dataset.yaml {recorded.get('dataset_yaml_sha256')}、分野のSQL {recorded.get('sql_sha256')}"
             ),
-            f"- モデル：{self.config.get('model', '（未記録）')}。Claude Code：{versions.get('claude_code_version', '（未記録）')}",
+            f"- モデル：{self.config.get('model', '（未記録）')}。Claude Code：{recorded.get('claude_code_version', '（未記録）')}",
             f"- 検証記録のハッシュ：{digest}",
             "",
         ]
@@ -599,6 +649,10 @@ class _Memo:
             *self.section8(memo_no, digest),
         ]
         return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def versions_json_commit(run: dict) -> str | None:
+    return json.loads(run.get("rule_versions_json") or "{}").get("git_commit")
 
 
 def render_lead(root: Path, run_id: str, lead_id: str) -> dict:

@@ -261,3 +261,68 @@ def test_render_rows_and_files_in_section3(repo: Path, synthetic_run: str) -> No
         in section3
     )
     assert f"式：diff({lead['calc_to']}, {lead['calc_from']})" in section3
+
+
+def test_d041_source_list_traces_quotes(repo: Path, synthetic_run: str) -> None:
+    """RD-1（D-041⑭）：3節の末尾の資料の一覧に、追加資料・照合の PDF を含む検証が依存する資料の、資料ID・URL・
+    取得日時・保存場所・SHA-256 が出る。8節は Skill とルールのファイルがコミットと同じか確かめた結果を出す。"""
+    import httpx
+
+    from kizashi import fetcher
+
+    lead = prepare(repo, synthetic_run)
+    url = "https://www.cao.go.jp/test/translation-explanation.html"
+    html = "<html><body><p>翻訳の分量を増やした。</p></body></html>".encode()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "text/html; charset=utf-8"}, content=html
+        )
+    )
+    source = fetcher.fetch_evidence(repo, synthetic_run, url, "evidence", transport=transport)
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "claim",
+            "lead_id": lead["lead"],
+            "type": "publisher_explanation",
+            "text": "公表元は、翻訳の分量を増やしたと説明している。",
+            "calc_ids": [],
+            "evidence": [
+                {
+                    "source_id": source["source_id"],
+                    "position": {"page": 1},
+                    "quote": "翻訳の分量を増やした。",
+                    "role": "support",
+                }
+            ],
+        },
+    )
+    text = (repo / render.render_lead(repo, synthetic_run, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    listing = text.split("### 資料の一覧")[1].split("## 4")[0]
+    conn = ledger_of(repo, synthetic_run)
+    rows = {
+        r["source_id"]: r
+        for r in conn.execute(
+            "SELECT * FROM sources WHERE source_id IN ('S001', 'S002', 'S005', 'S006', ?)",
+            (source["source_id"],),
+        )
+    }
+    conn.close()
+    for sid, ext in (
+        ("S001", "csv"),
+        ("S002", "pdf"),
+        ("S005", "csv"),
+        ("S006", "pdf"),
+        (source["source_id"], "html"),
+    ):
+        row = rows[sid]
+        line = next(x for x in listing.splitlines() if x.startswith(f"- {sid}："))
+        assert row["url"] in line and row["sha256"] in line and row["fetched_at"] in line, sid
+        assert f"data/raw/{row['sha256']}.{ext}" in line, sid
+    section8 = text.split("## 8 再現情報")[1]
+    assert (
+        "Skill とルールのファイル" in section8 and "確かめられない" in section8
+    )  # 合成のフォルダーは git でない
