@@ -576,13 +576,33 @@ CREATE TABLE events (
 
 ```json
 {"type": "source",
- "pairs": [{"csv_source": "S004", "pdf_source": "S005"}],
+ "pairs": [{"csv_source": "S004", "pdf_source": "S005", "pages": 38,
+            "skipped_pages": [], "split_pages": []}],
  "rows": {"S004:000042": {"row_status": "matched", "pdf_page": 3,
-                          "fields": {"amount_yen": "match", "contract_date": "match", "reason_raw": "unverifiable"}}},
- "counts": {"rows": 858, "matched": 840, "unmatched": 3, "unverifiable": 15}}
+                          "fields": {"amount_yen": "match", "contract_date": "match", "reason_raw": "unverifiable"}},
+          "S004:000043": {"row_status": "ambiguous", "row_reason": "split_row", "pdf_pages": [3, 4],
+                          "fields": {"amount_yen": "unverifiable", "contract_date": "unverifiable", "reason_raw": "unverifiable"}}},
+ "counts": {"rows": 858, "matched": 856, "not_found": 0, "ambiguous": 2, "skipped": 0,
+            "fields": {"amount_yen": {"match": 855, "mismatch": 1, "unverifiable": 2}}}}
 ```
 
 項目の結果は `match`（一致）・`mismatch`（不一致）・`unverifiable`（照合不能）。行の結果は `matched`・`not_found`・`ambiguous`。1件が複数の罫線の行に分かれたおそれがある場合は `ambiguous` とし、`"row_reason": "split_row"` を添える（アダプタ仕様7.1）。項目のキーと照らし方はアダプタ仕様7.3（`dataset.yaml` の `reconcile.pdf_fields`）による。
+
+- `counts` は行の結果ごとの件数と、項目ごとの件数（`fields`）にする。`skipped` は照合しなかったレコード（空のレコードと NO が数でない保留の行）の数。
+- `pairs` の要素の `pages` は PDF のページ数、`skipped_pages` は列の数が違って使わなかったページ（`{"page", "columns"}`）、`split_pages` は分かれた行のあるページ。`ambiguous` の行には候補のページ `pdf_pages` を添える。
+- PDF を取得できていない CSV は照合せず、計算を作らない（`runs.counts_json` に `not_run` と理由）。PDF を読めないときは、組に `error` を書き、全行を `not_found`（`"row_reason": "pdf_unreadable"`）、項目をすべて `unverifiable` にする。実行は止めず、`run` の出力の `message` に照合できなかった資料を書く。
+- 照合の計算の `value`・`unit` は空（NULL）とし、`row_refs_json` に照合した行を入れる。
+
+取り込みの照合（T6a）は資料（CSV）ごとに次の形にする。比べる項目は分野アダプタの `IMPORT_FIELDS`（アダプタ仕様6章の元の値）と、整数にした金額 `amount_yen`。片方にしかない行は `mismatch` とし、`row_reason` に `missing_in_ledger` か `missing_in_reader` を書く。
+
+```json
+{"type": "import", "source": "S004",
+ "rows": {"S004:000042": {"row_status": "match", "fields": {"title_raw": "match", "amount_yen": "match"}}},
+ "counts": {"rows": 422, "match": 422, "mismatch": 0,
+            "fields": {"title_raw": {"match": 422, "mismatch": 0}}}}
+```
+
+（形の細部は D-030 で決めた）
 
 ## 8. 引用の照合（`quotes.py`）
 
