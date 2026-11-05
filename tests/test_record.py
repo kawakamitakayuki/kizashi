@@ -1,0 +1,648 @@
+"""提案の登録（test_plan.md の IN-2、CP-1（登録まで）、CA の record 経由。implementation_spec.md 4.5・6章）。
+
+合成データの実行（S001〜S009）に、探索SQL・計算・候補を record で足して確かめる。期待値は合成の CSV
+（tests/fixtures/make_cao_fixtures.py）から手で決めた（翻訳業務：令和6年度 650,000円、令和7年度 750,000円）。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from conftest import add_evidence, ledger_of
+from kizashi import query, record
+from kizashi.errors import KizashiError
+
+PLAYBOOK = (
+    "# テスト用の合成の知識ファイル（実在のノウハウ集ではない）\n\n### C900 テストの手順\n"
+    "**応用手順**：①年度ごとに保存 ②契約金額を税込か確認 ③再照合\n"
+)
+
+
+def put(root: Path, name: str, data: dict) -> str:
+    (root / "inbox" / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return f"inbox/{name}"
+
+
+def rec(root: Path, run_id: str, data: dict, name: str = "p.json") -> dict:
+    return record.record(root, run_id, put(root, name, data))
+
+
+def fails(root: Path, run_id: str, data: dict, code: str, name: str = "bad.json") -> KizashiError:
+    arg = put(root, name, data)
+    with pytest.raises(KizashiError) as info:
+        record.record(root, run_id, arg)
+    assert info.value.code == code, info.value.message
+    assert (root / arg).exists()  # 失敗したら提案は inbox/ に残る
+    return info.value
+
+
+def calc_sum(group: str, year: int, **extra) -> dict:
+    return {
+        "kind": "calc",
+        "op": "sum",
+        "table": "procurement_contracts",
+        "column": "amount_yen",
+        "filter": [
+            {"col": "group_key", "op": "=", "value": group},
+            {"col": "fiscal_year", "op": "=", "value": year},
+        ],
+        "label": f"{group}の契約金額の合計",
+        "unit": "円",
+        **extra,
+    }
+
+
+COMPARISON = {
+    "population": "内閣府の競争入札・随意契約のうち、件名のまとめのキーが両年度にある契約",
+    "row_meaning": "1件の契約",
+    "period": "会計年度",
+    "unit": "円",
+    "entity_mapping": "件名のまとめのキー",
+    "formula": "年度ごとの契約金額の合計の差",
+}
+
+
+def make_lead(root: Path, run_id: str, group: str = "翻訳業務", qname: str = "q-001.sql") -> dict:
+    """探索SQL → 両年度の計算 → 候補（screen_id='explore'）。計算ID と候補ID を返す。"""
+    (root / "inbox" / qname).write_text(
+        f"SELECT fiscal_year, amount_yen FROM procurement_contracts WHERE group_key = '{group}'",
+        encoding="utf-8",
+    )
+    query.run_query(root, run_id, f"inbox/{qname}")
+    k_from = rec(root, run_id, calc_sum(group, 2024))["id"]
+    k_to = rec(root, run_id, calc_sum(group, 2025))["id"]
+    lead = rec(
+        root,
+        run_id,
+        {
+            "kind": "lead",
+            "query_file": qname,
+            "lead_key": group,
+            "change_category": "amount_up",
+            "period_from": 2024,
+            "period_to": 2025,
+            "calc_from": k_from,
+            "calc_to": k_to,
+            "calc_ids": [],
+            "comparison": COMPARISON,
+            "note": "探索で見つけた",
+        },
+    )
+    return {"lead": lead["id"], "from": k_from, "to": k_to}
+
+
+@pytest.fixture
+def run(repo: Path, synthetic_run: str) -> str:
+    ref = repo / "references"
+    ref.mkdir()
+    (ref / "investigative_reporting_playbook_v13.0.md").write_text(PLAYBOOK, encoding="utf-8")
+    return synthetic_run
+
+
+@pytest.fixture
+def lead(repo: Path, run: str) -> dict:
+    return make_lead(repo, run)
+
+
+# ---------------------------------------------------------------------------
+# IN-2：管理項目の自己申告、存在しない参照、fiscal_year のない「原資料の記載」。失敗なら inbox/ に残る
+# ---------------------------------------------------------------------------
+
+
+def test_in2_success_moves_to_accepted(repo: Path, run: str) -> None:
+    """IN-2：成功したら accepted/<連番>-<kind>.json に移り、events に record が残る。値は手計算と同じ。"""
+    result = rec(repo, run, calc_sum("翻訳業務", 2024))
+    assert (result["kind"], result["id"], result["value"]) == ("calc", "K0009", "650000")
+    assert not (repo / "inbox" / "p.json").exists()
+    accepted = repo / "data" / "runs" / run / "accepted" / "0002-calc.json"
+    assert accepted.is_file() and result["accepted"] == f"data/runs/{run}/accepted/0002-calc.json"
+    conn = ledger_of(repo, run)
+    ev = conn.execute("SELECT * FROM events WHERE kind = 'record'").fetchall()
+    assert [e["target_id"] for e in ev] == ["K0009"]
+    assert json.loads(ev[0]["after_json"])["kind"] == "calc"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"value": "650000"},
+        {"state": "active"},
+        {"checked": True},
+        {"created_at": "2026-11-05T10:00:00+09:00"},
+        {"row_refs": ["S001:000012"]},
+        {"origin": "run"},
+    ],
+)
+def test_in2_self_declared_management_fields(repo: Path, run: str, extra: dict) -> None:
+    """IN-2：管理項目（値、状態、checked、日時、row_refs、origin など）が提案にあれば E_SELF_DECLARED。"""
+    fails(repo, run, calc_sum("翻訳業務", 2024, **extra), "E_SELF_DECLARED")
+
+
+def test_in2_self_declared_in_other_kinds(repo: Path, run: str, lead: dict) -> None:
+    """IN-2：主張の state、候補の巡回数・メモの番号、結論の state も E_SELF_DECLARED。"""
+    claim = {
+        "kind": "claim",
+        "lead_id": lead["lead"],
+        "type": "observation",
+        "text": "観察。",
+        "calc_ids": [],
+        "evidence": [],
+        "state": "checked",
+    }
+    fails(repo, run, claim, "E_SELF_DECLARED")
+    concl = {
+        "kind": "conclusion",
+        "lead_id": lead["lead"],
+        "outcome": "hold",
+        "comparison_state": "unresolved",
+        "hold_reason": "comparison",
+        "rounds": 0,
+    }
+    fails(repo, run, concl, "E_SELF_DECLARED")
+    hyp = {
+        "kind": "hypothesis",
+        "lead_id": lead["lead"],
+        "text": "仮説。",
+        "withdraw_if": "条件。",
+        "memo_no": 1,
+    }
+    fails(repo, run, hyp, "E_SELF_DECLARED")
+
+
+def test_in2_missing_references(repo: Path, run: str, lead: dict) -> None:
+    """IN-2：存在しない候補・計算・レコード・資料・主張への参照は E_REF_NOT_FOUND。"""
+    base = {
+        "kind": "claim",
+        "type": "observation",
+        "text": "観察。",
+        "calc_ids": [],
+        "evidence": [],
+    }
+    fails(repo, run, {**base, "lead_id": "L0099"}, "E_REF_NOT_FOUND")
+    fails(repo, run, {**base, "lead_id": lead["lead"], "calc_ids": ["K0999"]}, "E_REF_NOT_FOUND")
+    fails(
+        repo,
+        run,
+        {**base, "lead_id": lead["lead"], "text": "{calc:K0999}に増えた。"},
+        "E_REF_NOT_FOUND",
+    )
+    match = {
+        "kind": "match",
+        "lead_id": lead["lead"],
+        "left": ["S001:000099"],
+        "right": ["S005:000007"],
+        "relation": "1:1",
+        "reason": "同じ業務。",
+        "evidence": [],
+        "status": "pending",
+    }
+    fails(repo, run, match, "E_REF_NOT_FOUND")
+    fails(repo, run, {"kind": "withdraw", "target": "C0099", "reason": "誤り。"}, "E_REF_NOT_FOUND")
+    calc = calc_sum("翻訳業務", 2024, lead_id="L0099")
+    fails(repo, run, calc, "E_REF_NOT_FOUND")
+
+
+def test_in2_record_claim_needs_fiscal_year(repo: Path, run: str, lead: dict) -> None:
+    """IN-2：type: record の主張で fiscal_year がなければ E_SCHEMA。あれば登録できる（draft）。"""
+    ev = [
+        {
+            "source_id": "S005",
+            "position": {"row_ref": "S005:000007", "column": "method_raw"},
+            "quote": "一般競争",
+            "role": "support",
+        }
+    ]
+    claim = {
+        "kind": "claim",
+        "lead_id": lead["lead"],
+        "type": "record",
+        "text": "令和7年度の公表資料では、一般競争入札として記載されている。",
+        "calc_ids": [],
+        "evidence": ev,
+    }
+    fails(repo, run, claim, "E_SCHEMA")
+    result = rec(repo, run, {**claim, "fiscal_year": 2025})
+    assert result["id"] == "C0001"
+    row = ledger_of(repo, run).execute("SELECT * FROM claims").fetchone()
+    assert (row["state"], row["type"], row["fiscal_year"]) == ("draft", "record", 2025)
+
+
+@pytest.mark.parametrize(
+    ("data", "code"),
+    [
+        ({"kind": "memo"}, "E_UNKNOWN_KIND"),
+        ({"kind": "run_config", "domain": "cao-procurement"}, "E_UNKNOWN_KIND"),
+        ({**calc_sum("翻訳業務", 2024), "colour": "red"}, "E_SCHEMA"),
+        ({k: v for k, v in calc_sum("翻訳業務", 2024).items() if k != "label"}, "E_SCHEMA"),
+        ({**calc_sum("翻訳業務", 2024), "label": ""}, "E_SCHEMA"),
+        ({**calc_sum("翻訳業務", 2024), "lead_id": "L1"}, "E_SCHEMA"),
+    ],
+)
+def test_in2_unknown_kind_and_shape(repo: Path, run: str, data: dict, code: str) -> None:
+    """IN-2：知らない kind（record は run_config を受け付けない）、知らない項目、必須の欠け、空の文字列、ID の書式。"""
+    fails(repo, run, data, code)
+
+
+def test_record_v7_numbers_names_and_strong_words(repo: Path, run: str, lead: dict) -> None:
+    """4.5：Claude の書く文字列に V7 の数値と氏名の検査をする（不合格は E_V7）。強い語は警告。"""
+    base = {
+        "kind": "claim",
+        "lead_id": lead["lead"],
+        "type": "observation",
+        "calc_ids": [lead["to"]],
+        "evidence": [],
+    }
+    err = fails(repo, run, {**base, "text": "合計は750,000円に増えた。"}, "E_V7")
+    assert "V7_RAW_NUMBER" in err.message and "750,000" in err.message
+    err = fails(repo, run, {**base, "text": "担当官は架空　太郎である。"}, "E_V7")
+    assert "V7_PERSONAL_NAME" in err.message
+    assert "架空" not in err.message and "太郎" not in err.message  # 氏名をエラーに書き出さない
+    result = rec(
+        repo, run, {**base, "text": f"合計は{{calc:{lead['to']}}}になり、疑惑の声がある。"}
+    )
+    [warning] = result["warnings"]
+    assert set(warning) == {"code", "message", "affected_ids"}  # 3.2 の警告の形
+    assert (warning["code"], warning["affected_ids"]) == ("W7_STRONG_WORD", [result["id"]])
+    assert "疑惑" in warning["message"] and "text" in warning["message"]
+
+
+# ---------------------------------------------------------------------------
+# 種類ごとの登録
+# ---------------------------------------------------------------------------
+
+
+def test_lead_from_exploration(repo: Path, run: str, lead: dict) -> None:
+    """6.2 lead：screen_id='explore' で登録し、計算の lead_id を埋め、比べた組の数（探索）を1増やす。"""
+    conn = ledger_of(repo, run)
+    row = conn.execute("SELECT * FROM leads").fetchone()
+    assert (row["lead_id"], row["screen_id"], row["query_file"], row["state"]) == (
+        "L0001",
+        "explore",
+        "q-001.sql",
+        "candidate",
+    )
+    assert (row["calc_from"], row["calc_to"], row["period_from"], row["period_to"]) == (
+        lead["from"],
+        lead["to"],
+        "2024",
+        "2025",
+    )
+    assert json.loads(row["comparison_json"]) == COMPARISON
+    owners = dict(conn.execute("SELECT calc_id, lead_id FROM computations WHERE origin = 'record'"))
+    assert owners == {lead["from"]: "L0001", lead["to"]: "L0001"}
+    counts = json.loads(conn.execute("SELECT counts_json FROM runs").fetchone()[0])
+    assert counts["explore"] == {"compared": 1}
+
+
+def test_lead_requires_base_calcs_with_year(repo: Path, run: str, lead: dict) -> None:
+    """6.2 lead：calc_from・calc_to が基礎集計でない、条件に fiscal_year がない、探索SQLがない、同じ候補がある。"""
+    k_from = rec(repo, run, calc_sum("研修会場借上げ", 2024))["id"]
+    k_to = rec(repo, run, calc_sum("研修会場借上げ", 2025))["id"]
+    k_any = rec(
+        repo,
+        run,
+        {
+            **calc_sum("研修会場借上げ", 2024),
+            "filter": [{"col": "group_key", "op": "=", "value": "研修会場借上げ"}],
+        },
+    )["id"]
+    d = rec(
+        repo,
+        run,
+        {"kind": "derive", "op": "diff", "args": [k_to, k_from], "label": "差額", "unit": "円"},
+    )["id"]
+    proposal = {
+        "kind": "lead",
+        "query_file": "q-001.sql",
+        "lead_key": "研修会場借上げ",
+        "change_category": "amount_up",
+        "period_from": 2024,
+        "period_to": 2025,
+        "calc_from": k_from,
+        "calc_to": k_to,
+        "calc_ids": [],
+        "comparison": COMPARISON,
+        "note": "探索",
+    }
+    fails(repo, run, {**proposal, "calc_from": d}, "E_SCHEMA")
+    fails(repo, run, {**proposal, "calc_from": k_any}, "E_SCHEMA")
+    fails(repo, run, {**proposal, "calc_from": k_to, "calc_to": k_from}, "E_SCHEMA")
+    fails(repo, run, {**proposal, "query_file": "q-999.sql"}, "E_REF_NOT_FOUND")
+    fails(repo, run, {**proposal, "change_category": "something_new"}, "E_SCHEMA")
+    fails(repo, run, {**proposal, "calc_from": lead["from"]}, "E_SCHEMA")  # 別の候補の計算
+    assert rec(repo, run, proposal)["id"] == "L0002"
+    # 同じ (screen_id, lead_key, change_category, period_from, period_to) の候補は作らない
+    k_from2 = rec(repo, run, calc_sum("研修会場借上げ", 2024))["id"]
+    k_to2 = rec(repo, run, calc_sum("研修会場借上げ", 2025))["id"]
+    fails(repo, run, {**proposal, "calc_from": k_from2, "calc_to": k_to2}, "E_SCHEMA")
+
+
+def test_hypothesis_sets_investigating_and_limits_leads(repo: Path, run: str, lead: dict) -> None:
+    """6.2 hypothesis：最初の登録で investigating にする。調べる候補が3件を超えると E_LIMIT_LEADS。"""
+    hyp = {
+        "kind": "hypothesis",
+        "text": "業務の範囲が広がった可能性がある。",
+        "withdraw_if": "仕様書で範囲が同じと分かった場合。",
+    }
+    rec(repo, run, {**hyp, "lead_id": lead["lead"]})
+    rec(repo, run, {**hyp, "lead_id": lead["lead"], "result": "kept"})  # 結果を書く（上書き）
+    others = [
+        make_lead(repo, run, g, f"q-{i}.sql")["lead"]
+        for i, g in enumerate(("研修会場借上げ", "庁舎警備業務", "統計データ作成業務"), start=2)
+    ]
+    rec(repo, run, {**hyp, "lead_id": others[0]})
+    rec(repo, run, {**hyp, "lead_id": others[1]})
+    fails(repo, run, {**hyp, "lead_id": others[2]}, "E_LIMIT_LEADS")
+    conn = ledger_of(repo, run)
+    states = dict(conn.execute("SELECT lead_id, state FROM leads"))
+    assert states == {
+        "L0001": "investigating",
+        "L0002": "investigating",
+        "L0003": "investigating",
+        "L0004": "candidate",
+    }
+    row = conn.execute(
+        "SELECT hypothesis_result, withdraw_if FROM leads WHERE lead_id = 'L0001'"
+    ).fetchone()
+    assert row["hypothesis_result"] == "kept"
+
+
+def test_explanation_rejects_t6a_t6b(repo: Path, run: str, lead: dict) -> None:
+    """6.2 explanation：T6a・T6b は CLI が照合の計算から登録するので、提案では受け付けない。"""
+    for t in ("T6a", "T6b"):
+        fails(
+            repo,
+            run,
+            {
+                "kind": "explanation",
+                "lead_id": lead["lead"],
+                "type": t,
+                "judgment": "refute",
+                "evidence": [],
+                "searched": "照合の結果",
+            },
+            "E_SELF_DECLARED",
+        )
+
+
+def test_explanation_support_needs_scope(repo: Path, run: str, lead: dict) -> None:
+    """6.2 explanation：支持の T1・T3・T4 は scope と、recalc_calc_id か no_quant_reason が要る。上書きできる。"""
+    base = {
+        "kind": "explanation",
+        "lead_id": lead["lead"],
+        "type": "T3",
+        "judgment": "support",
+        "evidence": [],
+        "searched": "令和6・7年度の仕様書",
+    }
+    fails(repo, run, base, "E_SCHEMA")
+    fails(repo, run, {**base, "scope": "part"}, "E_SCHEMA")
+    rec(repo, run, {**base, "scope": "part", "no_quant_reason": "数量の記載がない。"})
+    rec(repo, run, {**base, "judgment": "unknown"})
+    conn = ledger_of(repo, run)
+    row = conn.execute("SELECT * FROM explanations").fetchone()
+    assert (row["type"], row["judgment"], row["context"]) == ("T3", "unknown", "main_session")
+    before = [
+        json.loads(e[0])
+        for e in conn.execute(
+            "SELECT before_json FROM events WHERE kind = 'record' AND before_json IS NOT NULL"
+        )
+    ]
+    assert before[-1]["judgment"] == "support"  # 前の値は events に残る
+
+
+def test_match_question_conclusion_withdraw(repo: Path, run: str, lead: dict) -> None:
+    """6.2：match（対応表）、question（questions_json に足す）、conclusion（結論の案）、withdraw。"""
+    m = rec(
+        repo,
+        run,
+        {
+            "kind": "match",
+            "lead_id": lead["lead"],
+            "left": ["S001:000012"],
+            "right": ["S005:000007"],
+            "relation": "1:1",
+            "reason": "同じ翻訳業務。",
+            "evidence": [],
+            "status": "confirmed",
+        },
+    )
+    assert m["id"] == "M001"
+    q = {
+        "kind": "question",
+        "lead_id": lead["lead"],
+        "to": "所管部署",
+        "question": "翻訳の量は変わったか。",
+        "documents": "令和6・7年度の仕様書",
+        "decision_impact": "量の変化で説明できれば説明の状況を改める。",
+    }
+    rec(repo, run, q)
+    rec(repo, run, {**q, "question": "単価は変わったか。", "foia": "契約書"})
+    fails(
+        repo,
+        run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "change",
+            "comparison_state": "comparable",
+        },
+        "E_SCHEMA",
+    )  # 説明の状況がない
+    fails(
+        repo,
+        run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+        },
+        "E_SCHEMA",
+    )  # 保留の理由がない
+    rec(
+        repo,
+        run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+            "reopen_condition": "仕様書が公表された場合。",
+            "comparison": {"unit": "円（単価契約を含む）"},
+        },
+    )
+    conn = ledger_of(repo, run)
+    row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead["lead"],)).fetchone()
+    assert [x["question"] for x in json.loads(row["questions_json"])] == [
+        "翻訳の量は変わったか。",
+        "単価は変わったか。",
+    ]
+    assert (row["proposed_outcome"], row["hold_reason"], row["state"]) == (
+        "hold",
+        "comparison",
+        "candidate",
+    )
+    assert json.loads(row["comparison_json"])["unit"] == "円（単価契約を含む）"
+    assert json.loads(row["comparison_json"])["row_meaning"] == "1件の契約"
+
+    c = rec(
+        repo,
+        run,
+        {
+            "kind": "claim",
+            "lead_id": lead["lead"],
+            "type": "observation",
+            "text": f"令和7年度は{{calc:{lead['to']}}}である。",
+            "calc_ids": [lead["to"]],
+            "evidence": [],
+        },
+    )["id"]
+    rec(repo, run, {"kind": "withdraw", "target": lead["to"], "reason": "条件を誤った。"})
+    assert (
+        conn.execute("SELECT state FROM claims WHERE claim_id = ?", (c,)).fetchone()[0] == "stale"
+    )
+    assert (
+        conn.execute("SELECT state FROM computations WHERE calc_id = ?", (lead["to"],)).fetchone()[
+            0
+        ]
+        == "withdrawn"
+    )
+    rec(repo, run, {"kind": "withdraw", "target": "M001", "reason": "対応を誤った。"})
+    assert conn.execute("SELECT status FROM procurement_matches").fetchone()[0] == "withdrawn"
+    fails(repo, run, {"kind": "withdraw", "target": "K0001", "reason": "照合の計算。"}, "E_SCHEMA")
+    fails(repo, run, {"kind": "withdraw", "target": "M001", "reason": "二度目。"}, "E_SCHEMA")
+
+
+def test_doc_value_and_derive_by_record(repo: Path, run: str, lead: dict) -> None:
+    """CA-2・CA-3（record 経由）：文書値は引用を照合し、数値の並びと値を照らす。派生計算は計算IDだけ。"""
+    sid = add_evidence(repo, run, ["配送予定数量は年間1,200件とする。\n"])
+    dv = {
+        "kind": "doc_value",
+        "lead_id": lead["lead"],
+        "source_id": sid,
+        "position": {"page": 1},
+        "quote": "配送予定数量は年間1,200件とする。",
+        "label": "仕様書の年間配送数量",
+        "unit": "件",
+    }
+    fails(repo, run, {**dv, "value": "200"}, "E_DOC_VALUE_MISMATCH")
+    fails(
+        repo,
+        run,
+        {**dv, "quote": "配送予定数量は年間1,300件とする。", "value": "1300"},
+        "E_QUOTE_NOT_FOUND",
+    )
+    k = rec(repo, run, {**dv, "value": "1200"})
+    assert k["value"] == "1200"
+    d = rec(
+        repo,
+        run,
+        {
+            "kind": "derive",
+            "lead_id": lead["lead"],
+            "op": "rate",
+            "args": [lead["to"], lead["from"]],
+            "label": "前年度からの増減率",
+            "unit": "比率",
+        },
+    )
+    assert d["value"] == "0.1538461538461538461538461538"
+    fails(
+        repo,
+        run,
+        {"kind": "derive", "op": "diff", "args": [lead["to"], 650000], "label": "差", "unit": "円"},
+        "E_BAD_EXPR",
+    )
+
+
+# ---------------------------------------------------------------------------
+# CP-1（登録まで）：係数の提案
+# ---------------------------------------------------------------------------
+
+
+def coefficient(lead_id: str, **over) -> dict:
+    return {
+        "kind": "coefficient",
+        "lead_id": lead_id,
+        "key": "tax_basis",
+        "value": "1.1",
+        "meaning": "税抜きの額を税込みに換算する係数",
+        "why_needed": "令和6年度の公表は税抜き、令和7年度は税込みと注記されており、そのままでは比べられない",
+        "apply_to": "令和6年度の合計に掛けて、令和7年度の合計と比べる",
+        "basis": [{"file": "playbook", "locator": "C900", "quote": "②契約金額を税込か確認"}],
+        "status": "proposed",
+        **over,
+    }
+
+
+def test_cp1_coefficient_is_recorded_not_used(repo: Path, run: str, lead: dict) -> None:
+    """CP-1：coefficient を登録できる。同じ key は上書きし、前の値は events に残る。計算は作らない。"""
+    conn = ledger_of(repo, run)
+    n_calcs = conn.execute("SELECT COUNT(*) FROM computations").fetchone()[0]
+    rec(repo, run, coefficient(lead["lead"]))
+    fails(
+        repo, run, coefficient(lead["lead"], status="accepted"), "E_SCHEMA"
+    )  # 記者の判断の要約がない
+    rec(
+        repo,
+        run,
+        coefficient(
+            lead["lead"],
+            status="declined",
+            reporter_note="記者は税込みの注記を確かめ、不要と判断した。",
+        ),
+    )
+    coefs = json.loads(
+        conn.execute(
+            "SELECT coefficients_json FROM leads WHERE lead_id = ?", (lead["lead"],)
+        ).fetchone()[0]
+    )
+    assert [(c["key"], c["status"], c["value"]) for c in coefs] == [
+        ("tax_basis", "declined", "1.1")
+    ]
+    befores = [
+        json.loads(r[0])
+        for r in conn.execute(
+            "SELECT before_json FROM events WHERE kind = 'record' AND before_json IS NOT NULL"
+        )
+    ]
+    assert befores[-1]["status"] == "proposed"
+    assert conn.execute("SELECT COUNT(*) FROM computations").fetchone()[0] == n_calcs
+    # 係数は計算の引数にできない（計算ID以外の引数）
+    fails(
+        repo,
+        run,
+        {
+            "kind": "derive",
+            "op": "product",
+            "args": [lead["from"], "tax_basis"],
+            "label": "換算",
+            "unit": "円",
+        },
+        "E_BAD_EXPR",
+    )
+
+
+def test_cp1_knowledge_quote_must_exist(repo: Path, run: str, lead: dict) -> None:
+    """CP-1：知識ファイルにない引用の手がかりは E_QUOTE_NOT_FOUND。手がかりなしは空の配列。"""
+    bad = coefficient(
+        lead["lead"], basis=[{"file": "playbook", "locator": "C900", "quote": "税抜きで比べる"}]
+    )
+    fails(repo, run, bad, "E_QUOTE_NOT_FOUND")
+    rec(
+        repo,
+        run,
+        coefficient(lead["lead"], basis=[], why_needed="手がかりはないが、税込みかが分からない"),
+    )
+
+
+def test_cp1_why_needed_raw_number_is_e_v7(repo: Path, run: str, lead: dict) -> None:
+    """CP-1：why_needed・apply_to・reporter_note に生の数値があれば E_V7（係数の値は value にだけ書く）。"""
+    fails(repo, run, coefficient(lead["lead"], why_needed="税率10%の差がある"), "E_V7")
+    fails(repo, run, coefficient(lead["lead"], apply_to="1.1を掛ける"), "E_V7")
+    fails(repo, run, coefficient(lead["lead"], value="1.1倍"), "E_SCHEMA")

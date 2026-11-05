@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import shutil
 import sqlite3
 import string
 from dataclasses import dataclass, field
@@ -27,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-from kizashi import fetcher, ledger, paths, quality, reconcile, versions
+from kizashi import fetcher, inbox, ledger, paths, quality, reconcile, versions
 from kizashi.adapters import FAMILIES, Adapter, load_adapter
 from kizashi.adapters.cao_procurement import SCOPE_OPS
 from kizashi.errors import KizashiError
@@ -549,13 +548,7 @@ def _finish(ctx: RunContext, state: str, stop_reason: dict | None) -> None:
 
 
 def _accept_config(ctx: RunContext, config_path: Path) -> str:
-    accepted = paths.run_dir(ctx.root, ctx.run_id) / "accepted"
-    accepted.mkdir(exist_ok=True)
-    paths.ensure_in_data(ctx.root, accepted)
-    number = len(list(accepted.glob("*.json"))) + 1
-    target = accepted / f"{number:04d}-run_config.json"
-    shutil.copy2(config_path, target)
-    config_path.unlink()
+    target = inbox.accept(ctx.root, ctx.run_id, config_path, "run_config")
     return target.relative_to(ctx.root).as_posix()
 
 

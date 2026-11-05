@@ -13,9 +13,10 @@ import re
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 from kizashi import normalize as nz
-from kizashi import readers
+from kizashi import paths, readers
 from kizashi.adapters import Adapter, FileSpec
 from kizashi.errors import KizashiError
 from kizashi.hashing import canonical_json, sha256_text
@@ -39,6 +40,24 @@ IMPORT_FIELDS = (
     "reason_raw",
     "amount_raw",
 )
+
+# 基礎集計に使える表と列（アダプタ仕様8章の許可リスト）。合計は amount_yen だけ。条件に使える列。
+# record_status = 'adopted' は calc.py が必ず加える（実装仕様7.1）ので、条件には書かせない。
+CALC_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
+    "procurement_contracts": {
+        "sum": ("amount_yen",),
+        "filter": (
+            "fiscal_year",
+            "method_family",
+            "group_key",
+            "unit_price",
+            "reason_category",
+            "corp_number_state",
+            "dup_group",
+            "record_id",
+        ),
+    },
+}
 
 # ---------------------------------------------------------------------------
 # 4.3 契約担当官のセル
@@ -75,6 +94,45 @@ def split_officers(cell: str | None) -> tuple[list[str | None], int]:
         else:
             units.append(None)
     return units, len(matches)
+
+
+def officer_names(cell: str | None) -> list[tuple[str, ...]]:
+    """担当官のセルから、4.3 の規則で捨てる氏名の語を返す（V7 と公開の検査の氏名の一覧。保存しない）。
+
+    役職の後の語が3つ以上なら最後の2語（姓, 名）、2つなら最後の1語（分けられない氏名）。
+    """
+    text = cell or ""
+    matches = list(ROLE_RE.finditer(text))
+    names: list[tuple[str, ...]] = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        words = [w for w in _WORDS_RE.split(text[match.end() : end]) if w]
+        if len(words) >= 3:
+            names.append((words[-2], words[-1]))
+        elif len(words) == 2:
+            names.append((words[-1],))
+    return names
+
+
+def name_list(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[tuple[str, ...]]:
+    """実行の取得済みの CSV の原本（担当官の列）から、氏名の一覧を作る。検査のたびに作り、保存しない
+    （実装仕様9章の V7_PERSONAL_NAME）。"""
+    rows = conn.execute(
+        "SELECT logical_key, sha256 FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
+        " AND logical_key LIKE '%|csv' ORDER BY source_id"
+    ).fetchall()
+    names: set[tuple[str, ...]] = set()
+    for logical_key, sha in rows:
+        _, year, family, _ = logical_key.split("|")
+        spec = adapter.file_spec(int(year), family)
+        index = None if spec is None else spec.index_of(OFFICER_KEY)
+        if spec is None or index is None:
+            continue
+        table = readers.read_rows(paths.raw_dir(root) / f"{sha}.csv", spec.encoding)
+        for _, cells in table.records:
+            if index < len(cells):
+                names.update(officer_names(cells[index]))
+    return sorted(names)
 
 
 # ---------------------------------------------------------------------------
