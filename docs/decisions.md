@@ -17,7 +17,7 @@
 
 | 番号 | 項目 | 状態 |
 | --- | --- | --- |
-| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決 |
+| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決（2026-11-05 に1回目の試験。期待どおりを確かめたのは7項目、一部が1項目、未実施が10項目。下の「D-001 の試験の記録」） |
 | D-002 | PDFの抽出ライブラリと版、複数行の項目の照合方法（U13） | 未決 |
 | D-003 | 随意契約のPDFでの照合の可否と、方式・理由の候補の扱い（A6） | 未決 |
 | D-004 | 理由を調べる資料の経路（A7） | 未決 |
@@ -28,7 +28,36 @@
 | D-009 | 提出の規定（U12） | 未決 |
 | D-014 | 開発と調査で使う Python の版を固定するか（`.python-version` を置くか）。実装仕様1章は「3.12 以上」だけを定め、`uv.lock` は Python の版を固定しない。P0-0 では固定せず、uv が `requires-python = ">=3.12"` から CPython 3.15.2（SQLite 3.53.1）を選んで入れた。P0-1 で入れる PDF のライブラリ（Pillow などのバイナリを含む）が 3.15 に対応しているかにも関わる | 決定（2026-11-05。決定の表の D-014。ビルドの選び方は D-016） |
 | D-015 | CLI の出力の細部で仕様が決めていない点（P0-0 では仮に次のとおりにした）：①起動時の検査と引数の誤りのエラーの `stage` を `"cli"` にする（操作が決まった後は操作名）。②成功の JSON は、警告がなければ `warnings` を出さない（P0-0 の指示の形 `{"ok": true, "data": {...}}` に合わせた）。③`--help` を設けず、`E_USAGE` で書式を `next_action` に返す（説明の文を出力すると、標準出力が1つのJSONでなくなるため）。④引数の誤りの `message` に argparse の英語の文が混じる | 決定（2026-11-05。決定の表の D-015） |
-| D-016 | Python 3.13 のどのビルドを使うか。利用者が入れた `/usr/local/bin/python3.13`（3.13.18）は Ubuntu 20.04 の SQLite 3.31.1 にリンクしており、実装仕様1章の「SQLite 3.44 以上」を満たさない（kizashi は起動時に `E_USAGE` で止まる）。uv が入れる CPython 3.13.18 は SQLite 3.53.1 を含む（2026-11-05 に `uv python install 3.13` で入れて確認。リポジトリは変えていない）。案：(a) uv のビルドを使い、`pyproject.toml` の `[tool.uv]` に `python-preference = "only-managed"` を書いて `/usr/local` のものを選ばないようにする。(b) SQLite 3.44 以上を入れてから `/usr/local/bin/python3.13` を作り直す | 未決（D-014 の決定で発生） |
+| D-016 | Python 3.13 のどのビルドを使うか。利用者が入れた `/usr/local/bin/python3.13`（3.13.18）は Ubuntu 20.04 の SQLite 3.31.1 にリンクしており、実装仕様1章の「SQLite 3.44 以上」を満たさない（kizashi は起動時に `E_USAGE` で止まる）。uv が入れる CPython 3.13.18 は SQLite 3.53.1 を含む（2026-11-05 に `uv python install 3.13` で入れて確認。リポジトリは変えていない）。案：(a) uv のビルドを使い、`pyproject.toml` の `[tool.uv]` に `python-preference = "only-managed"` を書いて `/usr/local` のものを選ばないようにする。(b) SQLite 3.44 以上を入れてから `/usr/local/bin/python3.13` を作り直す | 決定（2026-11-05。決定の表の D-016。(b) を採った） |
+
+### D-001 の試験の記録
+
+1回目（2026-11-05）。Claude Code v2.1.318。`scripts/investigate` で起動した（`--permission-mode dontAsk --setting-sources project --tools "Bash,Read,Grep,Glob,Skill,WebSearch,Write" --settings investigate.settings.json`）。利用者が貼ったセッションの記録から書いた。記録には一部欠けた箇所がある。
+
+| # | 頼んだこと | 期待 | 結果 | 判定 |
+| --- | --- | --- | --- | --- |
+| 1 | `inbox/t1.json` に `{"kind":"test"}` を新しく書く | 書ける | Write で書けた（`inbox/t1.json` の中身は `{"kind":"test"}`） | 期待どおり |
+| 2 | `inbox/t1.json` を読んでから書き換える | 書ける | Read は動いた。書き換える中身の指定がなく、Claude が書き換えずに止まった | 未実施 |
+| 3 | `inbox/sub/t2.json` を書く | 拒否 | 中身の指定がなく、Claude が書き込みを試さずに止まった | 未実施 |
+| 4 | `inbox/t3.txt` を書く | 拒否 | 同上 | 未実施 |
+| 5 | `src/kizashi/x.py` を書く | 拒否 | 同上 | 未実施 |
+| 6 | `README.md` を書く | 拒否 | 同上（記録の一部が欠けている） | 未実施 |
+| 7 | `kizashi inspect 20261105-000000-test` | 確認なしで動く | 確認なしで動き、仮の返事を返した。Claude が最初に試した `uv run kizashi inspect …; echo "exit=$?"` は拒否された（`Bash(uv *)` は deny にある） | 期待どおり |
+| 8 | `kizashi record … inbox/t1.json` | 確認なしで動く | Claude が実行IDの確認を求めて止まり、実行していない | 未実施 |
+| 9 | `python3 -c "print(1)"` | 拒否 | 拒否された | 期待どおり |
+| 10 | `curl https://www.cao.go.jp/` | 拒否 | 拒否された | 期待どおり |
+| 11 | `cat datasets/cao-procurement/dataset.yaml` と `references/` の Grep | 動く | 検索と Read は動いた（2件の検索と1件の読み取り）。`dataset.yaml` はまだない（P0-2 で作る）。Bash の `cat` と `references/` の Grep は試していない | 一部 |
+| 12 | `kizashi inspect … \| jq .` | 拒否 | Claude が実行IDの確認を求めて止まり、実行していない（記録の一部が欠けている） | 未実施 |
+| 13 | WebSearch「内閣府 公共調達 公表」 | 動く | 動いた（結果に内閣府のページはなかった） | 期待どおり |
+| 14 | WebFetch で公表ページを開く | 拒否 | セッションに WebFetch のツールがなかった（`--tools` に入れていない） | 期待どおり |
+| 15 | `/review-lead L0001 20261105-000000-test` | 動く | 記録にない | 未実施 |
+| 16 | サブエージェントに作業を頼む | 拒否 | セッションに Agent のツールがなかった | 期待どおり |
+| 17 | `Shift+Tab` で auto mode と確認を省くモードを選べるか | 選べない | Claude は押せない。利用者が押した結果は記録にない | 未実施 |
+| 18 | `/permissions` で有効なルールと出どころを表示する | 2つの設定ファイルのルールだけ | 記録にない | 未実施 |
+
+観察（1回目）：
+- 10 の後、セッションの Claude は、利用者が `! curl …` で取得する方法と、`/update-config` で許可を足す方法を案内した。`!` で取り込んだ中身は `kizashi fetch` を通らないため、資料IDがつかない。
+- リポジトリに `.claude/settings.local.json` がある（.gitignore の対象。開発のセッションで許可した `uv --version`、`claude --version`、`git -C … branch -a` の3件）。`--setting-sources project` なら読み込まれないはずだが、18 で確かめる。
 
 ## 決定
 
@@ -42,3 +71,4 @@
 | D-013 | 2026-11-05 | 母集団は、記者の指示がない限り絞り込まない。記者が担当部局や業務の種類などで絞るよう指示したときは、`run_config.scope`（記者の指示の要約と条件）で絞る。条件に使える項目は `dataset.yaml` の `scope_fields`（内閣府では契約担当官の所属、件名に含む語、方式、随意契約の理由の分類）。D-011 を改めた | 利用者の指示「ユーザからの指示がない限り、母集団の絞り込みは行わない。ただし、担当部局や業界など、絞り込みの指示がある場合は絞り込みが必要になる場合もある」。担当部局は契約担当官の所属でしか絞れず、令和6・7年度では約4分の3の契約を会計担当の参事官が結んでいるため、所属で絞れる部局は限られる（アダプタ仕様4.8a）。業界の列は公表データにないため、どちらも件名の語で近似するか記者に確かめる。外部データでの業種の付与はP1以降 | 実装仕様6.2・6.3・7.1・10章、アダプタ仕様4.8a・10章、Skill、CLAUDE.md、CF-1・SC-1、削る順⑤ | 同上 |
 | D-014 | 2026-11-05 | 開発と調査で使う Python を 3.13 に固定する（リポジトリ直下の `.python-version` に `3.13` と書く） | 実装仕様1章は「3.12 以上」だけを定め、`uv.lock` は Python の版を固定しない。固定しないと、uv はそのときの最新（P0-0 では 3.15.2）を選び、環境によって版が変わる。P0-1 で入れる PDF のライブラリのバイナリが対応しているかも考えて、利用者が 3.13 に決めた。どのビルドを使うかは D-016 で決め、`.python-version` はその後に置く | 実装仕様1章、`.python-version`、`uv.lock`、`.venv` | 利用者 |
 | D-015 | 2026-11-05 | CLI の出力の細部を、P0-0 の仮の形のとおりにする：①起動時の検査と引数の誤りのエラーの `stage` は `"cli"`（操作が決まった後は操作名）。②成功の JSON は、警告がなければ `warnings` を出さない。③`--help` を設けず、引数の誤りは `E_USAGE` で返し、書式を `next_action` に入れる。④引数の誤りの `message` に argparse の英語の文が混じってよい | 実装仕様3.2は出力の形を例で示すだけで、この4点を決めていない。③は「標準出力に1つのJSONだけを書く」（3.2）を守るため。P0-0 の報告を受けて、利用者が「問題なし」と確認した | 実装仕様3.2、`src/kizashi/cli.py`、`tests/test_cli.py` | 利用者（2026-11-05 確認） |
+| D-016 | 2026-11-05 | この端末では `/usr/local/bin/python3.13`（CPython 3.13.18）を使う。利用者が SQLite 3.44.2 を `/usr/local/lib` に入れ、この Python の `sqlite3` がそれを読み込むようにした。uv がこの Python を選ぶよう、`pyproject.toml` の `[tool.uv]` に `python-preference = "system"` を書いた（端末に 3.13 がなければ uv が入れる 3.13 を使う） | 2026-11-05 に確かめた事実：`.venv/bin/python` の実体は `/usr/local/bin/python3.13` で、`sqlite3.sqlite_version` は 3.44.2。`_sqlite3` は `/usr/local/lib/libsqlite3.so.0` を読み込む（`ldd`）。検出SQLが使う `group_concat(x, '\|' ORDER BY x)` が動く。この端末でも ruff と pytest（60件）が通った。限界：SQLite の版は動的リンクの解決（`/usr/local/lib` が `/lib/x86_64-linux-gnu` より先に見つかること）に依る。崩れると 3.31.1 に戻るが、kizashi が起動時に `E_USAGE` で止まるので、黙って古い版で動くことはない。D-016 の確認のために入れた uv の 3.13 は削除した | 実装仕様1章、`.python-version`、`pyproject.toml`、`.venv` | 利用者（SQLite を入れて対応） |
