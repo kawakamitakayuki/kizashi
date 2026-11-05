@@ -40,6 +40,7 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 | `independent_reader.py` | 別経路の読み込み処理（見出しの文字列で列を特定する）。T6aの照合とV3(b)で共有する | `read_by_headers(path, expected)` |
 | `normalize.py` | NFKC、空白の除去、和暦の日付、金額、法人番号、件名の正規化 | `wareki_to_iso("R6.4.1")` |
 | `quality.py` | 品質検査（アダプタ仕様の Q 項目）と品質レポート | `run_quality(conn, run)` |
+| `runner.py` | `run` の新しい実行：`run_config` の検査、実行IDの発行と台帳の作成、工程（plan〜detect）の順序とトランザクション、`runs.stages_json`・状態・`stop_reason` の記録、設定ファイルの `accepted/` への移動（D-029） | `start_run(root, domain, config_arg)`, `validate_run_config(config, adapter)` |
 | `pdftext.py` | 追加資料のPDFのページ別テキストの抽出。公表一覧のPDFの表のセルの切り出し（照合に使う列だけを残し、担当官の列などの文字は捨てる）、行の対応、項目の照合（アダプタ仕様7章。D-002） | `extract_pages(pdf)`, `extract_cells(pdf, spec)`, `locate_row(...)`, `match_field(...)` |
 | `reconcile.py` | 取り込みの照合（T6a）と原本照合（T6b）を `computations`（種類 `reconcile`）に記録 | `reconcile_import(...)`, `reconcile_source(...)` |
 | `detect.py` | 検出SQLの実行、候補の登録、自動の基礎集計、同じ区分の件数、年度の系列 | `run_screens(conn, run)` |

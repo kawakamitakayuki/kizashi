@@ -124,7 +124,7 @@ def test_quality_report_is_written_without_names(repo: Path, completed: dict) ->
     assert "24,520,000円" in report
     for word in NAME_WORDS:
         assert word not in report, word
-    # 所属の一覧（D-006 の確認まで書かない）
+    # 所属の一覧は書かない（異なり数だけ。D-028）
     assert "食品安全委員会事務局総務課長" not in report
     assert "所属の異なり数 5" in report
 
