@@ -29,7 +29,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 7：D-038（系列を分野の系列のSQLで数え、合計できる行のない年度を0円にしない。件数の意味。探索の候補と結論
 #    の母集団に絞り込みを残す。再開で原本の SHA-256 を照らす）と、資料で符号でない「-」で始まる引用の拒否。
 #    run・record の結果が変わる。
-RULES_VERSION = "7"
+# 8：D-040（実行設定の全文を氏名の検査の後に保存し、検査の前に止まった実行は inbox/ の設定で再開する。探索SQL
+#    の結果・列名・SQLite のエラーの文にも氏名の検査）。run・query の結果が変わる。
+RULES_VERSION = "8"
 
 
 def code_version() -> str:

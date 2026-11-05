@@ -62,6 +62,10 @@ CONFIG_REQUIRED = frozenset(
     {"kind", "domain", "compare_years", "series_years", "question", "model"}
 )
 CONFIG_OPTIONAL = frozenset({"scope"})
+# 氏名の検査（normalize の最初）の前に台帳に書く設定の項目（検査済みの分野と年度だけ。D-040①）。question・
+# scope・model などの文字列は、検査を通ってから全文を書く。
+CONFIG_BEFORE_NAME_CHECK = ("kind", "domain", "compare_years", "series_years")
+PENDING = "pending"
 _RUN_ID_CHARS = string.ascii_lowercase + string.digits
 
 
@@ -534,6 +538,47 @@ def _fetch_datasets(
             _save_budget(ctx)
 
 
+def config_sha256(config: object) -> str:
+    """設定の正規化JSON（キーの順と空白を問わず、数値の型を区別する）の SHA-256。"""
+    return sha256_text(canonical_json(config))
+
+
+def pending_config(config: dict) -> dict:
+    """氏名の検査の前に台帳に書く設定：検査済みの分野・年度と、全文のハッシュだけ（D-040①）。"""
+    return {
+        **{k: config[k] for k in CONFIG_BEFORE_NAME_CHECK},
+        "name_check": PENDING,
+        "config_sha256": config_sha256(config),
+    }
+
+
+def is_pending(stored: dict) -> bool:
+    """台帳の設定が、氏名の検査の前のもの（全文を保存していない）か。"""
+    return stored.get("name_check") == PENDING
+
+
+def _save_checked_config(ctx: RunContext) -> None:
+    """氏名の検査を通った設定の全文を台帳に書き、検査済みを events に残す（同じトランザクション。D-040①）。"""
+    row = ctx.conn.execute(
+        "SELECT config_json FROM runs WHERE run_id = ?", (ctx.run_id,)
+    ).fetchone()
+    if not is_pending(json.loads(row[0])):
+        return  # すでに保存した（検査の後に止まった実行の再開）
+    with ledger.transaction(ctx.conn):
+        _update_run(ctx, config_json=canonical_json(ctx.config))
+        ledger.add_event(
+            ctx.conn,
+            ctx.run_id,
+            "check",
+            after={
+                "target": "run_config",
+                "check": "V7_PERSONAL_NAME",
+                "result": "passed",
+                "config_sha256": config_sha256(ctx.config),
+            },
+        )
+
+
 def _check_config_names(ctx: RunContext) -> None:
     """実行設定の文字列（question、scope の指示と条件の値など）に氏名の検査を当てる（D-037）。
 
@@ -560,6 +605,7 @@ def _normalize(ctx: RunContext) -> None:
     record_counts: dict[str, dict] = {}
     try:
         _check_config_names(ctx)
+        _save_checked_config(ctx)
         with ledger.transaction(ctx.conn):
             for source_id, logical_key, sha in sources:
                 _, year, family, _ = logical_key.split("|")
@@ -843,7 +889,7 @@ def start_run(
                 (
                     run_id,
                     domain,
-                    canonical_json(config),
+                    canonical_json(pending_config(config)),  # 全文は氏名の検査の後（D-040①）
                     os.environ.get("KIZASHI_PROFILE"),
                     canonical_json(versions.rule_versions(root, domain)),
                     canonical_json(versions.knowledge_hashes(root)),
@@ -925,16 +971,51 @@ def _same_config(path: Path, config: dict) -> bool:
         return False
 
 
+def _config_file(conn: sqlite3.Connection, run_id: str) -> str | None:
+    """開始時の設定ファイルの場所（最初の state_change の events の config_file）。"""
+    row = conn.execute(
+        "SELECT after_json FROM events WHERE target_id = ? AND kind = 'state_change'"
+        " ORDER BY event_id LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    name = json.loads(row[0]).get("config_file") if row and row[0] else None
+    return name if isinstance(name, str) else None
+
+
+def _resume_config(root: Path, conn: sqlite3.Connection, run_id: str, stored: dict) -> dict:
+    """再開で使う設定。全文を保存してあれば台帳の設定（D-038⑬）。氏名の検査の前に止まった実行（全文を保存して
+    いない）は、inbox/ の開始時の設定ファイルを読み、正規化JSONのハッシュが開始時と同じことを確かめる。ファイルが
+    なければ E_NOT_RESUMABLE、中身か数値の型が違えば E_INPUT_CHANGED（D-040①）。"""
+    if not is_pending(stored):
+        return stored
+    name = _config_file(conn, run_id)
+    try:
+        if name is None:
+            raise KizashiError("E_INBOX_PATH", "run", "設定ファイルの場所の記録がない")
+        path = paths.resolve_inbox_file(root, name, (".json",))
+    except KizashiError:
+        raise _not_resumable(
+            run_id,
+            f"氏名の検査の前に止まった実行で、開始時の設定ファイル（{name}）が inbox/ にない"
+            "（台帳には設定の全文を保存していない）",
+        ) from None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        data = None
+    if data is None or config_sha256(data) != stored.get("config_sha256"):
+        raise _input_changed(
+            run_id,
+            f"設定ファイル（{name}）の中身が開始時と違う（キーの順と空白のほかに、値か数値の型が違う）",
+        )
+    return data
+
+
 def _accept_on_resume(ctx: RunContext) -> str:
     """再開で成功したときの設定ファイルの扱い。開始時の inbox/ のファイルが同じ中身で残っていれば、accepted/
     に写して inbox/ から消す。なければ（または中身が違えば）、台帳の設定を accepted/ に書き、inbox/ は触らない。"""
-    row = ctx.conn.execute(
-        "SELECT after_json FROM events WHERE target_id = ? AND kind = 'state_change'"
-        " ORDER BY event_id LIMIT 1",
-        (ctx.run_id,),
-    ).fetchone()
-    name = json.loads(row[0]).get("config_file") if row and row[0] else None
-    if isinstance(name, str):
+    name = _config_file(ctx.conn, ctx.run_id)
+    if name is not None:
         try:
             path = paths.resolve_inbox_file(ctx.root, name, (".json",))
         except KizashiError:
@@ -972,7 +1053,7 @@ def resume_run(root: Path, run_id: str, *, transport: httpx.BaseTransport | None
             root=root,
             run_id=run_id,
             adapter=adapter,
-            config=json.loads(run["config_json"]),
+            config=_resume_config(root, conn, run_id, json.loads(run["config_json"])),
             conn=conn,
             budget=fetcher.Budget.from_json(json.loads(run["limits_json"])),
             stages=json.loads(run["stages_json"]),

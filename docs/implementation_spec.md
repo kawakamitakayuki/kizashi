@@ -162,7 +162,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 | `E_DOC_VALUE_MISMATCH` | 1 | 文書値が引用の数値と合わない |
 | `E_BAD_EXPR`・`E_DIV_ZERO` | 1 | 派生計算の誤り（知らない演算、引数の数、計算ID以外の引数、同じ計算IDの重複）、0での割り算 |
 | `E_NOT_ALLOWED_COLUMN` | 1 | 基礎集計に許可していない表・列 |
-| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す）。`query` の SQL と `run` の実行設定の氏名の検査の不合格（D-037） |
+| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す）。`query` の SQL・結果・SQLiteのエラーの文と、`run` の実行設定の氏名の検査の不合格（D-037・D-040） |
 | `E_LIMIT_LEADS`・`E_LIMIT_EVIDENCE`・`E_LIMIT_HTTP`・`E_LIMIT_BYTES` | 1 | 探索上限への到達（設計書4.3）。保留にする |
 | `E_ROUNDS_EXCEEDED` | 1 | 修正の巡回数の上限。保留以外の結論を受け付けない |
 | `E_HOST_NOT_ALLOWED`・`E_REDIRECT_NOT_ALLOWED` | 1 | 許可リスト外のホスト、許可リスト外へのリダイレクト |
@@ -187,14 +187,14 @@ kizashi run --resume <run_id>
 **新しい実行**
 
 1. 設定ファイル（6.2の `run_config`）を検査する。比べる2年度（`compare_years`。連続した2年度）と、系列として読む年度（`series_years`。比べる2年度を含む）を分けて持つ。取り込むのは `series_years` のすべて、検出は `compare_years` の組だけで行う。
-2. 実行IDを発行し、実行フォルダーと台帳を作る。`runs` に設定・版・`profile` を記録し、状態を `running` にする。
+2. 実行IDを発行し、実行フォルダーと台帳を作る。`runs` に設定・版・`profile` を記録し、状態を `running` にする。設定は、氏名の検査（`normalize` の最初）を通るまで全文を書かない。この時点の `runs.config_json` は、検査済みの `kind`・`domain`・`compare_years`・`series_years` と、`"name_check": "pending"`、設定の全文の正規化JSON（11章。キーの順と空白を問わず、数値の型を区別する）の SHA-256 `config_sha256` だけとする。`question`・`scope`・`model` などの文字列は書かない（D-040①。検査で当たった実行の台帳と WAL に氏名を残さないため）。
 3. 工程を順に行う。各工程は1つのトランザクションで確定し、`runs.stages_json` に状態（`done` / `failed`）と入力のハッシュを記録する。
 
 | 工程 | 中身 | 入力のハッシュ |
 | --- | --- | --- |
 | `plan` | `dataset.yaml` の取得元から、対象の年度の論理資料（年度×方式×形式）の一覧を作り、`sources` に予定として登録する | 設定とdataset.yaml |
 | `fetch` | 予定の資料を取得する（4.2の規則）。資料ごとに確定する。成功した資料は再開時に取り直さない | 資料の一覧 |
-| `normalize` | 最初に、実行設定の文字列（`question`、`scope` の指示と条件の値など）に V7 の氏名の検査を当て、当たれば `E_V7` で止める（氏名の一覧は取得した原本から作るので、ここで行う。D-037）。CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
+| `normalize` | 最初に、実行設定の文字列（`question`、`scope` の指示と条件の値など）に V7 の氏名の検査を当て、当たれば `E_V7` で止める（氏名の一覧は取得した原本から作るので、ここで行う。D-037）。通れば、1つのトランザクションで `runs.config_json` を設定の全文にし、検査済みを `events`（`kind='check'`、対象は実行ID、`after` に `target: run_config`・`check: V7_PERSONAL_NAME`・`result: passed`・`config_sha256`）に残す（D-040①）。CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
 | `quality` | 品質検査を行い、`quality_report.md` と `runs.counts_json` に書く。必須の検査が1つでも実行できなければ `failed` | 前の工程の出力 |
 | `reconcile_import` | 別経路の読み込み処理で読み直し、正規化した値と行ごとに比べる（T6a）。資料ごとに照合の計算を1つ登録する | 同上 |
 | `reconcile_source` | CSVの全行をPDFと照合する（T6b。アダプタ仕様7章）。資料の組ごとに照合の計算を1つ登録する | CSVとPDFのSHA-256 |
@@ -206,6 +206,15 @@ kizashi run --resume <run_id>
 **再開（`--resume`）**
 
 - 対象は、状態が `running`（強制終了で残ったもの）か、`stop_reason` が一時的な通信の失敗の `failed` だけ。`partial` と `completed` は `E_NOT_RESUMABLE`。
+- 再開で使う設定は、次のとおり決める（D-040①）。
+
+| 台帳の設定 | `inbox/` の開始時の設定ファイル（最初の `state_change` の `config_file`） | 扱い |
+| --- | --- | --- |
+| 全文の保存の前（`name_check: pending`） | あり、正規化JSONのSHA-256が `config_sha256` と同じ（キーの順と空白だけの違いは同じ） | そのファイルの設定で再開する |
+| 全文の保存の前 | ない | `E_NOT_RESUMABLE` |
+| 全文の保存の前 | 中身か数値の型（`2024` と `2024.0` など）が違う、JSONとして読めない | `E_INPUT_CHANGED` |
+| 検査済みの全文を保存した後 | 問わない | 台帳の設定で再開する（成功したときの設定ファイルの扱いは下のD-038⑬） |
+
 - 終わった工程は、入力のハッシュがいまと同じなら飛ばす。違えば `E_INPUT_CHANGED` で止め、新しい実行を求める。入力のハッシュは、記録したときと同じ関数で、いまの台帳・`dataset.yaml`・分野のSQLから計算し直す。
 - 規則の版（3.5の照合する4つ）が開始時と違えば、未実行の工程だけが残っていても `E_INPUT_CHANGED` にする（途中から違う規則で続けると `check`・`render` が `E_RULE_VERSION` になるため。D-038⑫）。
 - 取得済みの原本（`kind` が `dataset` の CSV・PDF と `index` の公表ページの HTML）が `data/raw/` にないか、中身の SHA-256 が `sources.sha256` と違えば、`E_INPUT_CHANGED`（資料IDと「ない」「SHA-256 が違う」の別を書く）。工程の入力のハッシュは台帳の SHA-256 から作るので、原本そのものをここで照らす（D-038⑫）。
@@ -264,6 +273,7 @@ kizashi query <run_id> inbox/<名前>.sql
 - SQLiteのauthorizerで、SELECT と読み取りの関数以外（INSERT、UPDATE、DELETE、CREATE、DROP、ATTACH、PRAGMA、拡張の読み込み）を拒否する。
 - 1つの文だけを実行する。`sqlite3.complete_statement` と文の区切りの検査で、複数の文を拒否する。
 - 実行の前に、SQLの全文（文字列とコメントを含む）に V7 の氏名の検査（9章）を当て、当たれば `E_V7` で拒否する。`queries/` にも `accepted/` にも保存せず、提案は `inbox/` に残す（D-037）。
+- 実行の後、`queries/` への保存・`events` の記録・結果の返却の前に、結果の列名と文字列のセルに同じ検査を当てる。SQLiteのエラーの文（`E_QUERY_REJECTED` に書く文）にも当てる。当たれば `E_V7` とし、元の結果もエラーの文も出さず、位置（`結果の3行目・2列目`、`列名の2列目`、`SQLite のエラーの文` と文字の位置）だけを書く。保存しないこと、提案を `inbox/` に残すことは本文の検査と同じ（文字列の結合などで本文の検査を通った氏名を出さないため。D-040②）。
 - 結果は最大50行。実行時間が10秒を超えたら中断する（`set_progress_handler`）。
 - SQLと結果を `queries/` に保存し、`events` に記録する。返すJSONに `"citable": false` を付ける。
 - 成功したらSQLファイルを `accepted/` に写して消す。

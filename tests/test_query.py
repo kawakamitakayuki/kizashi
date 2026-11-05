@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ledger_of
-from kizashi import limits, query
+from kizashi import check, limits, query
 from kizashi.errors import KizashiError
 
 SIXTY = (
@@ -150,3 +150,58 @@ def test_qu1_personal_name_in_sql_is_e_v7(repo: Path, synthetic_run: str, sql: s
     assert not (run_dir / "queries").exists()
     conn = ledger_of(repo, synthetic_run)
     assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'query'").fetchone()[0] == 0
+
+
+def assert_rejected_by_name(repo: Path, run_id: str, arg: str, err: KizashiError) -> None:
+    """E_V7 で拒否し、氏名を書かず、accepted/・queries/ に保存せず、成功の events もなく、提案を inbox/ に残す。"""
+    assert (err.code, err.stage) == ("E_V7", "query")
+    assert "V7_PERSONAL_NAME" in err.message
+    for word in ("架空", "太郎"):
+        assert word not in err.message and word not in err.next_action
+    run_dir = repo / "data" / "runs" / run_id
+    assert (repo / arg).is_file()
+    assert not (run_dir / "accepted" / Path(arg).name).exists()
+    assert not (run_dir / "queries").exists()
+    conn = ledger_of(repo, run_id)
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'query'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_qu1_personal_name_in_result_is_e_v7(repo: Path, synthetic_run: str) -> None:
+    """QU-1（D-040②）：SQL の本文に氏名がなくても、文字列の結合で結果のセルに氏名ができれば、保存・events・返却の
+    前に E_V7 にする。エラーには行と列の番号だけを書く。"""
+    sql = "SELECT 1 AS n, '架空' || '太郎' AS x UNION ALL SELECT 2, 'ふつうの値'"
+    arg = write_sql(repo, "q-010.sql", sql)
+    with pytest.raises(KizashiError) as info:
+        query.run_query(repo, synthetic_run, arg)
+    assert_rejected_by_name(repo, synthetic_run, arg, info.value)
+    assert "結果の1行目・2列目" in info.value.message
+
+
+def test_qu1_personal_name_in_sqlite_error_is_e_v7(repo: Path, synthetic_run: str) -> None:
+    """QU-1（D-040②）：SQLite のエラーの文に氏名ができれば（json_extract の誤ったパス）、元の文を出さずに E_V7。
+    氏名のないエラーの文は、これまでどおり E_QUERY_REJECTED で返す。"""
+    arg = write_sql(repo, "q-011.sql", "SELECT json_extract('{}', '架空' || '太郎');")
+    with pytest.raises(KizashiError) as info:
+        query.run_query(repo, synthetic_run, arg)
+    assert_rejected_by_name(repo, synthetic_run, arg, info.value)
+    assert "SQLite のエラーの文" in info.value.message
+
+    arg = write_sql(repo, "q-012.sql", "SELECT json_extract('{}', 'ふつうの' || 'パス');")
+    with pytest.raises(KizashiError) as info:
+        query.run_query(repo, synthetic_run, arg)
+    assert info.value.code == "E_QUERY_REJECTED"
+    assert "JSON path" in info.value.message  # 氏名のない元の文は出す
+
+
+def test_qu1_result_name_hits_cover_column_names() -> None:
+    """QU-1（D-040②）：列名にも氏名の検査を当てる（列名は SQL の本文から来るので、本文の検査の後の念のため）。
+    数値と BLOB の表示は検査しない。位置だけを返す。"""
+    names = check.name_variants([("架空", "太郎")])  # 空白なし・半角・全角の空白の3つの形
+    assert query.result_name_hits(["n", "架空 太郎"], [[1, "x"]], names) == [
+        "V7_PERSONAL_NAME：列名の2列目 の 1〜5 文字目"
+    ]
+    assert query.result_name_hits(["n"], [[1], [2, None, "<BLOB 3 bytes>"]], names) == []
+    assert query.result_name_hits(["a", "b"], [["x", "y"], ["z", "前に架空太郎"]], names) == [
+        "V7_PERSONAL_NAME：結果の2行目・2列目 の 3〜6 文字目"
+    ]

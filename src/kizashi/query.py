@@ -10,6 +10,9 @@
   から消す。結果は citable: false（メモの数値に使えない）。
 - 実行の前に、SQL の全文（文字列・コメントを含む）に V7 の氏名の検査を当て、当たれば E_V7 で拒否する。
   accepted/ にも queries/ にも保存しない（D-037）。
+- 実行の後、保存・events・返却の前に、結果の列名と文字列のセルにも氏名の検査を当てる。SQLite のエラーの文にも
+  当て、当たれば元の文を出さない。どちらも E_V7 で、位置（行・列の番号、文字の位置）だけを書く（文字列の結合で
+  本文の検査をすり抜けた氏名を出さないため。D-040②）。
 """
 
 from __future__ import annotations
@@ -113,8 +116,43 @@ def _cell(value: object) -> object:
     return value
 
 
-def execute_readonly(root: Path, run_id: str, sql: str) -> tuple[list[str], list[list], bool]:
-    """読み取り専用で1つの SELECT を実行し、(列名, 行, 50行で切ったか) を返す。"""
+def _name_error(what: str, hits: list[str]) -> KizashiError:
+    return KizashiError(
+        "E_V7",
+        STAGE,
+        f"{what}に氏名がある（実行の結果もエラーの文も保存せず、返さない）：" + "、".join(hits),
+        next_action="氏名が結果やエラーに出ない SQL に書き直す。台帳の列の値に氏名があるようなら、記者に伝える。",
+    )
+
+
+def _db_error(exc: Exception, names: list[str] | None) -> KizashiError:
+    """SQLite のエラーの文。氏名があれば元の文を出さずに E_V7 にする（D-040②）。"""
+    message = str(exc)
+    hits = check.name_hits({"SQLite のエラーの文": message}, names or [])
+    if hits:
+        return _name_error("探索SQL の実行のエラーの文", hits)
+    return _rejected(f"SQL を実行できない：{message}")
+
+
+def result_name_hits(columns: list, rows: list[list], names: list[str]) -> list[str]:
+    """結果の列名と文字列のセルの氏名の当たり（位置だけ。D-040②）。"""
+    fields: dict[str, str] = {}
+    for j, column in enumerate(columns, 1):
+        if isinstance(column, str):
+            fields[f"列名の{j}列目"] = column
+    for i, row in enumerate(rows, 1):
+        for j, value in enumerate(row, 1):
+            if isinstance(value, str):
+                fields[f"結果の{i}行目・{j}列目"] = value
+    return check.name_hits(fields, names)
+
+
+def execute_readonly(
+    root: Path, run_id: str, sql: str, *, names: list[str] | None = None
+) -> tuple[list[str], list[list], bool]:
+    """読み取り専用で1つの SELECT を実行し、(列名, 行, 50行で切ったか) を返す。
+
+    names（氏名の照らす形）を渡すと、SQLite のエラーの文に氏名の検査を当てる。"""
     check_single_select(sql)
     path = ledger.ledger_path(root, run_id)
     if not path.is_file():
@@ -138,9 +176,9 @@ def execute_readonly(root: Path, run_id: str, sql: str) -> tuple[list[str], list
                     f"実行時間が上限（{limits.QUERY_TIMEOUT_SEC}秒）を超えたので中断した。",
                     next_action="条件を絞るか、集計を小さくする。",
                 ) from None
-            raise _rejected(f"SQL を実行できない：{exc}") from None
+            raise _db_error(exc, names) from None
         except (sqlite3.DatabaseError, sqlite3.ProgrammingError, sqlite3.Warning) as exc:
-            raise _rejected(f"SQL を実行できない：{exc}") from None
+            raise _db_error(exc, names) from None
         columns = [d[0] for d in cursor.description or ()]
     finally:
         conn.close()
@@ -148,18 +186,22 @@ def execute_readonly(root: Path, run_id: str, sql: str) -> tuple[list[str], list
     return columns, [[_cell(v) for v in r] for r in rows[: limits.QUERY_ROW_LIMIT]], truncated
 
 
-def _check_names(root: Path, run_id: str, sql: str) -> None:
-    """SQL の全文に氏名の検査を当てる（D-037）。氏名の一覧は実行の原本から作り、保存しない。"""
+def _names(root: Path, run_id: str) -> list[str] | None:
+    """氏名の照らす形。氏名の一覧は実行の原本から作り、保存しない。実行の記録がなければ None。"""
     conn = ledger.open_ro(root, run_id)
     try:
         row = conn.execute("SELECT domain FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
-            return  # 実行の記録がなければ、execute_readonly が型付きのエラーにする
+            return None  # 実行の記録がなければ、execute_readonly が型付きのエラーにする
         adapter = load_adapter(root, row[0])
-        names = check.name_variants(adapter.module.name_list(conn, root, adapter))
+        return check.name_variants(adapter.module.name_list(conn, root, adapter))
     finally:
         conn.close()
-    hits = check.name_hits({"SQL": sql}, names)
+
+
+def _check_names(names: list[str] | None, sql: str) -> None:
+    """SQL の全文に氏名の検査を当てる（D-037）。"""
+    hits = check.name_hits({"SQL": sql}, names or [])
     if hits:
         raise KizashiError(
             "E_V7",
@@ -185,10 +227,13 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
             f"accepted/ に同じ名前の探索SQL（{name}）がある。",
             next_action="別の名前（inbox/q-<番号>.sql）で書く。",
         )
-    if accepted is not None:
-        _check_names(root, run_id, sql)
-    columns, rows, truncated = execute_readonly(root, run_id, sql)
+    names = _names(root, run_id) if accepted is not None else None
+    _check_names(names, sql)
+    columns, rows, truncated = execute_readonly(root, run_id, sql, names=names)
     assert accepted is not None
+    hits = result_name_hits(columns, rows, names or [])
+    if hits:  # 保存・events・返却の前（D-040②）
+        raise _name_error("探索SQL の結果", hits)
 
     queries = paths.run_dir(root, run_id) / "queries"
     queries.mkdir(exist_ok=True)
