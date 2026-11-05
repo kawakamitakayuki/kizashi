@@ -1,8 +1,8 @@
 """品質検査（アダプタ仕様5章の Q01〜Q16）と品質レポート（implementation_spec.md 2章の quality.py）。
 
 - 「必須」の検査が1つでも実行できない、または不合格なら、品質検査の工程は失敗（実行は failed）。
-- Q13 のファイル単位の突合は、別経路の読み込み処理（P0-3）ができるまで、正規化の経路の件数と
-  合計（Decimal）だけを記録し、状態を partial（別経路との突合は未実施）にする。
+- Q13 のファイル単位の突合は、CSV のレコードの数・台帳のレコードの数・数値の金額の行の数と合計（Decimal）を、
+  別経路の読み込み処理（independent_reader.py）と正規化の経路で比べ、違えば不合格（実行は failed）。
 - Q06 は所属の異なり数だけを書き、一覧は品質レポートに書かない（データの更新で氏名の断片が混じる
   おそれを避けるため。行ごとの所属は台帳の officer_units_json にある。D-028）。
 - 金額の合計は Decimal で行い、SQLite の SUM を使わない。
@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
+from kizashi import independent_reader, paths, readers
 from kizashi import normalize as nz
-from kizashi import paths, readers
 from kizashi.adapters import Adapter, FileSpec
 from kizashi.adapters.cao_procurement import OFFICER_KEY, format_problems
 from kizashi.errors import KizashiError
@@ -152,7 +152,7 @@ def _check_source(
             result.set(qid, "not_run", "Q01 が通らなかったため実行できない")
     else:
         _format_checks(result, table, spec, rows)
-        guarded("Q13", lambda: _q13(result, table, rows, contracts))
+        guarded("Q13", lambda: _q13(result, table, raw_path, spec, rows, contracts))
 
     guarded("Q05", lambda: _q05(result, contracts))
     guarded("Q06", lambda: _q06(result, contracts))
@@ -292,33 +292,62 @@ def _q12(result: SourceResult, contracts: list[sqlite3.Row]) -> None:
 def _q13(
     result: SourceResult,
     table: readers.CsvTable,
+    raw_path: Path,
+    spec: FileSpec,
     rows: list[sqlite3.Row],
     contracts: list[sqlite3.Row],
 ) -> None:
+    """ファイル単位の突合。正規化の経路（readers と分野の表の amount_yen）と、別経路の読み込み処理
+    （見出しの文字列で金額の列を特定し、4.4 の規則を独立に書いたもの）で、件数と金額の合計を比べる。"""
     csv_records = len(table.records)
     total = sum(
         (Decimal(str(r["amount_yen"])) for r in contracts if r["amount_yen"] is not None),
         Decimal(0),
     )
     summed = sum(1 for r in contracts if r["amount_yen"] is not None)
-    values = {
+    values: dict = {
         "csv_records": csv_records,
         "ledger_records": len(rows),
         "contracts": len(contracts),
         "amount_rows": summed,
         "amount_total": str(total),
-        "independent_reader": "not_run",
     }
     base = (
-        f"CSVのレコード{csv_records}件、台帳のレコード{len(rows)}件（分野の表{len(contracts)}件）。"
-        f"金額が数値の{summed}行の合計 {_yen(total)}円（正規化の経路。Decimal）"
+        f"正規化の経路：CSVのレコード{csv_records}件、台帳のレコード{len(rows)}件（分野の表{len(contracts)}件）、"
+        f"金額が数値の{summed}行の合計 {_yen(total)}円"
     )
-    if csv_records != len(rows):
-        result.set("Q13", "fail", base + "。CSVと台帳の件数が違う", **values)
+    try:
+        reread = independent_reader.read_by_headers(
+            raw_path,
+            spec.encoding,
+            {"amount_raw": str(spec.take["amount_raw"]["header"])},
+            stage="quality",
+        )
+    except KizashiError as exc:
+        result.set("Q13", "fail", f"{base}。別経路の読み込み処理：{exc.message}", **values)
         return
-    result.set(
-        "Q13", "partial", base + "。別経路の読み込み処理との突合は未実施（P0-3 で行う）", **values
+    amounts = [independent_reader.parse_amount_yen(v["amount_raw"]) for _, v in reread.records]
+    reader_total = sum((Decimal(a) for a in amounts if a is not None), Decimal(0))
+    values |= {
+        "reader_records": len(reread.records),
+        "reader_amount_rows": sum(1 for a in amounts if a is not None),
+        "reader_amount_total": str(reader_total),
+    }
+    base += (
+        f"。別経路の読み込み処理：CSVのレコード{values['reader_records']}件、"
+        f"金額が数値の{values['reader_amount_rows']}行の合計 {_yen(reader_total)}円（どちらも Decimal）"
     )
+    differs = []
+    if not csv_records == len(rows) == values["reader_records"]:
+        differs.append("件数")
+    if summed != values["reader_amount_rows"]:
+        differs.append("金額が数値の行の数")
+    if total != reader_total:
+        differs.append("金額の合計")
+    if differs:
+        result.set("Q13", "fail", f"{base}。{'・'.join(differs)}が違う", **values)
+    else:
+        result.set("Q13", "pass", f"{base}。一致した", **values)
 
 
 def _q14(result: SourceResult, rows: list[sqlite3.Row], contracts: list[sqlite3.Row]) -> None:
@@ -439,7 +468,7 @@ def _render(
         lines.append("必須の検査に、不合格または実行できなかったものがある（実行は failed）。")
         lines.extend(f"- {f}" for f in failures)
     else:
-        lines.append("必須の検査はすべて実行した。Q13 の別経路との突合は未実施（P0-3 で行う）。")
+        lines.append("必須の検査はすべて実行し、不合格はなかった（要確認・報告の項目は下の表）。")
     lines += [
         "",
         "## 資料",
@@ -454,7 +483,11 @@ def _render(
             f"{_STATUS_LABELS.get(s['status'], s['status'])} | {reason or '—'} |"
         )
     lines.append("")
-    lines.append("PDF の原本照合は未実施（P0-3 で行う）。")
+    lines.append(
+        "取り込みの照合（T6a）と PDF の原本照合（T6b）は、品質検査の後の工程（reconcile_import・"
+        "reconcile_source）で行い、結果を台帳の照合の計算（computations の kind='reconcile'）と"
+        " runs.counts_json に記録する。"
+    )
     for res in results:
         lines += [
             "",

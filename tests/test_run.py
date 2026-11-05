@@ -1,4 +1,4 @@
-"""kizashi run（plan〜quality）のテスト（test_plan.md の CF-1、SC-1（取り込みでの除外まで）、
+"""kizashi run（plan〜reconcile_source）のテスト（test_plan.md の CF-1、SC-1（取り込みでの除外まで）、
 FT-1・FT-3 の実行の中での扱い、完了条件：completed・failed・氏名が台帳にない）。
 
 期待値は implementation_spec.md 4.1・6.2・6.3 と、合成データから手で数えた値。
@@ -46,18 +46,25 @@ def start(repo: Path, site: Site, **config: object) -> dict:
 def test_run_completed_with_synthetic_data(
     repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """令和6・7年度の4ファイル（と PDF）で completed。工程は plan〜quality が done、照合と検出は未実行。"""
+    """令和6・7年度の4ファイル（と PDF）で completed。工程は plan〜reconcile_source が done、検出は未実行。"""
     monkeypatch.setenv("KIZASHI_PROFILE", "investigate")
     monkeypatch.setenv("KIZASHI_CLAUDE_VERSION", "2.1.318 (Claude Code)")
     result = start(repo, site)
     run_id = result["run_id"]
     assert result["state"] == "completed"
     assert result["stop_reason"] is None
-    assert list(result["stages"]) == ["plan", "fetch", "normalize", "quality"]
+    assert list(result["stages"]) == [
+        "plan",
+        "fetch",
+        "normalize",
+        "quality",
+        "reconcile_import",
+        "reconcile_source",
+    ]
     assert all(
         s["state"] == "done" and len(s["input_hash"]) == 64 for s in result["stages"].values()
     )
-    assert result["stages_not_run"] == ["reconcile_import", "reconcile_source", "detect"]
+    assert result["stages_not_run"] == ["detect"]
     assert (repo / result["quality_report"]).is_file()
 
     conn = ledger_of(repo, run_id)
@@ -70,7 +77,8 @@ def test_run_completed_with_synthetic_data(
         == hashlib.sha256((DATASET_DIR / "dataset.yaml").read_bytes()).hexdigest()
     )
     assert versions["sql_sha256"] == hashlib.sha256(b"").hexdigest()  # 検出SQLはまだない（P0-5）
-    assert (versions["rules_version"], versions["parser_version"]) == ("1", "cao-procurement/1")
+    # 照合を足し、Q13 の結果が変わったので規則の版を上げた（implementation_spec.md 3.5、共通ルール11）
+    assert (versions["rules_version"], versions["parser_version"]) == ("2", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -113,6 +121,8 @@ def test_run_completed_with_synthetic_data(
         ("stage", "fetch"),
         ("stage", "normalize"),
         ("stage", "quality"),
+        ("stage", "reconcile_import"),
+        ("stage", "reconcile_source"),
         ("state_change", None),
     ]
     conn.close()

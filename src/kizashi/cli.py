@@ -2,7 +2,7 @@
 
 本実装：起動時の検査（作業フォルダーと SQLite の版）、エラーの JSON 化、ID の書式と --run の欠けの検査
 （E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
-`run <分野> --config`（P0-2。plan〜quality）。
+`run <分野> --config`（P0-2・P0-3。plan〜reconcile_source）。
 ほかの操作（run --resume、fetch、inspect、query、record、check、render）は、引数を検査したうえで
 {"stub": "<操作名>"} を返す仮の実装である（P0-4〜P0-8 で本実装にする）。
 """

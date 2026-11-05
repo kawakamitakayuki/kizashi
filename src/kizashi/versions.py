@@ -19,7 +19,8 @@ import yaml
 from kizashi import paths
 from kizashi.hashing import sha256_bytes, sha256_file
 
-RULES_VERSION = "1"
+# 2：P0-3 で照合（reconcile_import・reconcile_source）を足し、Q13 を別経路との突合にした（結果が変わる）。
+RULES_VERSION = "2"
 
 
 def code_version() -> str:

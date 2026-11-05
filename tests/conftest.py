@@ -1,8 +1,13 @@
-"""テストの共通の準備。通信は httpx.MockTransport で合成のページと CSV を返す（実データは使わない）。"""
+"""テストの共通の準備。通信は httpx.MockTransport で合成のページと CSV を返す（実データは使わない）。
+
+PDF のライブラリはテストで動かさない（D-002）。pdftext.load_pages を、合成の罫線と文字の座標
+（tests/fixtures/pdf_cells/*.json）を返す関数に替える（自動で全テストに効く）。
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -11,10 +16,21 @@ from pathlib import Path
 import httpx
 import pytest
 
+from kizashi import pdftext
+
 REPO = Path(__file__).resolve().parents[1]
 DATASET_DIR = REPO / "datasets" / "cao-procurement"
 FIXTURES = DATASET_DIR / "fixtures"
 WEB = Path(__file__).resolve().parent / "fixtures" / "web"
+PDF_CELLS = Path(__file__).resolve().parent / "fixtures" / "pdf_cells"
+
+# 合成の PDF（pdf_bytes の印）→ 合成の座標のファイル
+SYNTHETIC_PDFS = {
+    "k24_pdf": "kyoso_2024_mini",
+    "z24_pdf": "zuikei_2024_mini",
+    "k25_pdf": "kyoso_2025_mini",
+    "z25_pdf": "zuikei_2025_mini",
+}
 
 PAGE = "https://www.cao.go.jp/chotatsu/kohyo/kohyo.html"
 BASE = "https://www.cao.go.jp/chotatsu/kohyo/"
@@ -49,8 +65,35 @@ def fixture_bytes(name: str) -> bytes:
 
 
 def pdf_bytes(name: str) -> bytes:
-    """合成の PDF（P0-2 では中身を読まない。先頭が %PDF- であることだけを使う）。"""
+    """合成の PDF。中身は印だけで、読み込み（pdftext.load_pages）は合成の座標に替える。"""
     return f"%PDF-1.4\n% synthetic test pdf {name}\n".encode("ascii")
+
+
+def pdf_pages(name: str) -> list[pdftext.Page]:
+    """tests/fixtures/pdf_cells/<name>.json を、pdftext のページの一覧にする。"""
+    doc = json.loads((PDF_CELLS / f"{name}.json").read_text(encoding="utf-8"))
+    return [
+        pdftext.Page(
+            number=p["number"],
+            rects=tuple(pdftext.Rect(*r) for r in p["rects"]),
+            chars=tuple(pdftext.Char(*c) for c in p["chars"]),
+        )
+        for p in doc["pages"]
+    ]
+
+
+@pytest.fixture(autouse=True)
+def synthetic_pdf_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PDF のライブラリを動かさない。印のない PDF は、読めない PDF として例外にする。"""
+
+    def load(path: Path) -> list[pdftext.Page]:
+        found = re.search(rb"synthetic test pdf (\w+)", Path(path).read_bytes())
+        name = found.group(1).decode("ascii") if found else None
+        if name not in SYNTHETIC_PDFS:
+            raise ValueError("合成の PDF でない（読めない PDF）")
+        return pdf_pages(SYNTHETIC_PDFS[name])
+
+    monkeypatch.setattr(pdftext, "load_pages", load)
 
 
 def default_routes() -> dict[str, httpx.Response | Callable[[httpx.Request], httpx.Response]]:
