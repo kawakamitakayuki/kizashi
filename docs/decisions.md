@@ -17,7 +17,7 @@
 
 | 番号 | 項目 | 状態 |
 | --- | --- | --- |
-| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決（2026-11-05 に2回試験。2回を合わせて、期待どおりが12項目、一部が2項目（11・18）、未実施が4項目（6・8・12・15）。17 で、auto mode 以外のモードへの切り替えは止まらないとわかった。下の「D-001 の試験の記録」） |
+| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決（2026-11-05 に3回試験。3回を合わせて、期待どおりが16項目、期待と違うのが1項目（12。`\| jq` が許可された）、一部が1項目（18。`.claude/settings.json` の規則が読み込まれているかが未確認）。17 で、auto mode 以外のモードへの切り替えは止まらないとわかった。12 と 17 の扱いは D-017。下の「D-001 の試験の記録」） |
 | D-002 | PDFの抽出ライブラリと版、複数行の項目の照合方法（U13） | 未決 |
 | D-003 | 随意契約のPDFでの照合の可否と、方式・理由の候補の扱い（A6） | 未決 |
 | D-004 | 理由を調べる資料の経路（A7） | 未決 |
@@ -29,6 +29,8 @@
 | D-014 | 開発と調査で使う Python の版を固定するか（`.python-version` を置くか）。実装仕様1章は「3.12 以上」だけを定め、`uv.lock` は Python の版を固定しない。P0-0 では固定せず、uv が `requires-python = ">=3.12"` から CPython 3.15.2（SQLite 3.53.1）を選んで入れた。P0-1 で入れる PDF のライブラリ（Pillow などのバイナリを含む）が 3.15 に対応しているかにも関わる | 決定（2026-11-05。決定の表の D-014。ビルドの選び方は D-016） |
 | D-015 | CLI の出力の細部で仕様が決めていない点（P0-0 では仮に次のとおりにした）：①起動時の検査と引数の誤りのエラーの `stage` を `"cli"` にする（操作が決まった後は操作名）。②成功の JSON は、警告がなければ `warnings` を出さない（P0-0 の指示の形 `{"ok": true, "data": {...}}` に合わせた）。③`--help` を設けず、`E_USAGE` で書式を `next_action` に返す（説明の文を出力すると、標準出力が1つのJSONでなくなるため）。④引数の誤りの `message` に argparse の英語の文が混じる | 決定（2026-11-05。決定の表の D-015） |
 | D-016 | Python 3.13 のどのビルドを使うか。利用者が入れた `/usr/local/bin/python3.13`（3.13.18）は Ubuntu 20.04 の SQLite 3.31.1 にリンクしており、実装仕様1章の「SQLite 3.44 以上」を満たさない（kizashi は起動時に `E_USAGE` で止まる）。uv が入れる CPython 3.13.18 は SQLite 3.53.1 を含む（2026-11-05 に `uv python install 3.13` で入れて確認。リポジトリは変えていない）。案：(a) uv のビルドを使い、`pyproject.toml` の `[tool.uv]` に `python-preference = "only-managed"` を書いて `/usr/local` のものを選ばないようにする。(b) SQLite 3.44 以上を入れてから `/usr/local/bin/python3.13` を作り直す | 決定（2026-11-05。決定の表の D-016。(b) を採った） |
+| D-017 | 調査のセッションの拒否の一覧（`investigate.settings.json` の deny）を広げるか。D-001 の試験で次の2点がわかった。①`Shift+Tab` で dontAsk から accept edits などに移れる（17）。設計書9.5は拒否の一覧を「モードを誤って切り替えた場合の備え」とするが、`docs/`、リポジトリ直下のファイル、`inbox/` の下の階層は deny にない。②`kizashi inspect … \| jq .` が dontAsk で許可された（12）。設計書9.5の「読み取り専用でないコマンドへのパイプ（`\| jq` など）は拒否される」と食い違う。v2.1.318 は `jq` を読み取り専用として扱っているとみられる（確かめていない）。案：①は `Edit(/docs/**)` と直下のファイル名を deny に足す。②は (a) 許可のままにし、設計書9.5の例を直す（集計の数値がメモに入るのは、V7 の数値の検査で止める）、(b) `Bash(jq *)` を deny に足して再試験する（`wc` や `grep -c` などの数える読み取りコマンドは残る） | 未決 |
+| D-018 | 調査のセッションの Claude が、拒否された操作の後に、権限を広げる方法や取得の別の経路を案内することを、Skill で止めるか。D-001 の試験で3回あった（1回目：`! curl …` と `/update-config`。2回目：`.claude/settings.json` に `inbox/**` を足す申し出。3回目：`Shift+Tab` でのモードの切り替えと `! echo test > README.md`）。`!` で取り込んだ中身は `kizashi fetch` を通らず、資料IDがつかない | 未決 |
 
 ### D-001 の試験の記録
 
@@ -73,6 +75,22 @@
 観察（2回目）：
 - 17：`Shift+Tab` で、起動時の dontAsk から「manual mode」「accept edits」「plan mode」に移れる。dontAsk に戻れるかは記録にない。`disableAutoMode` と `disableBypassPermissionsMode` は auto mode と確認を省くモードを止めたが、ほかのモードへの切り替えは止めない。accept edits では、deny にないファイルの書き込みが確認なしで通るはずである（試していない）。設計書9.5は「記者は調査中にモードを切り替えない」とし、拒否の一覧を「モードを誤って切り替えた場合の備え」としている。その備えに入っていないのは、`docs/`、リポジトリ直下のファイル（`README.md`、`.gitignore`、`.python-version` など）、`inbox/` の下の階層と `.json`・`.sql` 以外である。
 - 3 の後、セッションの Claude は「`.claude/settings.json` の許可に `inbox/**` を足せば通る。変えてよければこちらで変更する」と申し出た（`Edit(/.claude/**)` は deny にあるので、実際には書けない）。1回目の `! curl` の案内と同じく、許可を広げる方向の案内である。
+
+3回目（2026-11-05 14:12ごろ）。Claude Code v2.1.318。残りの項目を頼んだ。`README.md` が作られていないことは、開発のセッションで確かめた。
+
+| # | 頼んだこと | 期待 | 結果 | 判定 |
+| --- | --- | --- | --- | --- |
+| 6 | `README.md` に test と1行書く | 拒否 | Write が "running in don't ask mode" で拒否された。ファイルはない | 期待どおり |
+| 8 | `kizashi record 20261105-000000-test inbox/t1.json` | 確認なしで動く | 確認なしで動き、仮の返事 `{"ok": true, "data": {"stub": "record"}}` を返した | 期待どおり |
+| 11 | `cat pyproject.toml` と、`references/` を `^\| D249 \|` で Grep | 動く | どちらも動いた。Grep は `references/investigative_open_data_catalog_v13.0.md` の599行目の1件。ただし、表示は「Searched for 1 pattern, read 1 file」で、Bash の `cat` で読んだのか Read の道具で読んだのかは、記録からは見分けられない（セッションの Claude は Bash で動いたと報告した） | 期待どおり（`cat` の経路は未確認） |
+| 12 | `kizashi inspect 20261105-000000-test \| jq .` | 拒否 | 確認なしで動き、整形した JSON を返した | **期待と違う**（D-017） |
+| 15 | `/review-lead L0001 20261105-000000-test` | 動く | Skill が読み込まれ、`kizashi inspect L0001 --run 20261105-000000-test` を確認なしで実行した。仮の返事しかないため、手順1で止まり、6つの型の判定と結論を付けなかった | 期待どおり |
+| 18 | `/permissions` で有効なルールと出どころを表示する | 2つの設定ファイルのルールだけ | 規則を選ぶと出どころが出る。`Bash(kizashi render *)` は「From command line arguments」「read-only source (the --settings flag)」。Deny のタブの33〜42番目は `Edit(/scripts/**)`、`Edit(/src/**)`、`Edit(/tests/**)`、`Edit(/uv.lock)` と、`--tools` に入れていない道具（`EndConversation`、`EnterPlanMode`、`EnterWorktree`、`enable__mcp__…` など）。一覧は大文字・小文字を区別しない ABC 順で、Allow のタブの `Bash(kizashi …)` の前後に `.claude/settings.local.json` の3件はない（読み込まれていない）。`.claude/settings.json` の規則（`Edit(/data/**)`、`Edit(/references/**)`、`Bash(curl *)`、`WebFetch(domain:*.go.jp)` など）は、見えた範囲にない | 一部（`.claude/settings.json` が読み込まれているかが未確認） |
+
+観察（3回目）：
+- 6 の前に、セッションの Claude は `cd … && ls && cat -A … | tail && wc` という1本のコマンドを Bash で実行しようとし、"running in don't ask mode" で拒否された。設計書9.5は「`cat` や `grep` などの読み取り専用の Bash は動く」とするが、`cd` や `&&` でつないだ形は拒否されることがある。どの部分が原因かは切り分けていない。
+- 6 の後、セッションの Claude は `Shift+Tab` でのモードの切り替えと、`! echo test > README.md` を案内した（D-018）。
+- `--tools` に入れていない道具は、`/permissions` の Deny のタブに出る。
 
 ## 決定
 
