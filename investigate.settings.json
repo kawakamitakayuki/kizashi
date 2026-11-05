@@ -16,8 +16,9 @@
       "Edit(/src/**)", "Edit(/tests/**)", "Edit(/datasets/**)", "Edit(/scripts/**)",
       "Edit(/eval/**)", "Edit(/examples/**)", "Edit(/.claude/**)", "Edit(/.venv/**)",
       "Edit(/CLAUDE.md)", "Edit(/investigate.settings.json)", "Edit(/pyproject.toml)", "Edit(/uv.lock)",
+      "Edit(/docs/**)", "Edit(/README.md)", "Edit(/.gitignore)", "Edit(/.python-version)",
       "NotebookEdit", "WebFetch", "Agent", "mcp__*",
-      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)"
+      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)", "Bash(jq *)"
     ],
     "disableAutoMode": "disable",
     "disableBypassPermissionsMode": "disable"
