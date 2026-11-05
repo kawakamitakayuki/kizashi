@@ -1,8 +1,10 @@
-"""kizashi の入口（implementation_spec.md 2章の cli.py、3.1・3.2）。
+"""kizashi の入口（implementation_spec.md 2章の cli.py、3.1〜3.4）。
 
-P0-0 では、起動時の検査（作業フォルダーと SQLite の版）と、エラーの JSON 化だけを本実装にしている。
-7つの操作は、4.1〜4.7 の書式の引数を受け付けて {"stub": "<操作名>"} を返す仮の実装である。
-ID の書式と --run の欠けの検査（E_BAD_ID。test_plan.md の CLI-2）は P0-2 で加える。
+本実装：起動時の検査（作業フォルダーと SQLite の版）、エラーの JSON 化、ID の書式と --run の欠けの検査
+（E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
+`run <分野> --config`（P0-2。plan〜quality）。
+ほかの操作（run --resume、fetch、inspect、query、record、check、render）は、引数を検査したうえで
+{"stub": "<操作名>"} を返す仮の実装である（P0-4〜P0-8 で本実装にする）。
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NoReturn
 
+from kizashi import ledger, paths
 from kizashi.errors import EXIT_OK, KizashiError
 
 # 検出SQLが集約の中の ORDER BY（group_concat(x, '|' ORDER BY x)）を使うため（1章）。
@@ -179,7 +182,83 @@ def _check_form(ops: dict[str, _Parser], args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 操作（P0-0 では仮の実装）
+# ID と提案ファイルの引数の検査（3.3・3.4。test_plan.md の CLI-2・IN-1 の一部）
+# ---------------------------------------------------------------------------
+
+_ID_LABELS = {
+    "run": "実行ID（YYYYMMDD-HHMMSS-英小文字と数字4桁）",
+    "source": "資料ID（S＋3桁）",
+    "record": "row_ref（資料ID:論理レコード番号6桁）",
+    "calc": "計算ID（K＋4桁）",
+    "lead": "候補ID（L＋4桁）",
+    "claim": "主張ID（C＋4桁）",
+    "match": "対応ID（M＋3桁）",
+}
+
+
+def _bad_id(stage: str, value: str, expected: tuple[str, ...]) -> KizashiError:
+    labels = "・".join(_ID_LABELS[k] for k in expected)
+    return KizashiError(
+        "E_BAD_ID",
+        stage,
+        f"ID の書式が誤っている：{value!r}（使えるのは {labels}）",
+        next_action="inspect <run_id> で ID を確かめる。",
+    )
+
+
+def _require_id(stage: str, value: str, *kinds: str) -> str:
+    """値が kinds のどれかの書式に合えば、その種類を返す。合わなければ E_BAD_ID（../ なども拒否される）。"""
+    kind = ledger.id_kind(value)
+    if kind not in kinds:
+        raise _bad_id(stage, value, kinds)
+    return kind
+
+
+def _missing_run(stage: str, target: str) -> KizashiError:
+    return KizashiError(
+        "E_BAD_ID",
+        stage,
+        f"実行ID以外の ID（{target}）には --run <run_id> が要る（ID は実行ごとの台帳の中でだけ一意）。",
+        next_action=f"{stage} {target} --run <run_id> の形で呼ぶ。",
+    )
+
+
+def _check_ids(args: argparse.Namespace) -> None:
+    stage = args.command
+    if stage == "run":
+        if args.resume is not None:
+            _require_id(stage, args.resume, "run")
+        else:
+            paths.check_inbox_arg(args.config, (".json",))
+    elif stage == "fetch":
+        _require_id(stage, args.run_id, "run")
+        if args.recheck is not None:
+            _require_id(stage, args.recheck, "source")
+    elif stage in ("inspect", "render"):
+        allowed = tuple(_ID_LABELS) if stage == "inspect" else ("run", "lead")
+        kind = _require_id(stage, args.target_id, *allowed)
+        if args.run_id is not None:
+            _require_id(stage, args.run_id, "run")
+        elif kind != "run":
+            raise _missing_run(stage, args.target_id)
+    elif stage == "query":
+        _require_id(stage, args.run_id, "run")
+        paths.check_inbox_arg(args.sql_file, (".sql",))
+    elif stage == "record":
+        _require_id(stage, args.run_id, "run")
+        paths.check_inbox_arg(args.json_file, (".json",))
+    elif stage == "check":
+        if args.lead_id is not None:
+            _require_id(stage, args.lead_id, "lead")
+        if not args.run_ids:
+            target = args.lead_id if args.lead_id is not None else "--publish"
+            raise _missing_run(stage, target)
+        for run_id in args.run_ids:
+            _require_id(stage, run_id, "run")
+
+
+# ---------------------------------------------------------------------------
+# 操作
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +269,16 @@ def _stub(name: str) -> Callable[[argparse.Namespace], dict]:
     return handler
 
 
+def _run(args: argparse.Namespace) -> dict:
+    if args.resume is not None:
+        return {"stub": "run"}  # run --resume は P0-5 で本実装にする
+    from kizashi import runner
+
+    return runner.start_run(paths.repo_root(), args.domain, args.config)
+
+
 HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {op: _stub(op) for op in OPERATIONS}
+HANDLERS["run"] = _run
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(arg_list)
         _check_form(ops, args)
         stage = args.command
+        _check_ids(args)
         data = HANDLERS[args.command](args)
     except KizashiError as exc:
         _emit({"ok": False, "error": exc.to_dict()})

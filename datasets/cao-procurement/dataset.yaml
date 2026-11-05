@@ -1,0 +1,163 @@
+# 内閣府「公共調達の適正化について」に基づく競争入札・随意契約（物品・役務等）の公表データ。
+# 仕様：docs/adapter_cao_procurement.md（10章の案に、3.4 の令和8年度の列の対応を足した。D-026）。
+# P0 の必須は令和6・7年度（2024・2025年度）の競争入札と随意契約の4ファイル。
+# 令和5年度（2023）と令和8年度（2026。年度途中）は系列の参考として読めるようにする（P0 の完了条件に含めない）。
+# 必須か参考かで動作は変えない。取得予定の資料が1つでも取れなければ、実行は partial（実装仕様4.1）。
+domain: cao-procurement
+parser_version: cao-procurement/1
+source:
+  page: https://www.cao.go.jp/chotatsu/kohyo/kohyo.html
+  link_pattern: 'tekiseika/(?P<reiwa>\d+)nendo/[^/]+_kohyo_(?P<family>kyoso|zuikei)\.(?P<format>csv|pdf)$'
+  fiscal_year_from_reiwa: 2018
+  terms_note: "利用条件はU1で確認する"
+fetch:
+  allowed_hosts: ["*.go.jp", "*.lg.jp"]
+scope_fields:                 # 母集団の絞り込み（実装仕様6.3）に使える項目。記者の指示があるときだけ使う
+  officer_unit:    {column: officer_units_json, kind: json_array}   # 契約担当官の所属（発注を求めた部局とは限らない）
+  title:           {column: title_raw}                              # 件名に含む語
+  method_family:   {column: method_family}                          # kyoso / zuikei
+  reason_category: {column: reason_category}                        # 随意契約の理由の分類
+screens:                      # compare_years の両年度で、取得と品質検査を通っていなければならない資料の種類
+  s1_amount_change: {requires: [kyoso, zuikei]}   # 同じまとめが両方式にまたがるため、両方そろわないと合計が偏る
+  s2_method_change: {requires: [kyoso, zuikei]}
+  s3_reason_change: {requires: [zuikei]}
+defaults:
+  compare_years: [2024, 2025]
+  series_years: [2023, 2024, 2025]
+reconcile:
+  source_check: pdf            # ほかの形式がない分野では not_applicable と理由
+  fields_by_category:
+    amount_up: [amount_yen, contract_date, title_raw]
+    amount_down: [amount_yen, contract_date, title_raw]
+    amount_incomparable: [amount_yen, contract_date, title_raw]
+    kyoso_to_zuikei: [title_raw, contract_date, method_raw, reason_raw]
+    zuikei_to_kyoso: [title_raw, contract_date, method_raw, reason_raw]
+    reason_changed: [title_raw, reason_raw]
+  fields_counterparty: [counterparty_raw, corp_numbers]
+  pdf_fields:                  # 照合の記録のキー → take のキー。PDFの列の番号は take の index と同じ（7.3。D-002）
+    amount_yen: amount_raw
+    contract_date: contract_date_raw
+    title_raw: title_raw
+    counterparty_raw: counterparty_raw
+    corp_numbers: corp_number_raw
+    method_raw: method_raw
+    reason_raw: reason_raw
+comparison_defaults:
+  s1_amount_change:
+    population: 内閣府が公表した競争入札・随意契約（物品・役務等）のうち、件名のまとめのキーが両年度にある契約
+    row_meaning: 1件の契約
+    period: 会計年度（契約を締結した日の年度）
+    unit: 円（契約金額。単価契約と数値にならない金額を除く）
+    entity_mapping: 件名のまとめのキーによる同種業務の候補（確定は対応の登録）
+    formula: 年度ごとの契約金額の合計の差と増減率
+  s2_method_change:
+    population: 同上
+    row_meaning: 1件の契約
+    period: 会計年度
+    unit: 件
+    entity_mapping: 件名のまとめのキー
+    formula: 年度ごとの契約方式（競争入札・随意契約）の別
+  s3_reason_change:
+    population: 随意契約のうち、件名のまとめのキーが両年度にある契約
+    row_meaning: 1件の契約
+    period: 会計年度
+    unit: 件
+    entity_mapping: 件名のまとめのキー
+    formula: 年度ごとの随意契約の理由の分類と根拠条文の組
+display:
+  円: {places: 0, thousands: true}
+  比率: {places: 1, scale: 100, suffix: "%"}
+  件: {places: 0, thousands: true}
+group_key:
+  remove_patterns:            # 上から順に適用する
+    - '[（(][^）)]*年(度|版)[^）)]*[）)]'
+    - '令和(\d+|元)年(度|版)'
+    - '平成\d+年度'
+    - '\d{4}年度'
+    - 'R\d+年度'
+    - '第\d+期'
+    - '\d+月分'
+    - '\d+か?月間'
+    - '[（(][）)]'
+files:
+  # 必須（P0 の完了条件）
+  - {fiscal_year: 2024, family: kyoso,  encoding: cp932, columns: kyoso_16}
+  - {fiscal_year: 2025, family: kyoso,  encoding: cp932, columns: kyoso_16}
+  - {fiscal_year: 2024, family: zuikei, encoding: cp932, columns: zuikei_17}
+  - {fiscal_year: 2025, family: zuikei, encoding: cp932, columns: zuikei_27}
+  # 参考（系列として読む）
+  - {fiscal_year: 2023, family: kyoso,  encoding: cp932, columns: kyoso_16}
+  - {fiscal_year: 2023, family: zuikei, encoding: cp932, columns: zuikei_17}
+  # 参考（年度途中。アダプタ仕様3.4。比較できない理由に partial_year を付ける）
+  - {fiscal_year: 2026, family: kyoso,  encoding: utf-8-sig, columns: kyoso_17_r8,  partial_year: true}
+  - {fiscal_year: 2026, family: zuikei, encoding: utf-8-sig, columns: zuikei_28_r8, partial_year: true}
+column_sets:
+  kyoso_16:
+    expected_columns: 16
+    pdf_columns: 16             # 同じ年度・方式のPDFの列の数（7.1。D-002）
+    take: &kyoso_take
+      "no":              {index: 0,  header: "NO"}
+      title_raw:         {index: 1,  header: "物品役務等の名称及び数量"}
+      officer_raw:       {index: 2,  header: "契約担当官等の氏名並びにその所属する部局の名称及び所在地"}
+      contract_date_raw: {index: 4,  header: "契約を締結した日"}
+      counterparty_raw:  {index: 5,  header: "契約の相手方の商号又は名称及び住所"}
+      corp_number_raw:   {index: 7,  header: "法人番号"}
+      method_raw:        {index: 8,  header: "一般競争入札・指名競争入札の別(総合評価の実施)"}
+      estimate_raw:      {index: 9,  header: "予定価格"}
+      amount_raw:        {index: 10, header: "契約金額"}
+      rate_raw:          {index: 11, header: "落札率"}
+      note_raw:          {index: 15, header: "備考"}
+    drop: [3, 6, 12, 13, 14]
+  zuikei_17:
+    expected_columns: 17
+    pdf_columns: 17
+    take: &zuikei_take
+      "no":              {index: 0,  header: "NO"}
+      title_raw:         {index: 1,  header: "物品役務等の名称及び数量"}
+      officer_raw:       {index: 2,  header: "契約担当官等の氏名並びにその所属する部局の名称及び所在地"}
+      contract_date_raw: {index: 4,  header: "契約を締結した日"}
+      counterparty_raw:  {index: 5,  header: "契約の相手方の商号又は名称及び住所"}
+      corp_number_raw:   {index: 7,  header: "法人番号"}
+      reason_raw:        {index: 8,  header: "随意契約によることとした会計法令の根拠条文及び理由(企画競争又は公募)"}
+      estimate_raw:      {index: 9,  header: "予定価格"}
+      amount_raw:        {index: 10, header: "契約金額"}
+      rate_raw:          {index: 11, header: "落札率"}
+      note_raw:          {index: 16, header: "備考"}
+    drop: [3, 6, 12, 13, 14, 15]
+  zuikei_27:
+    expected_columns: 27
+    pdf_columns: 17             # PDFには内部用の10列がない
+    take: *zuikei_take
+    drop: [3, 6, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+  kyoso_17_r8:                  # 令和8年度の競争入札（3.4）。8列目の見出しが変わり、15列目に成果物の活用が入る
+    expected_columns: 17
+    pdf_columns: 17
+    take:
+      "no":              {index: 0,  header: "NO"}
+      title_raw:         {index: 1,  header: "物品役務等の名称及び数量"}
+      officer_raw:       {index: 2,  header: "契約担当官等の氏名並びにその所属する部局の名称及び所在地"}
+      contract_date_raw: {index: 4,  header: "契約を締結した日"}
+      counterparty_raw:  {index: 5,  header: "契約の相手方の商号又は名称及び住所"}
+      corp_number_raw:   {index: 7,  header: "法人番号"}
+      method_raw:        {index: 8,  header: "一般競争入札・指名競争入札の別(総合評価の実施、単価契約の有無)"}
+      estimate_raw:      {index: 9,  header: "予定価格"}
+      amount_raw:        {index: 10, header: "契約金額"}
+      rate_raw:          {index: 11, header: "落札率"}
+      note_raw:          {index: 16, header: "備考"}
+    drop: [3, 6, 12, 13, 14, 15]
+  zuikei_28_r8:                 # 令和8年度の随意契約（3.4）。15が再就職、16が成果物、17が備考。18〜27は取り込まない
+    expected_columns: 28
+    pdf_columns: 18
+    take:
+      "no":              {index: 0,  header: "NO"}
+      title_raw:         {index: 1,  header: "物品役務等の名称及び数量"}
+      officer_raw:       {index: 2,  header: "契約担当官等の氏名並びにその所属する部局の名称及び所在地"}
+      contract_date_raw: {index: 4,  header: "契約を締結した日"}
+      counterparty_raw:  {index: 5,  header: "契約の相手方の商号又は名称及び住所"}
+      corp_number_raw:   {index: 7,  header: "法人番号"}
+      reason_raw:        {index: 8,  header: "随意契約によることとした会計法令の根拠条文及び理由(企画競争又は公募)"}
+      estimate_raw:      {index: 9,  header: "予定価格"}
+      amount_raw:        {index: 10, header: "契約金額"}
+      rate_raw:          {index: 11, header: "落札率"}
+      note_raw:          {index: 17, header: "備考"}
+    drop: [3, 6, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
