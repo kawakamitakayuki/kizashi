@@ -172,6 +172,46 @@ def write_config(root: Path, name: str = "run-config.json", **overrides: object)
     return f"inbox/{name}"
 
 
+@pytest.fixture
+def synthetic_run(repo: Path, site: Site) -> str:
+    """合成データ（令和6・7年度）で completed にした実行の ID。資料は S001〜S009（test_run.py）。"""
+    from kizashi import runner
+
+    result = runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    assert result["state"] == "completed"
+    return result["run_id"]
+
+
+def add_evidence(
+    root: Path,
+    run_id: str,
+    pages: list[str],
+    *,
+    kind: str = "evidence",
+    url: str = "https://www.cao.go.jp/test/spec.pdf",
+) -> str:
+    """取得を通さずに、追加資料（ページ別テキスト付き）を台帳に足す（引用の照合のテスト用）。"""
+    from kizashi import ledger
+
+    conn = ledger.open_rw(root, run_id)
+    try:
+        with ledger.transaction(conn):
+            source_id = ledger.next_id(conn, "S")
+            conn.execute(
+                "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, media_type,"
+                " size_bytes, page_count, status) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', 1, ?,"
+                " 'fetched')",
+                (source_id, kind, url, url, ledger.now_iso(), "0" * 64, len(pages)),
+            )
+    finally:
+        conn.close()
+    page_dir = root / "data" / "runs" / run_id / "evidence" / source_id / "pages"
+    page_dir.mkdir(parents=True)
+    for n, text in enumerate(pages, start=1):
+        (page_dir / f"{n}.txt").write_text(text, encoding="utf-8")
+    return source_id
+
+
 def ledger_of(root: Path, run_id: str) -> sqlite3.Connection:
     conn = sqlite3.connect(root / "data" / "runs" / run_id / "ledger.sqlite")
     conn.row_factory = sqlite3.Row
