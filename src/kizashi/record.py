@@ -24,7 +24,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kizashi import calc, check, inbox, ledger, limits, paths, quotes
+from kizashi import calc, check, detect, inbox, ledger, limits, paths, quotes
 from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
 from kizashi.hashing import canonical_json
@@ -401,6 +401,7 @@ def _do_lead(ctx: Ctx) -> Result:
             raise _schema(f"comparison の {key} は文字列で書く。")
         ctx.warn_texts[f"comparison.{key}"] = comparison[key]
     note = ctx.text("note", allow_empty=True)
+    comparison = _with_scope(ctx, comparison)
 
     lead_id = ledger.next_id(ctx.conn, "L")
     try:
@@ -672,6 +673,7 @@ def _do_conclusion(ctx: Ctx) -> Result:
                 raise _schema(f"comparison の {key} は文字列で書く。")
             ctx.warn_texts[f"comparison.{key}"] = value  # 強い語の警告（D-036）
         comparison.update(override)
+    comparison = _with_scope(ctx, comparison)
     before = {
         k: lead[k]
         for k in (
@@ -872,6 +874,17 @@ def _v7(ctx: Ctx, target_id: str) -> list[dict]:
         }
         for w in warnings
     ]
+
+
+def _with_scope(ctx: Ctx, comparison: dict) -> dict:
+    """比較の条件の母集団に、実行の母集団の絞り込み（run_config.scope）を書き足す（実装仕様6.3。D-038⑮）。
+
+    検出の候補と同じ関数（detect.scope_population）を使う。結論で母集団を変えても絞り込みを消さない。"""
+    row = ctx.conn.execute(
+        "SELECT config_json FROM runs WHERE run_id = ?", (ctx.run_id,)
+    ).fetchone()
+    scope = json.loads(row[0]).get("scope") if row and row[0] else None
+    return {**comparison, "population": detect.scope_population(comparison["population"], scope)}
 
 
 def _domain(conn: sqlite3.Connection, run_id: str) -> str:

@@ -169,12 +169,14 @@ def test_qt1_quote_must_not_drop_a_sign_mark_or_leading_point(ctx) -> None:
         [
             (
                 "増減は-12件。\n\n前年は▲12件。\n\n今年は△12件。\n\n差は－ 12件。\n\n"
-                "比率は.5とする。\n\n範囲は10-15件。\n"
+                "比率は.5とする。\n\n範囲は10-15件。\n\n番号はA-12型。\n\n合計は3+5件。\n"
             )
         ],
     )
     assert sid == "S011"
-    for quote in ("12件。", "5とする。", "差は－"):
+    # 「10-15」「A-12」「3+5」の「-」「+」は資料では符号でない。そこから始めた引用は、資料にない負・正の
+    # 数値に読めるので E_QUOTE_TRUNCATED（D-038 の後のレビュー。-15 の文書値を通さない）
+    for quote in ("12件。", "5とする。", "差は－", "-15件。", "-12型。", "+5件。"):
         assert code_of(ctx, ev("S011", {"page": 1}, quote)) == "E_QUOTE_TRUNCATED", quote
     for quote in (
         "増減は-12件。",
@@ -183,8 +185,22 @@ def test_qt1_quote_must_not_drop_a_sign_mark_or_leading_point(ctx) -> None:
         "差は－ 12件。",
         "比率は.5とする。",
         "15件。",  # 「10-15」の「-」は符号でないので、15 から引用してよい
+        "範囲は10-15件。",
+        "12型。",
+        "番号はA-12型。",
+        "5件。",
     ):
         verify(ctx, ev("S011", {"page": 1}, quote))
+
+
+def test_qt1_quote_starting_with_non_sign_hyphen_is_rejected() -> None:
+    """QT-1：資料の「10-15件。」から「-15件。」を引用すると、引用だけを読めば -15 になる。資料の中で読む数値
+    （15）と違うので E_QUOTE_TRUNCATED にし、文書値 -15 を登録させない（レビューの再現と同じ形）。"""
+    with pytest.raises(KizashiError) as info:
+        quotes._match(["範囲は10-15件。"], "-15件。", "合成資料", ())
+    assert info.value.code == "E_QUOTE_TRUNCATED"
+    quotes._match(["範囲は10-15件。"], "範囲は10-15件。", "合成資料", ())
+    quotes._match(["増減は-15件。"], "-15件。", "合成資料", ())  # 資料でも符号
 
 
 def test_qt1_fiscal_year_of_record_claim(ctx) -> None:

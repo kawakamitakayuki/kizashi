@@ -175,14 +175,14 @@ def site() -> Site:
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """リポジトリの直下と見なされるフォルダー（pyproject.toml、datasets/cao-procurement/ の dataset.yaml・
-    screens/・populations/、inbox/）。"""
+    screens/・populations/・series/、inbox/）。"""
     root = tmp_path / "repo"
     (root / "datasets" / "cao-procurement").mkdir(parents=True)
     (root / "pyproject.toml").write_text('[project]\nname = "fake"\n', encoding="utf-8")
     shutil.copy(
         DATASET_DIR / "dataset.yaml", root / "datasets" / "cao-procurement" / "dataset.yaml"
     )
-    for sub in ("screens", "populations"):
+    for sub in ("screens", "populations", "series"):
         shutil.copytree(DATASET_DIR / sub, root / "datasets" / "cao-procurement" / sub)
     (root / "inbox").mkdir()
     monkeypatch.chdir(root)

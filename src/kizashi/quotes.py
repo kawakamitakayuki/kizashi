@@ -6,7 +6,8 @@
   含むこと。途中で切れていれば E_QUOTE_TRUNCATED。資料の中で直後が数字の「.」は文末にしない。
 - 資料の数値（7.2 の数値の並びに、直前の符号・▲・△ を含めたもの）の途中で始まる・終わる引用も
   E_QUOTE_TRUNCATED（`750,000` の `000`、`1.5件` の `1.`、`-12件` の `12件`、`.5` の `5` を通さない。
-  D-033・D-036）。
+  D-033・D-036）。引用だけを読んだときの数値が資料の中で読む数値と違う引用（`10-15件。` の `-15件。`。
+  資料では「-」が符号でない）も E_QUOTE_TRUNCATED（D-039）。
 - 主張の種類が「原資料の記載」（record）で、主張の fiscal_year とデータの資料の年度（論理資料のキー）が
   食い違えば E_QUOTE_YEAR。追加資料の年度は機械では決めない。
 - 索引ページ（kind='index'）、公表一覧の PDF（kind='dataset' の PDF。D-021）、知識ファイルは根拠に
@@ -83,6 +84,16 @@ def _inside_number(pos: int, runs: list[tuple[int, int]]) -> bool:
     return any(start < pos < end for start, end in runs)
 
 
+def _same_numbers(target: str, start: int, runs: set[tuple[int, int]]) -> bool:
+    """引用だけを読んだときの数値（符号・▲・△ を含む）が、資料のその位置で読む数値と同じか。
+
+    資料の「10-15件。」から「-15件。」を引用すると、引用だけでは -15 に読めるが、資料では「-」が符号でなく
+    15 である。こうした引用を通さない（D-033 の「符号の落ちた・付いた値に計算IDを付けない」）。"""
+    return all(
+        (start + m.start(), start + m.end()) in runs for m in _NUMBER_RUN_RE.finditer(target)
+    )
+
+
 def _sentence_end(text: str, target: str, end: int) -> bool:
     """引用が文末の文字で終わるか。資料の中で直後が数字の「.」は小数点なので文末にしない。"""
     if not target.endswith(SENTENCE_END):
@@ -124,6 +135,14 @@ def _match(segments: list[str], quote: str, where: str, affected: tuple) -> None
     if not whole:
         raise _truncated(
             f"引用が資料の数値の途中で始まるか、途中で終わる（{where}。数値は全体を引用する）。",
+            affected,
+        )
+    run_set = set(runs)
+    whole = [s for s in whole if _same_numbers(target, s, run_set)]
+    if not whole:
+        raise _truncated(
+            f"引用の中の数値が、資料の中で読む数値と違う（{where}。資料で符号でない「-」・「+」から"
+            "引用を始めない。例：「10-15件。」の「-15件。」は「範囲は10-15件。」のように引用する）。",
             affected,
         )
     for s in whole:

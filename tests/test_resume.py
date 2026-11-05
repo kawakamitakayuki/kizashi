@@ -269,6 +269,80 @@ def test_rs2_changed_screen_sql_is_input_changed(repo: Path) -> None:
     assert "sql_sha256" in info.value.message
 
 
+RAW_CASES = {
+    # (変える原本の資料を選ぶ条件, 変え方)
+    "csv_changed": ("kind = 'dataset' AND logical_key LIKE '%|csv'", "change"),
+    "csv_missing": ("kind = 'dataset' AND logical_key LIKE '%|csv'", "delete"),
+    "pdf_changed": ("kind = 'dataset' AND logical_key LIKE '%|pdf'", "change"),
+    "index_changed": ("kind = 'index'", "change"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RAW_CASES))
+def test_rs2_changed_raw_file_is_input_changed(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """RS-2：再開で使い続ける原本（data/raw の CSV・PDF・公表ページの HTML）がないか、中身の SHA-256 が
+    記録と違えば、状態を変える前に E_INPUT_CHANGED（資料ID を書く）。台帳は変えない（running のまま、
+    resume の events も候補もできない）。通信もしない。"""
+    run_id = crashed_run(repo, monkeypatch, site, "detect")  # 照合の後、検出の途中で止まった実行
+    where, how = RAW_CASES[case]
+    conn = ledger_of(repo, run_id)
+    source_id, sha, kind, key = conn.execute(
+        f"SELECT source_id, sha256, kind, logical_key FROM sources WHERE {where}"
+        " AND status = 'fetched' ORDER BY source_id LIMIT 1"
+    ).fetchone()
+    conn.close()
+    ext = "html" if kind == "index" else key.rsplit("|", 1)[1]
+    raw = repo / "data" / "raw" / f"{sha}.{ext}"
+    assert raw.is_file()
+    if how == "change":
+        raw.write_bytes(raw.read_bytes() + b"\n")
+    else:
+        raw.unlink()
+    resume_site = Site()
+    with pytest.raises(KizashiError) as info:
+        runner.resume_run(repo, run_id, transport=resume_site.transport)
+    assert (info.value.code, info.value.exit_code) == ("E_INPUT_CHANGED", 3)
+    assert source_id in info.value.message
+    assert ("ない" if how == "delete" else "SHA-256") in info.value.message
+    assert resume_site.requests == []
+    conn = ledger_of(repo, run_id)
+    assert conn.execute("SELECT state FROM runs").fetchone()[0] == "running"
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'resume'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
+    conn.close()
+
+
+def test_rs1_resume_keeps_inbox_config_with_other_number_types(repo: Path) -> None:
+    """RS-1（D-038⑬）：再開で成功したとき、inbox/ の設定ファイルを開始時の設定と、数値の型も保つ正規化 JSON
+    で照らす。年度を 2024.0 に書き換えたファイルは別の中身として、台帳の設定を accepted/ に書き、inbox/ の
+    ファイルは消さない。キーの順と空白だけが違うファイルは同じ中身として accepted/ に写して消す。"""
+    run_id, config = transient_failed_run(repo)
+    stored = json.loads((repo / config).read_text(encoding="utf-8"))
+    changed = json.dumps({**stored, "compare_years": [2024.0, 2025]}, ensure_ascii=False)
+    assert json.loads(changed) == stored  # Python の == では同じに見える
+    (repo / config).write_text(changed, encoding="utf-8")
+    result = runner.resume_run(repo, run_id, transport=Site().transport)
+    assert result["state"] == "completed"
+    assert (repo / config).read_text(encoding="utf-8") == changed  # 消さない
+    accepted = repo / "data" / "runs" / run_id / "accepted" / "0001-run_config.json"
+    assert json.loads(accepted.read_text(encoding="utf-8")) == stored
+    assert json.loads(accepted.read_text(encoding="utf-8"))["compare_years"] == [2024, 2025]
+    assert all(
+        type(y) is int for y in json.loads(accepted.read_text(encoding="utf-8"))["compare_years"]
+    )
+
+    (repo / config).unlink()
+    run_id, config = transient_failed_run(repo)
+    reordered = json.dumps(dict(reversed(list(stored.items()))), ensure_ascii=False, indent=4)
+    (repo / config).write_text(reordered, encoding="utf-8")
+    result = runner.resume_run(repo, run_id, transport=Site().transport)
+    assert result["state"] == "completed"
+    assert not (repo / config).exists()
+    assert result["config_accepted"] == f"data/runs/{run_id}/accepted/0001-run_config.json"
+
+
 def test_rs2_cli_resume(repo: Path, site: Site, capsys: pytest.CaptureFixture[str]) -> None:
     """CLI：kizashi run --resume <run_id> が再開を呼ぶ。completed の実行は E_NOT_RESUMABLE（終了コード3）。"""
     run_id = runner.start_run(

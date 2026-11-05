@@ -15,8 +15,9 @@ reconcile_import・reconcile_source・detect）。
 - 対象は、状態が running（強制終了で残ったもの）か、stop_reason が一時的な通信の失敗の failed だけ。
   partial・completed と、ほかの failed は E_NOT_RESUMABLE。
 - 終わった工程は、入力のハッシュをいまの台帳と dataset.yaml から計算し直し、同じなら飛ばす。違えば
-  E_INPUT_CHANGED で止め、新しい実行を求める。規則の版（実装仕様3.5 の照合するもの）が開始時と違っても
-  E_INPUT_CHANGED（途中から違う規則で続けないため）。拒んだときは台帳を変えない。
+  E_INPUT_CHANGED で止め、新しい実行を求める。規則の版（実装仕様3.5 の照合するもの）が開始時と違っても、
+  取得済みの原本（data/raw/ の CSV・PDF・公表ページの HTML）がないか中身の SHA-256 が記録と違っても
+  E_INPUT_CHANGED（途中から違う規則・違う原本で続けないため）。拒んだときは台帳を変えない。
 - 取得は、取得済みの資料を取り直さない。取得済みでない予定の資料（planned・failed）を取り直す。公表ページを
   取得済みなら、保存した原本からリンクを読み直す（通信しない）。
 - detect が終わっていれば候補を作り直さない。途中で止まった detect はトランザクションが確定していないので、
@@ -44,7 +45,7 @@ from kizashi import check, detect, fetcher, inbox, ledger, paths, quality, recon
 from kizashi.adapters import FAMILIES, Adapter, load_adapter
 from kizashi.adapters.cao_procurement import SCOPE_OPS
 from kizashi.errors import KizashiError
-from kizashi.hashing import canonical_json, sha256_text
+from kizashi.hashing import canonical_json, sha256_file, sha256_text
 
 STAGES = (
     "plan",
@@ -894,6 +895,36 @@ def _input_changed(run_id: str, why: str) -> KizashiError:
     )
 
 
+def _raw_problems(ctx: RunContext) -> list[str]:
+    """再開で使い続ける原本（取得済みのデータの CSV・PDF と公表ページの HTML）のうち、data/raw/ にないか、
+    中身の SHA-256 が sources の記録と違うもの（「資料ID（論理資料のキーか URL）：…」の形）。
+
+    終わった工程の入力のハッシュは台帳の SHA-256 から計算するので、原本そのものはここで照らす（D-038⑫）。"""
+    problems = []
+    for source_id, kind, key, url, sha in ctx.conn.execute(
+        "SELECT source_id, kind, logical_key, url, sha256 FROM sources"
+        " WHERE kind IN ('dataset', 'index') AND status = 'fetched' ORDER BY source_id"
+    ):
+        ext = "html" if kind == "index" else str(key).rsplit("|", 1)[-1]
+        path = paths.raw_dir(ctx.root) / f"{sha}.{ext}"
+        label = f"{source_id}（{key or url}）"
+        if not sha or path.is_symlink() or not path.is_file():
+            problems.append(f"{label}：保存した原本がない")
+        elif sha256_file(path) != sha:
+            problems.append(f"{label}：保存した原本の SHA-256 が取得したときと違う")
+    return problems
+
+
+def _same_config(path: Path, config: dict) -> bool:
+    """inbox/ のファイルが、台帳の設定と同じ中身か。数値の型（2024 と 2024.0、true と 1）も区別する正規化
+    JSON（キーの順と空白だけを問わない）で照らす（D-038⑬）。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return canonical_json(data) == canonical_json(config)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+
+
 def _accept_on_resume(ctx: RunContext) -> str:
     """再開で成功したときの設定ファイルの扱い。開始時の inbox/ のファイルが同じ中身で残っていれば、accepted/
     に写して inbox/ から消す。なければ（または中身が違えば）、台帳の設定を accepted/ に書き、inbox/ は触らない。"""
@@ -906,10 +937,9 @@ def _accept_on_resume(ctx: RunContext) -> str:
     if isinstance(name, str):
         try:
             path = paths.resolve_inbox_file(ctx.root, name, (".json",))
-            same = json.loads(path.read_text(encoding="utf-8")) == ctx.config
-        except (KizashiError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-            same = False
-        if same:
+        except KizashiError:
+            path = None
+        if path is not None and _same_config(path, ctx.config):
             return _relative(ctx.root, inbox.accept(ctx.root, ctx.run_id, path, "run_config"))
     directory = inbox.accepted_dir(ctx.root, ctx.run_id)
     target = directory / f"{inbox.next_serial(directory):04d}-run_config.json"
@@ -962,6 +992,9 @@ def resume_run(root: Path, run_id: str, *, transport: httpx.BaseTransport | None
         drift = [k for k in COMPARED_VERSIONS if recorded.get(k) != current.get(k)]
         if drift:
             raise _input_changed(run_id, f"規則の版が開始時と違う（{'・'.join(drift)}）")
+        raw = _raw_problems(ctx)
+        if raw:
+            raise _input_changed(run_id, "、".join(raw))
 
         remaining = [s for s in STAGES if s not in done]
         retry = (

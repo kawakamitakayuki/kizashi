@@ -26,7 +26,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #    比較の条件に強い語の警告）。引用と V7 の検査の結果が変わる。
 # 5：D-037（探索SQL と実行設定にも氏名の検査）。query と run の結果が変わる。
 # 6：P0-5 で run に検出（detect）を足した（候補・自動の基礎集計・系列・比べた組の数）。run の結果が変わる。
-RULES_VERSION = "6"
+# 7：D-038（系列を分野の系列のSQLで数え、合計できる行のない年度を0円にしない。件数の意味。探索の候補と結論
+#    の母集団に絞り込みを残す。再開で原本の SHA-256 を照らす）と、資料で符号でない「-」で始まる引用の拒否。
+#    run・record の結果が変わる。
+RULES_VERSION = "7"
 
 
 def code_version() -> str:
@@ -53,11 +56,14 @@ def git_commit(root: Path) -> str:
     return commit if proc.returncode == 0 and commit else "unknown"
 
 
+SQL_DIRS = ("screens", "populations", "series")
+
+
 def sql_sha256(root: Path, domain: str) -> str:
-    """screens/*.sql と populations/*.sql を、パスの順に連結したハッシュ（3.5）。"""
+    """screens/*.sql、populations/*.sql、series/*.sql を、パスの順に連結したハッシュ（3.5）。"""
     base = paths.dataset_dir(root, domain)
     files = sorted(
-        [p for sub in ("screens", "populations") for p in (base / sub).glob("*.sql")],
+        [p for sub in SQL_DIRS for p in (base / sub).glob("*.sql")],
         key=lambda p: p.relative_to(base).as_posix(),
     )
     return sha256_bytes(b"".join(p.read_bytes() for p in files))

@@ -27,7 +27,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import URL, Site, ledger_of, write_config
+from conftest import COMPARISON, URL, Site, ledger_of, make_lead, rec, write_config
 from kizashi import detect, ledger, runner
 from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
@@ -425,9 +425,25 @@ def test_dt2_zero_base_has_no_rate_and_sums_are_decimal(repo: Path) -> None:
     conn.close()
 
 
+def series_calc(conn: sqlite3.Connection, lead: sqlite3.Row, year: int, op: str) -> sqlite3.Row:
+    """候補の基礎集計のうち、fiscal_year = year で op（sum・count）のもの（1つだけのはず）。"""
+    found = [
+        k
+        for k in lead_calcs(conn, lead["lead_id"])
+        if k["kind"] == "base"
+        and json.loads(k["request_json"])["op"] == op
+        and {"col": "fiscal_year", "op": "=", "value": year}
+        in json.loads(k["request_json"])["filter"]
+    ]
+    assert len(found) == 1, (lead["lead_key"], year, op, len(found))
+    return found[0]
+
+
 def test_dt2_series_years_and_partial_year(repo: Path) -> None:
-    """系列：series_years の各年度の合計を基礎集計にし、比べる2年度は calc_from・calc_to と同じ計算にする。
-    年度途中（dataset.yaml の partial_year）の年度を比べると、比較できない理由に partial_year が付く。"""
+    """系列：series_years の各年度の基礎集計を系列にし、比べる2年度は calc_from・calc_to と同じ計算にする。
+    比べる2年度以外の年度も、系列のSQL（series/）が返す行と除く行で、比べる2年度と同じに数える（単価契約と
+    金額のない行は合計から除き、除いた行と理由と件数を request_json に残す）。年度途中（dataset.yaml の
+    partial_year）の年度を比べると、比較できない理由に partial_year が付く。"""
     conn, checked = crafted_ledger(
         repo,
         [
@@ -456,19 +472,102 @@ def test_dt2_series_years_and_partial_year(repo: Path) -> None:
     series = json.loads(lead["calc_ids_json"])
     assert series[1:] == [lead["calc_from"], lead["calc_to"]]
     first = calc(conn, series[0])
+    assert first["calc_id"] == series_calc(conn, lead, 2024, "sum")["calc_id"]
     request = json.loads(first["request_json"])
-    # 2024年度：単価契約の999円を除き、金額のない行は合計に入れず件数を残す
+    # 2024年度：S001 = 2024年度の競争入札、S002 = 2024年度の随意契約（crafted_ledger の採番）。
+    # 単価契約の999円（S001:000002）と金額のない行（S002:000001）を合計から除き、100円だけを足す
     assert (first["value"], first["kind"], first["origin"], first["unit"]) == (
         "100",
         "base",
         "run",
         "円",
     )
-    assert request["null_rows"] == 1
-    assert {"col": "unit_price", "op": "=", "value": 0} in request["filter"]
+    assert json.loads(first["row_refs_json"]) == ["S001:000001"]
+    assert request["excluded"] == [
+        {"ref": "S001:000002", "reason": "unit_price"},
+        {"ref": "S002:000001", "reason": "amount_not_numeric"},
+    ]
+    assert (request["excluded_count"], request["excluded_by_reason"]) == (
+        2,
+        {"amount_not_numeric": 1, "unit_price": 1},
+    )
+    assert (request["null_rows"], request["series"], request["partial_year"]) == (0, True, False)
     assert {"col": "fiscal_year", "op": "=", "value": 2024} in request["filter"]
     assert "年度途中" not in first["meaning"]
     assert "年度途中" in calc(conn, lead["calc_to"])["meaning"]
+    # 系列の年度にも、比べる2年度と同じく合計対象行の件数を登録する（系列には入れない）
+    count = series_calc(conn, lead, 2024, "count")
+    assert (count["value"], count["unit"], json.loads(count["row_refs_json"])) == (
+        "1",
+        "件",
+        ["S001:000001"],
+    )
+    assert "合計対象行の件数" in count["meaning"]
+    assert json.loads(count["request_json"])["excluded"] == request["excluded"]
+    assert count["calc_id"] not in series
+    assert lead["note"] is None
+    conn.close()
+
+
+def test_dt2_series_without_summable_rows_is_not_zero_yen(repo: Path) -> None:
+    """系列：合計できる行がない年度（金額がすべて空欄・まとめの行がない）は、0円の合計を作らず算出できない
+    ものとして扱い、合計対象行の件数（除いた行と理由付き）を登録して候補の note に書く。件数の系列
+    （amount_incomparable）は、比べる2年度と同じく合計から除く行を数えない。
+
+    crafted_ledger の採番：S001 = 2023年度の競争入札、S003 = 2024年度の競争入札、S005 = 2025年度の競争入札。"""
+    conn, checked = crafted_ledger(
+        repo,
+        [
+            {"year": 2023, "family": "kyoso", "group": "合計用合成業務", "amount": None},
+            {"year": 2024, "family": "kyoso", "group": "合計用合成業務", "amount": 100},
+            {"year": 2025, "family": "kyoso", "group": "合計用合成業務", "amount": 200},
+            {"year": 2023, "family": "kyoso", "group": "件数用合成業務", "amount": None},
+            {"year": 2024, "family": "kyoso", "group": "件数用合成業務", "amount": None},
+            {"year": 2025, "family": "kyoso", "group": "件数用合成業務", "amount": 100},
+            {"year": 2024, "family": "kyoso", "group": "欠年合成業務", "amount": 100},
+            {"year": 2025, "family": "kyoso", "group": "欠年合成業務", "amount": 300},
+        ],
+        years=(2023, 2024, 2025),
+    )
+    run_detect(repo, conn, checked, series_years=[2023, 2024, 2025])
+
+    total = lead_of(conn, "s1_amount_change", "合計用合成業務")
+    assert total["change_category"] == "amount_up"
+    assert json.loads(total["calc_ids_json"]) == [total["calc_from"], total["calc_to"]]
+    assert not [
+        k
+        for k in lead_calcs(conn, total["lead_id"])
+        if k["unit"] == "円"
+        and {"col": "fiscal_year", "op": "=", "value": 2023}
+        in json.loads(k["request_json"]).get("filter", [])
+    ]
+    count = series_calc(conn, total, 2023, "count")
+    assert (count["value"], json.loads(count["row_refs_json"])) == ("0", [])
+    assert json.loads(count["request_json"])["excluded"] == [
+        {"ref": "S001:000001", "reason": "amount_not_numeric"}
+    ]
+    assert "2023年度" in total["note"] and "0円とは扱わない" in total["note"]
+    assert count["calc_id"] in total["note"]
+
+    absent = lead_of(conn, "s1_amount_change", "欠年合成業務")
+    assert json.loads(absent["calc_ids_json"]) == [absent["calc_from"], absent["calc_to"]]
+    count = series_calc(conn, absent, 2023, "count")
+    assert (count["value"], json.loads(count["row_refs_json"])) == ("0", [])
+    assert json.loads(count["request_json"])["excluded"] == []
+    assert "2023年度" in absent["note"] and count["calc_id"] in absent["note"]
+
+    counted = lead_of(conn, "s1_amount_change", "件数用合成業務")
+    assert counted["change_category"] == "amount_incomparable"
+    series = json.loads(counted["calc_ids_json"])
+    assert series[1:] == [counted["calc_from"], counted["calc_to"]]
+    values = [(calc(conn, c)["value"], calc(conn, c)["unit"]) for c in series]
+    assert values == [("0", "件"), ("0", "件"), ("1", "件")]  # 2023・2024年度の空欄の行は数えない
+    for cid, ref in ((series[0], "S001:000002"), (series[1], "S003:000002")):
+        assert json.loads(calc(conn, cid)["request_json"])["excluded"] == [
+            {"ref": ref, "reason": "amount_not_numeric"}
+        ]
+        assert "合計対象行の件数" in calc(conn, cid)["meaning"]
+    assert counted["note"] is None
     conn.close()
 
 
@@ -512,7 +611,12 @@ def test_dt3_s2_not_run_without_both_families(repo: Path, executed: list[str]) -
     書いて partial にする。S3（随意契約だけ）は実行する。"""
     result = start(repo, Site({URL["k25_csv"]: httpx.Response(404)}))
     assert result["state"] == "partial"
-    assert executed == ["screens/s3_reason_change.sql", "populations/s3_reason_change.sql"]
+    assert executed == [
+        "screens/s3_reason_change.sql",
+        "populations/s3_reason_change.sql",
+        "series/s3_reason_change.sql",  # 系列の年度（series_years）ごとに1回
+        "series/s3_reason_change.sql",
+    ]
     conn = ledger_of(repo, result["run_id"])
     counts = counts_of(conn)
     for name in ("s1_amount_change", "s2_method_change"):
@@ -603,6 +707,54 @@ def test_dt4_sc1_scope_zero_leads_keeps_compared(repo: Path, site: Site) -> None
     conn.close()
 
 
+def test_sc1_scope_note_kept_for_explore_leads_and_conclusions(repo: Path, site: Site) -> None:
+    """SC-1（D-038⑮）：探索の候補（record の kind: lead）の母集団にも、検出の候補と同じ関数で絞り込みの指示と
+    条件を書き足す。結論で母集団を変えても、実行時の絞り込みは消えない（書き足しが残っていれば重ねない）。
+    母集団以外を変えた結論でも、母集団の書き足しは残る。"""
+    scope = {
+        "instruction": "記者の指示：調査研究の委託を除く",
+        "filters": [{"field": "title", "op": "not_contains", "value": "調査研究"}],
+    }
+    note = "（記者の指示で絞り込み：記者の指示：調査研究の委託を除く。条件：title が「調査研究」を含まない）"
+    run_id = start(repo, site, scope=scope)["run_id"]
+    lead = make_lead(repo, run_id)
+
+    def population() -> str:
+        conn = ledger_of(repo, run_id)
+        row = conn.execute(
+            "SELECT comparison_json FROM leads WHERE lead_id = ?", (lead["lead"],)
+        ).fetchone()
+        conn.close()
+        return json.loads(row[0])["population"]
+
+    assert population() == COMPARISON["population"] + note
+    hold = {
+        "kind": "conclusion",
+        "lead_id": lead["lead"],
+        "outcome": "hold",
+        "comparison_state": "unresolved",
+        "hold_reason": "comparison",
+    }
+    rec(repo, run_id, {**hold, "comparison": {"population": "翻訳業務の契約"}})
+    assert population() == "翻訳業務の契約" + note
+    rec(repo, run_id, {**hold, "comparison": {"population": "翻訳業務の契約" + note}})
+    assert population() == "翻訳業務の契約" + note  # 重ねない
+    rec(repo, run_id, {**hold, "comparison": {"unit": "円（単価契約を含む）"}})
+    assert population() == "翻訳業務の契約" + note
+
+    # 絞り込みのない実行では書き足さない
+    plain = runner.start_run(
+        repo, "cao-procurement", write_config(repo, name="plain.json"), transport=site.transport
+    )["run_id"]
+    other = make_lead(repo, plain, qname="q-002.sql")
+    conn = ledger_of(repo, plain)
+    row = conn.execute(
+        "SELECT comparison_json FROM leads WHERE lead_id = ?", (other["lead"],)
+    ).fetchone()
+    conn.close()
+    assert json.loads(row[0]) == COMPARISON
+
+
 # ---------------------------------------------------------------------------
 # DT-5：母集団の数と、screens/ だけが検出として実行されること
 # ---------------------------------------------------------------------------
@@ -636,7 +788,8 @@ def test_dt5_population_counts_in_counts_json(repo: Path, synthetic_run: str) ->
 def test_dt5_only_sql_in_screens_runs_as_detection(
     repo: Path, site: Site, executed: list[str]
 ) -> None:
-    """DT-5：populations/ に置いた SQL と、screens/ の .sql でないファイルは検出として実行されない。"""
+    """DT-5：populations/ に置いた SQL と、screens/ の .sql でないファイルは検出として実行されない。
+    系列のSQL（series/）は、候補のある検出SQLの後に、系列の年度ごとに実行する。"""
     shutil.copy(screen_sql(repo, "s1_amount_change"), screen_sql(repo, "zz_extra", "populations"))
     (repo / "datasets" / "cao-procurement" / "screens" / "memo.txt").write_text(
         "SELECT 1;", encoding="utf-8"
@@ -644,12 +797,9 @@ def test_dt5_only_sql_in_screens_runs_as_detection(
     result = start(repo, site)
     assert result["state"] == "completed"
     assert executed == [
-        "screens/s1_amount_change.sql",
-        "populations/s1_amount_change.sql",
-        "screens/s2_method_change.sql",
-        "populations/s2_method_change.sql",
-        "screens/s3_reason_change.sql",
-        "populations/s3_reason_change.sql",
+        f"{sub}/{name}.sql"
+        for name in SCREENS
+        for sub in ("screens", "populations", "series", "series")
     ]
     conn = ledger_of(repo, result["run_id"])
     assert "zz_extra" not in counts_of(conn)
@@ -659,11 +809,19 @@ def test_dt5_only_sql_in_screens_runs_as_detection(
 
 @pytest.mark.parametrize(
     "case",
-    ["screen_without_yaml", "screen_without_population", "bad_columns", "excluded_not_in_refs"],
+    [
+        "screen_without_yaml",
+        "screen_without_population",
+        "bad_columns",
+        "excluded_not_in_refs",
+        "screen_without_series",
+        "series_differs_from_screen",
+    ],
 )
 def test_detect_errors_fail_the_run_without_leads(repo: Path, site: Site, case: str) -> None:
-    """検出SQLの誤り（dataset.yaml の screens にない、母集団のSQLがない、列が違う、excluded の行が row_refs
-    にない）は E_INTERNAL で detect を failed にし、候補を1つも残さない（トランザクションを巻き戻す）。"""
+    """検出SQLの誤り（dataset.yaml の screens にない、母集団のSQL・系列のSQLがない、列が違う、excluded の行が
+    row_refs にない、比べる2年度で系列のSQLの行・除く行が検出SQLと違う）は E_INTERNAL で detect を failed に
+    し、候補を1つも残さない（トランザクションを巻き戻す）。"""
     base = repo / "datasets" / "cao-procurement"
     if case == "screen_without_yaml":
         shutil.copy(screen_sql(repo, "s3_reason_change"), base / "screens" / "s9_extra.sql")
@@ -673,6 +831,17 @@ def test_detect_errors_fail_the_run_without_leads(repo: Path, site: Site, case: 
         )
     elif case == "screen_without_population":
         screen_sql(repo, "s3_reason_change", "populations").unlink()
+    elif case == "screen_without_series":
+        screen_sql(repo, "s3_reason_change", "series").unlink()
+    elif case == "series_differs_from_screen":
+        # 合計から除く行を返さない系列のSQL：荷物等の配送業務などで、比べる年度の除く行が検出SQLと違う
+        sql = screen_sql(repo, "s1_amount_change", "series")
+        text = sql.read_text(encoding="utf-8")
+        assert "FILTER (WHERE unit_price = 1 OR amount_yen IS NULL)" in text
+        sql.write_text(
+            text.replace("FILTER (WHERE unit_price = 1 OR amount_yen IS NULL)", "FILTER (WHERE 0)"),
+            encoding="utf-8",
+        )
     elif case == "bad_columns":
         screen_sql(repo, "s3_reason_change").write_text(
             "SELECT 'x' AS lead_key, 'reason_changed' AS change_category WHERE :year_from < :year_to;",
