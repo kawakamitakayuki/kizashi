@@ -172,6 +172,14 @@ def _inspect_run(conn: sqlite3.Connection, run_id: str, page: int) -> dict:
         "compare_years": config.get("compare_years"),
         "series_years": config.get("series_years"),
         "scope": config.get("scope"),
+        **(
+            {
+                "config_note": "実行設定の全文（問い・絞り込み・モデル名）は、氏名の検査（normalize の最初）を"
+                "通るまで台帳に保存していない（D-040）。この実行は検査の前に止まった。"
+            }
+            if runner.is_pending(config)
+            else {}
+        ),
         "state": run["state"],
         "stop_reason": None if run["stop_reason"] is None else json.loads(run["stop_reason"]),
         "profile": run["profile"],

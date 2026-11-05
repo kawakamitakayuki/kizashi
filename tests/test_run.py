@@ -27,7 +27,7 @@ from conftest import (
     ledger_of,
     write_config,
 )
-from kizashi import runner
+from kizashi import inspect_cmd, runner
 from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 
@@ -78,6 +78,20 @@ def test_run_completed_with_synthetic_data(
     run = conn.execute("SELECT * FROM runs").fetchone()
     assert run["state"] == "completed" and run["profile"] == "investigate" and run["finished_at"]
     assert json.loads(run["config_json"]) == RUN_CONFIG
+    # 設定の全文は氏名の検査を通ってから保存し、同じトランザクションで検査済みを events に残す（D-040①）
+    (checked,) = conn.execute(
+        "SELECT * FROM events WHERE kind = 'check' AND target_id = ?", (run_id,)
+    ).fetchall()
+    assert json.loads(checked["after_json"]) == {
+        "target": "run_config",
+        "check": "V7_PERSONAL_NAME",
+        "result": "passed",
+        "config_sha256": hashlib.sha256(
+            json.dumps(
+                RUN_CONFIG, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
     versions = json.loads(run["rule_versions_json"])
     assert (
         versions["dataset_yaml_sha256"]
@@ -97,8 +111,9 @@ def test_run_completed_with_synthetic_data(
     # 規則の版（implementation_spec.md 3.5、共通ルール11）。2：照合を足し Q13 の結果が変わった。
     # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった。
     # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた。6：P0-5 で検出（detect）を足した。
-    # 7：D-038 で系列を系列のSQLで数え、再開で原本を照らし、引用の符号の境目を直した
-    assert (versions["rules_version"], versions["parser_version"]) == ("7", "cao-procurement/1")
+    # 7：D-038 で系列を系列のSQLで数え、再開で原本を照らし、引用の符号の境目を直した。
+    # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した
+    assert (versions["rules_version"], versions["parser_version"]) == ("8", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -139,6 +154,7 @@ def test_run_completed_with_synthetic_data(
         ("state_change", None),
         ("stage", "plan"),
         ("stage", "fetch"),
+        ("check", None),  # 実行設定の氏名の検査を通り、全文を保存した（D-040①。normalize の最初）
         ("stage", "normalize"),
         ("stage", "quality"),
         ("stage", "reconcile_import"),
@@ -533,5 +549,31 @@ def test_run_config_with_personal_name_fails_before_normalize(
     stages = json.loads(run["stages_json"])
     assert (stages["fetch"]["state"], stages["normalize"]["state"]) == ("done", "failed")
     assert conn.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0
+    # D-040①：検査の前は、設定の全文（question・scope・model）を台帳に書かない。開始時に書くのは、型を区別
+    # する正規化JSONのハッシュと、検査済みの分野・年度だけ。検査済みの記録もない
+    stored = json.loads(conn.execute("SELECT config_json FROM runs").fetchone()[0])
+    full = json.loads((repo / config).read_text(encoding="utf-8"))
+    assert stored == {
+        "kind": "run_config",
+        "domain": "cao-procurement",
+        "compare_years": [2024, 2025],
+        "series_years": [2024, 2025],
+        "name_check": "pending",
+        "config_sha256": hashlib.sha256(
+            json.dumps(full, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+    }
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'check'").fetchone()[0] == 0
     conn.close()
     assert (repo / config).is_file()
+    shown = inspect_cmd.inspect(repo, err.affected_ids[0], err.affected_ids[0])
+    assert shown["question"] is None and shown["scope"] is None
+    assert "保存していない" in shown["config_note"]
+    # 台帳のファイル（WAL を含む）のどこにも氏名の語がない
+    run_dir = repo / "data" / "runs" / err.affected_ids[0]
+    for file in run_dir.glob("ledger.sqlite*"):
+        data = file.read_bytes()
+        for word in ("架空", "太郎", "テスト用のモデル名"):
+            assert word.encode("utf-8") not in data, (file.name, word)

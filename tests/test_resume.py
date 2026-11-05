@@ -18,6 +18,7 @@ import pytest
 
 from conftest import URL, Site, ledger_of, write_config
 from kizashi import cli, detect, runner
+from kizashi.adapters import cao_procurement
 from kizashi.errors import KizashiError
 
 
@@ -314,11 +315,14 @@ def test_rs2_changed_raw_file_is_input_changed(
     conn.close()
 
 
-def test_rs1_resume_keeps_inbox_config_with_other_number_types(repo: Path) -> None:
-    """RS-1（D-038⑬）：再開で成功したとき、inbox/ の設定ファイルを開始時の設定と、数値の型も保つ正規化 JSON
-    で照らす。年度を 2024.0 に書き換えたファイルは別の中身として、台帳の設定を accepted/ に書き、inbox/ の
-    ファイルは消さない。キーの順と空白だけが違うファイルは同じ中身として accepted/ に写して消す。"""
-    run_id, config = transient_failed_run(repo)
+def test_rs1_resume_keeps_inbox_config_with_other_number_types(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RS-1（D-038⑬）：設定の全文を保存した後（氏名の検査の後）に止まった実行は、台帳の設定で再開する。成功した
+    とき、inbox/ の設定ファイルを開始時の設定と、数値の型も保つ正規化 JSON で照らす。年度を 2024.0 に書き換えた
+    ファイルは別の中身として、台帳の設定を accepted/ に書き、inbox/ のファイルは消さない。"""
+    run_id = crashed_run(repo, monkeypatch, site, "detect")
+    config = "inbox/run-config.json"
     stored = json.loads((repo / config).read_text(encoding="utf-8"))
     changed = json.dumps({**stored, "compare_years": [2024.0, 2025]}, ensure_ascii=False)
     assert json.loads(changed) == stored  # Python の == では同じに見える
@@ -327,20 +331,119 @@ def test_rs1_resume_keeps_inbox_config_with_other_number_types(repo: Path) -> No
     assert result["state"] == "completed"
     assert (repo / config).read_text(encoding="utf-8") == changed  # 消さない
     accepted = repo / "data" / "runs" / run_id / "accepted" / "0001-run_config.json"
-    assert json.loads(accepted.read_text(encoding="utf-8")) == stored
-    assert json.loads(accepted.read_text(encoding="utf-8"))["compare_years"] == [2024, 2025]
-    assert all(
-        type(y) is int for y in json.loads(accepted.read_text(encoding="utf-8"))["compare_years"]
-    )
+    saved = json.loads(accepted.read_text(encoding="utf-8"))
+    assert saved == stored and all(type(y) is int for y in saved["compare_years"])
 
-    (repo / config).unlink()
-    run_id, config = transient_failed_run(repo)
-    reordered = json.dumps(dict(reversed(list(stored.items()))), ensure_ascii=False, indent=4)
-    (repo / config).write_text(reordered, encoding="utf-8")
+
+def config_state(repo: Path, run_id: str) -> tuple:
+    """(状態, 設定の保存の状態, events の数)。"""
+    conn = ledger_of(repo, run_id)
+    state, config = conn.execute("SELECT state, config_json FROM runs").fetchone()
+    n_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    conn.close()
+    return state, json.loads(config).get("name_check", "saved"), n_events
+
+
+def crash_before_name_check(repo: Path, monkeypatch: pytest.MonkeyPatch, site: Site) -> str:
+    """取得の後、氏名の検査の前に強制終了した（running のまま、設定の全文を保存していない）実行。"""
+
+    def crash(ctx):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as m:
+        m.setattr(runner, "_check_config_names", crash)
+        with pytest.raises(KeyboardInterrupt):
+            runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    (run_dir,) = (repo / "data" / "runs").iterdir()
+    return run_dir.name
+
+
+def test_rs1_resume_before_name_check_reads_inbox_config(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RS-1（D-040①）：氏名の検査の前に止まった実行（強制終了の running と、取得の一時的な失敗の failed）は、
+    inbox/ の設定ファイルの正規化 JSON のハッシュが開始時と同じなら（キーの順と空白は問わない）、その設定で再開
+    する。再開で検査を通ったときに全文を保存して検査済みを残し、成功したら設定ファイルを accepted/ に写して消す。"""
+    run_id = crash_before_name_check(repo, monkeypatch, site)
+    assert config_state(repo, run_id)[:2] == ("running", "pending")
+    config = repo / "inbox" / "run-config.json"
+    data = json.loads(config.read_text(encoding="utf-8"))
+    config.write_text(
+        json.dumps(dict(reversed(list(data.items()))), ensure_ascii=False, indent=4),
+        encoding="utf-8",
+    )
     result = runner.resume_run(repo, run_id, transport=Site().transport)
     assert result["state"] == "completed"
-    assert not (repo / config).exists()
+    assert result["resumed"]["skipped"] == ["plan", "fetch"]
+    conn = ledger_of(repo, run_id)
+    assert json.loads(conn.execute("SELECT config_json FROM runs").fetchone()[0]) == data
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'check'").fetchone()[0] == 1
+    conn.close()
+    assert not config.exists()
     assert result["config_accepted"] == f"data/runs/{run_id}/accepted/0001-run_config.json"
+
+    run_id, _ = transient_failed_run(repo)  # 取得の失敗で止まった failed も、検査の前
+    assert config_state(repo, run_id)[:2] == ("failed", "pending")
+    assert runner.resume_run(repo, run_id, transport=Site().transport)["state"] == "completed"
+
+
+@pytest.mark.parametrize("how", ["deleted", "number_type", "question"])
+def test_rs2_resume_before_name_check_without_same_config(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """RS-2（D-040①）：氏名の検査の前に止まった実行で、inbox/ に設定ファイルがなければ E_NOT_RESUMABLE、
+    中身か数値の型が違えば E_INPUT_CHANGED。拒否では状態も events も変えず、通信もしない。"""
+    run_id = crash_before_name_check(repo, monkeypatch, site)
+    before = config_state(repo, run_id)
+    config = repo / "inbox" / "run-config.json"
+    data = json.loads(config.read_text(encoding="utf-8"))
+    if how == "deleted":
+        config.unlink()
+    elif how == "number_type":
+        config.write_text(
+            json.dumps({**data, "series_years": [2024, 2025.0]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    else:
+        config.write_text(
+            json.dumps({**data, "question": "別の問い"}, ensure_ascii=False), encoding="utf-8"
+        )
+    resume_site = Site()
+    with pytest.raises(KizashiError) as info:
+        runner.resume_run(repo, run_id, transport=resume_site.transport)
+    expected = "E_NOT_RESUMABLE" if how == "deleted" else "E_INPUT_CHANGED"
+    assert (info.value.code, info.value.exit_code) == (expected, 3)
+    assert "run-config.json" in info.value.message
+    assert config_state(repo, run_id) == before
+    assert resume_site.requests == []
+
+
+def test_rs1_resume_after_name_check_uses_ledger_config(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RS-1（D-040①）：氏名の検査を通って全文を保存した後、正規化の途中で止まった実行は、inbox/ に設定ファイルが
+    なくても台帳の設定で再開する（D-038⑬：台帳の設定を accepted/ に書く）。"""
+
+    def crash(*args, **kwargs):
+        raise KeyboardInterrupt  # 検査と全文の保存の後、最初の CSV の正規化で止める
+
+    with monkeypatch.context() as m:
+        m.setattr(cao_procurement, "normalize_source", crash)
+        with pytest.raises(KeyboardInterrupt):
+            runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    (run_dir,) = (repo / "data" / "runs").iterdir()
+    run_id = run_dir.name
+    assert config_state(repo, run_id)[:2] == ("running", "saved")
+    stored = json.loads((repo / "inbox" / "run-config.json").read_text(encoding="utf-8"))
+    (repo / "inbox" / "run-config.json").unlink()
+    result = runner.resume_run(repo, run_id, transport=Site().transport)
+    assert result["state"] == "completed"
+    assert result["resumed"]["skipped"] == ["plan", "fetch"]
+    accepted = repo / "data" / "runs" / run_id / "accepted" / "0001-run_config.json"
+    assert json.loads(accepted.read_text(encoding="utf-8")) == stored
+    conn = ledger_of(repo, run_id)
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'check'").fetchone()[0] == 1
+    conn.close()
 
 
 def test_rs2_cli_resume(repo: Path, site: Site, capsys: pytest.CaptureFixture[str]) -> None:
