@@ -1,9 +1,10 @@
 """公表一覧の PDF の表のセルの切り出し、行の対応、項目の照合（アダプタ仕様7.1〜7.3。D-002 の方法(a)）。
 
-- pdfplumber を呼ぶのは load_pages だけ。テストではこの関数を monkeypatch し、合成の罫線と文字の座標を返す。
+- pdfplumber を呼ぶのは load_pages と extract_pages だけ。テストではこの2つを monkeypatch し、合成の罫線と
+  文字の座標、合成のページのテキストを返す。
 - NO の列と照合に使う列以外の文字は、セルに振り分ける段で捨て、文字列にしない（担当官の列の氏名を含む）。
 - 公表一覧の PDF のページ別テキストは作らない（D-021）。このモジュールはファイルに何も書かない。
-- 追加資料の PDF のページ別テキスト（extract_pages）は、追加取得の実装（P0-4）で足す。
+- 追加資料の PDF のページ別テキストは extract_pages で取り出す（書き出しは fetcher.fetch_evidence。実装仕様4.2）。
 """
 
 from __future__ import annotations
@@ -58,6 +59,21 @@ class Page:
     number: int  # ファイルの中のページ番号（1から）
     rects: tuple[Rect, ...]
     chars: tuple[Char, ...]
+
+
+def extract_pages(path: Path) -> list[str]:
+    """追加資料の PDF のページ別テキスト（pdfplumber 0.11.10 の extract_text。実装仕様4.2）。
+
+    公表一覧の PDF（kind='dataset'）には使わない（D-021。担当官の氏名を書き出さないため）。
+    """
+    import pdfplumber
+
+    texts: list[str] = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            texts.append(page.extract_text() or "")
+            page.flush_cache()
+    return texts
 
 
 def load_pages(path: Path) -> list[Page]:

@@ -106,18 +106,10 @@ def test_cli1_e_cwd_before_argument_errors(tmp_path: Path, monkeypatch, capsys, 
 
 # 4.1〜4.7 の書式どおりの呼び出し。仮の実装は {"ok": true, "data": {"stub": "<操作名>"}} を返す。
 # run <分野> --config は P0-2 で本実装にした（test_cli2_run_is_implemented と test_run.py）。
+# fetch（--recheck を除く）・inspect・query・record は P0-4 で本実装にした（IMPLEMENTED_FORMS）。
 VALID_FORMS = [
     ("run", ["run", "--resume", "20261105-101500-a3f2"]),
-    ("fetch", ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/x.pdf"]),
-    ("fetch", ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/", "--index"]),
-    ("fetch", ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/y.html", "--definition"]),
     ("fetch", ["fetch", "20261105-101500-a3f2", "--recheck", "S004"]),
-    ("inspect", ["inspect", "20261105-000000-test"]),
-    ("inspect", ["inspect", "20261105-000000-test", "--page", "2"]),
-    ("inspect", ["inspect", "L0001", "--run", "20261105-000000-test"]),
-    ("inspect", ["inspect", "S004:000042", "--run", "20261105-000000-test", "--page", "3"]),
-    ("query", ["query", "20261105-101500-a3f2", "inbox/q-001.sql"]),
-    ("record", ["record", "20261105-101500-a3f2", "inbox/calc-001.json"]),
     ("check", ["check", "L0001", "--run", "20261105-101500-a3f2"]),
     (
         "check",
@@ -150,6 +142,31 @@ def test_cli1_stub_accepts_documented_forms(
     code, payload, _ = run_cli(argv, capsys)
     assert code == 0
     assert payload == {"ok": True, "data": {"stub": operation}}
+
+
+# P0-4 で本実装にした操作の書式。最小のフォルダー（台帳も inbox/ もない）では、引数の誤り（E_USAGE・E_BAD_ID）
+# でなく、操作の中の型付きのエラー（台帳がない、提案ファイルがない）を返す。
+IMPLEMENTED_FORMS = [
+    ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/x.pdf"],
+    ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/", "--index"],
+    ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/y.html", "--definition"],
+    ["inspect", "20261105-000000-test"],
+    ["inspect", "20261105-000000-test", "--page", "2"],
+    ["inspect", "L0001", "--run", "20261105-000000-test"],
+    ["inspect", "S004:000042", "--run", "20261105-000000-test", "--page", "3"],
+    ["query", "20261105-101500-a3f2", "inbox/q-001.sql"],
+    ["record", "20261105-101500-a3f2", "inbox/calc-001.json"],
+]
+
+
+@pytest.mark.parametrize("argv", IMPLEMENTED_FORMS)
+def test_cli1_implemented_forms_reach_the_operation(
+    repo_root: Path, capsys, new_sqlite, argv: list[str]
+) -> None:
+    """CLI-1：本実装の操作も、書式どおりなら引数の検査を通り、操作の型付きのエラーを1つのJSONで返す。"""
+    code, payload, _ = run_cli(argv, capsys)
+    assert code == 1
+    assert payload["error"]["code"] in ("E_REF_NOT_FOUND", "E_INBOX_PATH")
 
 
 INVALID_FORMS = [
@@ -350,7 +367,7 @@ def test_cli1_console_script(tmp_path: Path) -> None:
     (fake_repo / "pyproject.toml").write_text("", encoding="utf-8")
     (fake_repo / "datasets").mkdir()
     proc = subprocess.run(
-        [str(exe), "inspect", "L0001", "--run", "20261105-000000-test"],
+        [str(exe), "render", "L0001", "--run", "20261105-000000-test"],
         cwd=fake_repo,
         capture_output=True,
         text=True,
@@ -358,7 +375,7 @@ def test_cli1_console_script(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0
-    assert json.loads(proc.stdout) == {"ok": True, "data": {"stub": "inspect"}}
+    assert json.loads(proc.stdout) == {"ok": True, "data": {"stub": "render"}}
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +398,9 @@ def test_cli3_old_sqlite_is_e_usage(repo_root: Path, monkeypatch, capsys, versio
 def test_cli3_new_sqlite_passes(repo_root: Path, monkeypatch, capsys, version: str) -> None:
     """CLI-3：3.44以上は止めない。3.100.0 のように、文字列の比較では誤って止める版も通す。"""
     monkeypatch.setattr(sqlite3, "sqlite_version", version)
-    code, payload, _ = run_cli(["inspect", "20261105-000000-test"], capsys)
+    code, payload, _ = run_cli(["render", "20261105-000000-test"], capsys)
     assert code == 0
-    assert payload == {"ok": True, "data": {"stub": "inspect"}}
+    assert payload == {"ok": True, "data": {"stub": "render"}}
 
 
 # ---------------------------------------------------------------------------
@@ -466,10 +483,10 @@ def test_cli2_bad_inbox_paths(repo_root: Path, capsys, new_sqlite, argv) -> None
     ],
 )
 def test_cli2_valid_ids_pass(repo_root: Path, capsys, new_sqlite, argv) -> None:
-    """CLI-2：3.3 の書式どおりの ID は通る（操作は仮の実装）。"""
+    """CLI-2：3.3 の書式どおりの ID は通る（E_BAD_ID にならず、操作の中で台帳・提案ファイルを探す）。"""
     code, payload, _ = run_cli(argv, capsys)
-    assert code == 0
-    assert payload["ok"] is True
+    assert code != 2
+    assert payload["ok"] is True or payload["error"]["code"] in ("E_REF_NOT_FOUND", "E_INBOX_PATH")
 
 
 def test_cli2_run_is_implemented(repo_root: Path, capsys, new_sqlite) -> None:

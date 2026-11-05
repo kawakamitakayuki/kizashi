@@ -96,6 +96,29 @@ def synthetic_pdf_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pdftext, "load_pages", load)
 
 
+EVIDENCE = Path(__file__).resolve().parent / "fixtures" / "evidence"
+
+
+def evidence_pdf_bytes(name: str) -> bytes:
+    """合成の追加資料の PDF。中身は印だけで、ページ別テキストは tests/fixtures/evidence/<name>.txt
+    （ページを \\f で区切ったもの）に替える。"""
+    return f"%PDF-1.4\n% synthetic evidence pdf {name}\n".encode("ascii")
+
+
+@pytest.fixture(autouse=True)
+def synthetic_evidence_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """追加資料の PDF のテキストの抽出でも PDF のライブラリを動かさない。印のない PDF は読めない PDF。"""
+
+    def extract(path: Path) -> list[str]:
+        found = re.search(rb"synthetic evidence pdf (\w+)", Path(path).read_bytes())
+        if found is None or not (EVIDENCE / f"{found.group(1).decode('ascii')}.txt").is_file():
+            raise ValueError("合成の追加資料の PDF でない（読めない PDF）")
+        text = (EVIDENCE / f"{found.group(1).decode('ascii')}.txt").read_text(encoding="utf-8")
+        return text.split("\f")
+
+    monkeypatch.setattr(pdftext, "extract_pages", extract)
+
+
 def default_routes() -> dict[str, httpx.Response | Callable[[httpx.Request], httpx.Response]]:
     csv = {"content-type": "text/csv"}
     pdf = {"content-type": "application/pdf"}
@@ -230,3 +253,76 @@ def all_text_in_ledger(conn: sqlite3.Connection) -> str:
 
 def all_bytes_under(path: Path) -> bytes:
     return b"".join(p.read_bytes() for p in sorted(path.rglob("*")) if p.is_file())
+
+
+# ---------------------------------------------------------------------------
+# 提案の登録の手順（record・inspect・KN-2 のテストで使う）
+# ---------------------------------------------------------------------------
+
+
+def put(root: Path, name: str, data: dict) -> str:
+    (root / "inbox" / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return f"inbox/{name}"
+
+
+def rec(root: Path, run_id: str, data: dict, name: str = "p.json") -> dict:
+    from kizashi import record
+
+    return record.record(root, run_id, put(root, name, data))
+
+
+def calc_sum(group: str, year: int, **extra) -> dict:
+    return {
+        "kind": "calc",
+        "op": "sum",
+        "table": "procurement_contracts",
+        "column": "amount_yen",
+        "filter": [
+            {"col": "group_key", "op": "=", "value": group},
+            {"col": "fiscal_year", "op": "=", "value": year},
+        ],
+        "label": f"{group}の契約金額の合計",
+        "unit": "円",
+        **extra,
+    }
+
+
+COMPARISON = {
+    "population": "内閣府の競争入札・随意契約のうち、件名のまとめのキーが両年度にある契約",
+    "row_meaning": "1件の契約",
+    "period": "会計年度",
+    "unit": "円",
+    "entity_mapping": "件名のまとめのキー",
+    "formula": "年度ごとの契約金額の合計の差",
+}
+
+
+def make_lead(root: Path, run_id: str, group: str = "翻訳業務", qname: str = "q-001.sql") -> dict:
+    """探索SQL → 両年度の計算 → 候補（screen_id='explore'）。計算ID と候補ID を返す。"""
+    (root / "inbox" / qname).write_text(
+        f"SELECT fiscal_year, amount_yen FROM procurement_contracts WHERE group_key = '{group}'",
+        encoding="utf-8",
+    )
+    from kizashi import query
+
+    query.run_query(root, run_id, f"inbox/{qname}")
+    k_from = rec(root, run_id, calc_sum(group, 2024))["id"]
+    k_to = rec(root, run_id, calc_sum(group, 2025))["id"]
+    lead = rec(
+        root,
+        run_id,
+        {
+            "kind": "lead",
+            "query_file": qname,
+            "lead_key": group,
+            "change_category": "amount_up",
+            "period_from": 2024,
+            "period_to": 2025,
+            "calc_from": k_from,
+            "calc_to": k_to,
+            "calc_ids": [],
+            "comparison": COMPARISON,
+            "note": "探索で見つけた",
+        },
+    )
+    return {"lead": lead["id"], "from": k_from, "to": k_to}
