@@ -41,6 +41,8 @@ Claude Code の版は書かない（`scripts/investigate` が `KIZASHI_CLAUDE_VE
  "quote": "配送予定数量は年間1,200件とする。", "value": "1200", "label": "仕様書の年間配送数量", "unit": "件"}
 ```
 
+数値は途中で切らずに全体を引用する（`1,200` の `200` だけ、`1.5` の `1.` までの引用は通らない）。負の数は符号ごと書く（`増減は-12件。` なら `"value": "-12"`）。`▲`・`△` の付いた数値は文書値にできないので、意味を記者に確かめる。
+
 ## lead（探索で見つけた変化。先に calc で両年度の値を計算しておく）
 ```json
 {"kind": "lead", "query_file": "q-002.sql", "lead_key": "荷物等の配送業務", "change_category": "amount_up",

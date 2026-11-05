@@ -88,3 +88,19 @@ def test_v7_findings_collects_fields() -> None:
         {"code": "V7_PERSONAL_NAME", "field": "text", "at": [7, 11]},
     ]
     assert warnings == [{"code": "W7_STRONG_WORD", "field": "question", "hit": "不正"}]
+
+
+def test_v7_names_only_fields_skip_numbers_but_not_names() -> None:
+    """V7（D-035）：数値の検査を当てない欄（比較の条件、単位、比較の単位、係数の key）にも氏名の検査を当てる。"""
+    names = check.name_variants([("架空", "太郎")])
+    errors, warnings = check.v7_findings(
+        {"text": "合計を見た。"},
+        names=names,
+        names_only={
+            "comparison.row_meaning": "1件の契約",
+            "comparison.population": "架空　太郎が担当した契約で、不正の有無は問わない",
+            "unit": "円",
+        },
+    )
+    assert errors == [{"code": "V7_PERSONAL_NAME", "field": "comparison.population", "at": [0, 5]}]
+    assert warnings == []  # 強い語の警告の範囲は変えない

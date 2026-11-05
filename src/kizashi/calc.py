@@ -7,7 +7,8 @@
   あるもの）だけ。数値の定数と、1つの依頼の中の同じ計算IDの重複は拒否する。精度28桁で計算し、丸めない。
   0での割り算と、基準が0以下の rate は E_DIV_ZERO。
 - 文書値：引用の中の数値の並び（NFKC の後の、数字と桁区切り・小数点の連なり）の、桁区切りを除いた値の
-  どれかと等しいことを確かめる。部分一致では照らさない。
+  どれかと等しいことを確かめる。部分一致では照らさない。直前の -・−・+ は、その前が数字・英字でなければ
+  符号として値に含める。直前に ▲・△ がある数値は、符号の意味が資料ごとの決まりなので文書値にしない（D-033）。
 
 呼び出し側（record）がトランザクションを持つ。
 """
@@ -36,6 +37,10 @@ PRECISION = 28
 
 _DOC_NUMBER_RE = re.compile(r"(?<![\d,.])[\d,.]*\d[\d,.]*(?![\d,.])")
 DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
+# 数値の並びの直前の符号（NFKC の後。全角の －・＋ は - と + になる）と、意味を決めない印（D-033）。
+SIGNS = {"-": -1, "−": -1, "+": 1}
+MARKS = ("▲", "△")
+_SIGN_BLOCKER_RE = re.compile(r"[0-9A-Za-z]")  # 符号の前にあれば、範囲・日付・記号の「-」とみなす
 
 
 def _err(
@@ -337,14 +342,27 @@ def register_derived(
 # ---------------------------------------------------------------------------
 
 
-def numbers_in_quote(quote: str) -> list[Decimal]:
-    """引用の中の数値の並び（桁区切りを除いて Decimal にできるもの）。"""
-    found: list[Decimal] = []
-    for token in _DOC_NUMBER_RE.findall(nfkc(quote)):
+@dataclass(frozen=True)
+class QuoteNumber:
+    value: Decimal
+    marked: bool  # 直前に ▲・△ がある（文書値にしない）
+
+
+def numbers_in_quote(quote: str) -> list[QuoteNumber]:
+    """引用の中の数値の並び（桁区切りを除いて Decimal にできるもの）。符号と印を見る。"""
+    text = nfkc(quote)
+    found: list[QuoteNumber] = []
+    for m in _DOC_NUMBER_RE.finditer(text):
         try:
-            found.append(Decimal(token.replace(",", "")))
+            value = Decimal(m.group().replace(",", ""))
         except decimal.InvalidOperation:
             continue
+        start = m.start()
+        prev = text[start - 1] if start >= 1 else ""
+        before = text[start - 2] if start >= 2 else ""
+        if prev in SIGNS and not _SIGN_BLOCKER_RE.fullmatch(before):
+            value = value.copy_negate() if SIGNS[prev] < 0 else value
+        found.append(QuoteNumber(value=value, marked=prev in MARKS))
     return found
 
 
@@ -354,16 +372,25 @@ def check_doc_value(quote: str, value: object) -> Decimal:
         raise _err(
             "E_SCHEMA",
             f"文書値の value は十進数の文字列（桁区切りなし）で書く：{value!r}",
-            next_action='例："1200"、"0.1"',
+            next_action='例："1200"、"0.1"、"-12"',
         )
     target = Decimal(value)
-    if not any(n == target for n in numbers_in_quote(quote)):
+    numbers = numbers_in_quote(quote)
+    if any(not n.marked and n.value == target for n in numbers):
+        return target
+    if any(n.marked and abs(n.value) == abs(target) for n in numbers):
         raise _err(
             "E_DOC_VALUE_MISMATCH",
-            f"文書値 {value} が、引用の中の数値の並びのどれとも等しくない（部分一致では照らさない）。",
-            next_action="引用の中の数値をそのまま（桁区切りを除いて）value に書く。",
+            f"文書値 {value} に当たる引用の中の数値の直前に ▲・△ がある。負を示すかは資料ごとの決まりなので、"
+            "文書値にしない（D-033）。",
+            next_action="▲・△ の意味を記者に確かめる（資料に凡例があれば、その箇所を示す）。",
         )
-    return target
+    raise _err(
+        "E_DOC_VALUE_MISMATCH",
+        f"文書値 {value} が、引用の中の数値の並びのどれとも等しくない（部分一致では照らさない。"
+        "符号も照らす）。",
+        next_action="引用の中の数値をそのまま（桁区切りを除き、符号を付けて）value に書く。",
+    )
 
 
 def register_doc_value(

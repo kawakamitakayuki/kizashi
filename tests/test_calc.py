@@ -329,3 +329,37 @@ def test_ca3_doc_value_is_a_whole_number_sequence() -> None:
         with pytest.raises(KizashiError) as info:
             calc.check_doc_value(quote, bad)
         assert info.value.code == "E_SCHEMA"
+
+
+def mismatch(quote: str, value: str) -> KizashiError:
+    with pytest.raises(KizashiError) as info:
+        calc.check_doc_value(quote, value)
+    assert info.value.code == "E_DOC_VALUE_MISMATCH", (quote, value)
+    return info.value
+
+
+def test_ca3_sign_is_part_of_the_number() -> None:
+    """CA-3（D-033）：数値の直前の -・－・−・+ は、その前が数字・英字でなければ符号として値に含める。"""
+    for quote in ("増減は-12件。", "増減は－12件。", "増減は−12件。", "増減は(-12)件。"):
+        assert calc.check_doc_value(quote, "-12") == Decimal(-12)
+        mismatch(quote, "12")
+    assert calc.check_doc_value("増減は+5件。", "5") == Decimal(5)
+    assert calc.check_doc_value("増減は＋5件。", "5") == Decimal(5)
+    mismatch("増減は+5件。", "-5")
+    # 数字・英字の後の「-」は符号にしない（範囲、日付、記号）
+    quote = "期間は2024-03-01から、番号はA-12、範囲は10-15件とする。"
+    for value in ("12", "3", "1", "15", "2024", "10"):
+        assert calc.check_doc_value(quote, value) == Decimal(value)
+    for value in ("-12", "-3", "-1", "-15"):
+        mismatch(quote, value)
+
+
+def test_ca3_triangle_marks_are_not_interpreted() -> None:
+    """CA-3（D-033）：▲・△ が直前にある数値は、符号の意味が資料ごとの決まりなので文書値にしない。"""
+    for quote, magnitude in (("増減は▲12件。", "12"), ("差は△1,200円とする。", "1200")):
+        for value in (magnitude, f"-{magnitude}"):
+            err = mismatch(quote, value)
+            assert "▲" in err.message and "△" in err.message
+            assert "記者" in err.next_action
+    # 同じ引用の中に印のない同じ数値があれば、それと照らす
+    assert calc.check_doc_value("前年度は12件、今年度は▲12件。", "12") == Decimal(12)

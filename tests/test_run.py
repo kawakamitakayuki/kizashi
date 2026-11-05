@@ -77,8 +77,9 @@ def test_run_completed_with_synthetic_data(
         == hashlib.sha256((DATASET_DIR / "dataset.yaml").read_bytes()).hexdigest()
     )
     assert versions["sql_sha256"] == hashlib.sha256(b"").hexdigest()  # 検出SQLはまだない（P0-5）
-    # 照合を足し、Q13 の結果が変わったので規則の版を上げた（implementation_spec.md 3.5、共通ルール11）
-    assert (versions["rules_version"], versions["parser_version"]) == ("2", "cao-procurement/1")
+    # 規則の版（implementation_spec.md 3.5、共通ルール11）。2：照合を足し Q13 の結果が変わった。
+    # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった
+    assert (versions["rules_version"], versions["parser_version"]) == ("3", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）

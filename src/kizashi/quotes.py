@@ -3,7 +3,9 @@
 - 資料のページ別テキスト（CSV は records.cells_json の column のキーの値）と引用を、どちらも NFKC にし、
   空白と改行を除いて比べる。部分一致でよい。
 - 引用は文末（。．！？で終わる）か、資料の段落の終わり（空行の前とページの終わり）・セルの終わりまで
-  含むこと。途中で切れていれば E_QUOTE_TRUNCATED。
+  含むこと。途中で切れていれば E_QUOTE_TRUNCATED。資料の中で直後が数字の「.」は文末にしない。
+- 資料の数値（数字と、数字に挟まれた桁区切り・小数点の連なり）の途中で始まる・終わる引用も
+  E_QUOTE_TRUNCATED（`750,000` の `000`、`1.5件` の `1.` を通さない。D-033）。
 - 主張の種類が「原資料の記載」（record）で、主張の fiscal_year とデータの資料の年度（論理資料のキー）が
   食い違えば E_QUOTE_YEAR。追加資料の年度は機械では決めない。
 - 索引ページ（kind='index'）、公表一覧の PDF（kind='dataset' の PDF。D-021）、知識ファイルは根拠に
@@ -28,6 +30,8 @@ ROLES = ("support", "oppose", "background")
 # 文末の文字（NFKC の後。．！？は . ! ? になる）。
 SENTENCE_END = ("。", ".", "!", "?")
 _PARAGRAPH_RE = re.compile(r"\n[ \t　\r]*\n")
+# 資料の数値（数字と、数字に挟まれた桁区切り・小数点）。引用の境目がこの途中なら通さない（D-033）。
+_NUMBER_RUN_RE = re.compile(r"\d+(?:[,.]\d+)*")
 
 # 6.4 の basis の file → references/ のファイル名の頭（版の部分は問わない）。
 KNOWLEDGE_FILES = {
@@ -56,21 +60,47 @@ def _schema(message: str) -> KizashiError:
     )
 
 
-def _segments_text(segments: list[str]) -> tuple[str, set[int]]:
-    """区切り（段落・セル）ごとに正規化してつなぎ、区切りの終わりの位置の集合を返す。"""
+def _segments_text(segments: list[str]) -> tuple[str, set[int], list[tuple[int, int]]]:
+    """区切り（段落・セル）ごとに正規化してつなぐ。区切りの終わりの位置の集合と、数値の範囲
+    （[始め, 終わり)。区切りをまたいでつながない）も返す。"""
     text = ""
     ends: set[int] = set()
+    runs: list[tuple[int, int]] = []
     for seg in segments:
-        text += key_text(seg)
+        part = key_text(seg)
+        runs.extend(
+            (len(text) + m.start(), len(text) + m.end()) for m in _NUMBER_RUN_RE.finditer(part)
+        )
+        text += part
         ends.add(len(text))
-    return text, ends
+    return text, ends, runs
+
+
+def _inside_number(pos: int, runs: list[tuple[int, int]]) -> bool:
+    return any(start < pos < end for start, end in runs)
+
+
+def _sentence_end(text: str, target: str, end: int) -> bool:
+    """引用が文末の文字で終わるか。資料の中で直後が数字の「.」は小数点なので文末にしない。"""
+    if not target.endswith(SENTENCE_END):
+        return False
+    return not (target.endswith(".") and end < len(text) and text[end].isdigit())
+
+
+def _truncated(message: str, affected: tuple) -> KizashiError:
+    return _err(
+        "E_QUOTE_TRUNCATED",
+        message,
+        next_action="否定や条件を取り違えないよう、文末まで含めて引用する。数値は全体を引用する。",
+        affected=affected,
+    )
 
 
 def _match(segments: list[str], quote: str, where: str, affected: tuple) -> None:
     target = key_text(quote)
     if not target:
         raise _schema("引用（quote）が空である。")
-    text, ends = _segments_text(segments)
+    text, ends, runs = _segments_text(segments)
     starts = []
     i = text.find(target)
     while i != -1:
@@ -83,15 +113,23 @@ def _match(segments: list[str], quote: str, where: str, affected: tuple) -> None
             next_action="資料の該当箇所を Read で読み直し、原文どおりに引用する。",
             affected=affected,
         )
-    if target.endswith(SENTENCE_END):
-        return
-    if any(s + len(target) in ends for s in starts):
-        return
-    raise _err(
-        "E_QUOTE_TRUNCATED",
+    whole = [
+        s
+        for s in starts
+        if not _inside_number(s, runs) and not _inside_number(s + len(target), runs)
+    ]
+    if not whole:
+        raise _truncated(
+            f"引用が資料の数値の途中で始まるか、途中で終わる（{where}。数値は全体を引用する）。",
+            affected,
+        )
+    for s in whole:
+        end = s + len(target)
+        if end in ends or _sentence_end(text, target, end):
+            return
+    raise _truncated(
         f"引用が文の途中で切れている（{where}。文末の。．！？か、段落・セルの終わりまで引用する）。",
-        next_action="否定や条件を取り違えないよう、文末まで含めて引用する。",
-        affected=affected,
+        affected,
     )
 
 

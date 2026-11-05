@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import URL, WEB, Site, evidence_pdf_bytes, ledger_of
+from conftest import BASE, URL, WEB, Site, evidence_pdf_bytes, ledger_of
 from kizashi import fetcher, limits
 from kizashi.errors import KizashiError
 
@@ -140,6 +140,55 @@ def test_fetch_refuses_disallowed_host_and_dataset_links(
         assert info.value.code == code
     assert not [u for u in evsite.requests if "test/" in u or "example.com" in u]
     assert ledger_of(repo, synthetic_run).execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 9
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        URL["k25_pdf"] + "?v=2",
+        URL["k25_pdf"] + "#page=1",
+        URL["k25_csv"].replace("_kohyo_kyoso.csv", "_KOHYO_KYOSO.CSV"),
+        URL["k25_pdf"].replace(".pdf", "%2Epdf"),
+    ],
+)
+def test_ft2_dataset_links_in_other_forms_are_refused(
+    repo: Path, synthetic_run: str, evsite: Site, url: str
+) -> None:
+    """FT-2（D-034）：問い合わせ・断片・大文字・%の符号を付けた公表一覧の URL も、通信せずに拒否する。"""
+    before = len(evsite.requests)
+    with pytest.raises(KizashiError) as info:
+        fetch(repo, synthetic_run, evsite, url)
+    assert info.value.code == "E_BAD_EVIDENCE_SOURCE"
+    assert len(evsite.requests) == before  # 通信していない
+    assert ledger_of(repo, synthetic_run).execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 9
+
+
+@pytest.mark.parametrize("steps", [1, 2])
+def test_ft2_redirect_to_dataset_link_is_refused(
+    repo: Path, synthetic_run: str, evsite: Site, steps: int
+) -> None:
+    """FT-2（D-034）：リダイレクトの途中・最後の URL が公表一覧のデータなら、その先へ通信せずに拒否する。
+
+    run が取得していない改訂版の PDF（中身が違う）でも、ページ別テキストを作らない（D-021）。
+    """
+    hops = [f"https://www.cao.go.jp/test/latest{n}.pdf" for n in range(steps)]
+    revised = BASE + "tekiseika/7nendo/20261001-02_kohyo_kyoso.pdf?from=latest"
+    for here, there in zip(hops, [*hops[1:], revised], strict=True):
+        evsite.routes[here] = httpx.Response(302, headers={"location": there})
+    evsite.routes[revised] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=evidence_pdf_bytes("spec_sample")
+    )
+    with pytest.raises(KizashiError) as info:
+        fetch(repo, synthetic_run, evsite, hops[0])
+    assert info.value.code == "E_BAD_EVIDENCE_SOURCE"
+    assert evsite.requests[-steps:] == hops  # 公表一覧の URL へは通信していない
+    assert revised not in evsite.requests
+    # 通信した後の拒否なので、取得の失敗として残す。ページ別テキストは作らない
+    row = source(repo, synthetic_run, "S010")
+    assert (row["status"], row["url"], row["sha256"]) == ("failed", hops[0], None)
+    assert row["failure_reason"].startswith("E_BAD_EVIDENCE_SOURCE")
+    assert limits_of(repo, synthetic_run)["evidence_fetches"] == 0
+    assert not (repo / "data" / "runs" / synthetic_run / "evidence").exists()
 
 
 @pytest.mark.parametrize(
