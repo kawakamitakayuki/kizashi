@@ -635,3 +635,78 @@ def test_ck4_name_in_lead_key_unit_and_coefficient_key_is_e_v7(
         rec(repo, run, calc_sum("翻訳業務", 2024, unit="1件あたりの円"))["unit"] == "1件あたりの円"
     )
     rec(repo, run, _lead_proposal(repo, run, lead_key="翻訳業務2"))
+
+
+def test_ck4_name_anywhere_in_the_proposal_is_e_v7(repo: Path, run: str, lead: dict) -> None:
+    """D-036：氏名の検査は提案の中のすべての文字列（入れ子を含む）に当てる。結論での比較の条件の変更、
+    根拠の引用、集計の条件の値、係数の手がかりの引用でも E_V7。"""
+    conclusion = {
+        "kind": "conclusion",
+        "lead_id": lead["lead"],
+        "outcome": "hold",
+        "comparison_state": "unresolved",
+        "hold_reason": "comparison",
+        "reopen_condition": "同種業務の対応を確かめたら再開する",
+    }
+    err = fails(repo, run, {**conclusion, "comparison": {"population": f"{NAME}の契約"}}, "E_V7")
+    assert "comparison.population" in err.message and "架空" not in err.message
+    row = ledger_of(repo, run).execute("SELECT comparison_json FROM leads").fetchone()[0]
+    assert "架空" not in row
+
+    sid = add_evidence(repo, run, [f"契約担当官は{NAME}とする。\n"])
+    claim = {
+        "kind": "claim",
+        "lead_id": lead["lead"],
+        "type": "observation",
+        "text": "公告に契約担当官の記載がある。",
+        "calc_ids": [],
+        "evidence": [
+            {
+                "source_id": sid,
+                "position": {"page": 1},
+                "quote": f"契約担当官は{NAME}とする。",
+                "role": "background",
+            }
+        ],
+    }
+    err = fails(repo, run, claim, "E_V7")
+    assert "evidence[0].quote" in err.message
+
+    request = calc_sum("翻訳業務", 2024)
+    request["filter"].append({"col": "group_key", "op": "!=", "value": NAME})
+    err = fails(repo, run, request, "E_V7")
+    assert "filter[2].value" in err.message
+
+    playbook = repo / "references" / "investigative_reporting_playbook_v13.0.md"
+    playbook.write_text(PLAYBOOK + f"担当の{NAME}が確かめた。\n", encoding="utf-8")
+    basis = [{"file": "playbook", "locator": "C900", "quote": f"担当の{NAME}が確かめた。"}]
+    err = fails(repo, run, coefficient(lead["lead"], basis=basis), "E_V7")
+    assert "basis[0].quote" in err.message
+    assert ledger_of(repo, run).execute("SELECT COUNT(*) FROM claims").fetchone()[0] == 0
+
+
+def test_strong_words_in_comparison_warn(repo: Path, run: str, lead: dict) -> None:
+    """D-036：比較の条件（候補の登録と、結論での変更）の強い語は警告する。不合格にはしない。"""
+    result = rec(
+        repo,
+        run,
+        _lead_proposal(repo, run, comparison={**COMPARISON, "population": "談合が疑われる契約"}),
+    )
+    [warning] = result["warnings"]
+    assert warning["code"] == "W7_STRONG_WORD" and "comparison.population" in warning["message"]
+    result = rec(
+        repo,
+        run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+            "reopen_condition": "同種業務の対応を確かめたら再開する",
+            "comparison": {"formula": "異例の増加を除いた合計の差"},
+        },
+        name="c.json",
+    )
+    [warning] = result["warnings"]
+    assert warning["code"] == "W7_STRONG_WORD" and "comparison.formula" in warning["message"]

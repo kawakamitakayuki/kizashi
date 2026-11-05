@@ -13,7 +13,7 @@ P0-4 では、V7 の数値・氏名・強い語の検査の関数だけを置く
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from kizashi.normalize import nfkc
 
@@ -98,16 +98,34 @@ def strong_words(text: str, quotes: Iterable[str] = ()) -> list[str]:
     return [w for _, w in sorted(found)]
 
 
+def string_leaves(value: object, path: str = "") -> Iterator[tuple[str, str]]:
+    """提案の中の文字列の値を、入れ子（辞書・配列）も含めて (欄の道筋, 値) で返す（D-036）。
+
+    道筋は `comparison.population`・`evidence[0].quote` の形。辞書のキーそのものは返さない。
+    """
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from string_leaves(item, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from string_leaves(item, f"{path}[{index}]")
+
+
 def v7_findings(
     texts: Mapping[str, str],
     *,
     names: Iterable[str] = (),
     quotes: Iterable[str] = (),
     names_only: Mapping[str, str] | None = None,
+    words_only: Mapping[str, str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """欄（名前 → 文字列）ごとの V7 の不合格と警告。
 
-    names_only の欄（数字を書いてよい欄。比較の条件、単位など）には、氏名の検査だけを当てる（D-035）。
+    texts の欄には、数値・氏名・強い語のすべてを当てる。names_only の欄（数字を書いてよい欄や引用。
+    比較の条件、単位、根拠の引用、条件の値など）には氏名の検査だけを、words_only の欄（比較の条件）には
+    強い語の警告だけを当てる（D-035・D-036）。
     戻り値の不合格は {"code", "field", "hit"}（数値）か {"code", "field", "at"}（氏名。語は返さない）。
     警告は {"code": "W7_STRONG_WORD", "field", "hit"}。
     """
@@ -127,4 +145,7 @@ def v7_findings(
     for field, text in (names_only or {}).items():
         for start, end in personal_names(text, names):
             errors.append({"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end]})
+    for field, text in (words_only or {}).items():
+        for word in strong_words(text, quotes):
+            warnings.append({"code": "W7_STRONG_WORD", "field": field, "hit": word})
     return errors, warnings

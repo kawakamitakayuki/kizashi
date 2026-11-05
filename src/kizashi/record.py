@@ -175,19 +175,20 @@ class Ctx:
     adapter: Adapter
     data: dict
     texts: dict[str, str] = field(default_factory=dict)  # V7 の対象（欄の名前 → 文字列）
-    # V7 の氏名の検査だけを当てる欄（数字を書いてよい欄。比較の条件、単位など。D-035）
-    name_texts: dict[str, str] = field(default_factory=dict)
+    # 強い語の警告だけを当てる欄（比較の条件。D-036）。氏名の検査は提案の中のすべての文字列に当てる
+    warn_texts: dict[str, str] = field(default_factory=dict)
     quotes: list[str] = field(default_factory=list)  # 照合済みの引用（V7 の対象外）
 
     def text(self, key: str, *, allow_empty: bool = False, v7_numbers: bool = True) -> str:
-        """Claude が書く文字列の欄。V7 の対象にする（v7_numbers=False なら氏名の検査だけ。D-035）。"""
+        """Claude が書く文字列の欄。V7 の数値・強い語の対象にする（v7_numbers=False なら当てない）。
+
+        氏名の検査は、この指定に関係なく、提案の中のすべての文字列に当てる（_v7。D-035・D-036）。
+        """
         value = self.data.get(key)
         if not isinstance(value, str) or (not allow_empty and not value.strip()):
             raise _schema(f"{key} は空でない文字列で書く。")
         if v7_numbers:
             self.texts[key] = value
-        else:
-            self.name_texts[key] = value
         return value
 
     def opt_text(self, key: str) -> str | None:
@@ -394,11 +395,11 @@ def _do_lead(ctx: Ctx) -> Result:
     if not isinstance(comparison, dict) or set(comparison) != set(COMPARISON_KEYS):
         raise _schema(f"comparison は {'・'.join(COMPARISON_KEYS)} の6項目で書く。")
     # 比較の条件は V7 の数値の検査を当てない（既定値にも「1件の契約」がある。D-031③）。
-    # 氏名の検査は当てる（D-035）
+    # 氏名の検査（提案のすべての文字列。D-035・D-036）と強い語の警告（D-036）は当てる
     for key in COMPARISON_KEYS:
         if not isinstance(comparison[key], str):
             raise _schema(f"comparison の {key} は文字列で書く。")
-        ctx.name_texts[f"comparison.{key}"] = comparison[key]
+        ctx.warn_texts[f"comparison.{key}"] = comparison[key]
     note = ctx.text("note", allow_empty=True)
 
     lead_id = ledger.next_id(ctx.conn, "L")
@@ -669,6 +670,7 @@ def _do_conclusion(ctx: Ctx) -> Result:
         for key, value in override.items():
             if not isinstance(value, str):
                 raise _schema(f"comparison の {key} は文字列で書く。")
+            ctx.warn_texts[f"comparison.{key}"] = value  # 強い語の警告（D-036）
         comparison.update(override)
     before = {
         k: lead[k]
@@ -838,12 +840,15 @@ def _check_calc_refs(ctx: Ctx) -> None:
 
 def _v7(ctx: Ctx, target_id: str) -> list[dict]:
     texts = {k: v for k, v in ctx.texts.items() if v}
-    name_texts = {k: v for k, v in ctx.name_texts.items() if v}
-    if not texts and not name_texts:
+    # 氏名の検査は、提案の中のすべての文字列（入れ子を含む。根拠の引用、条件の値、手がかりの引用、
+    # 結論での比較の条件の変更など）に当てる（D-036）。texts の欄は v7_findings が氏名も見る
+    names_only = {k: v for k, v in check.string_leaves(ctx.data) if v and k not in texts}
+    words_only = {k: v for k, v in ctx.warn_texts.items() if v}
+    if not texts and not names_only:
         return []
     names = check.name_variants(ctx.adapter.module.name_list(ctx.conn, ctx.root, ctx.adapter))
     errors, warnings = check.v7_findings(
-        texts, names=names, quotes=ctx.quotes, names_only=name_texts
+        texts, names=names, quotes=ctx.quotes, names_only=names_only, words_only=words_only
     )
     if errors:
         parts = []
@@ -855,7 +860,8 @@ def _v7(ctx: Ctx, target_id: str) -> list[dict]:
         raise _err(
             "E_V7",
             "Claude が書く欄の検査（V7）に通らない：" + "、".join(parts),
-            next_action="金額・件数・比率は {calc:ID} で参照し、数字を書かない。氏名を書かない。",
+            next_action="金額・件数・比率は {calc:ID} で参照し、数字を書かない。氏名を書かない"
+            "（引用や条件の値も同じ。氏名を含まない範囲を引用する）。",
             affected=(target_id,),
         )
     return [

@@ -363,3 +363,16 @@ def test_ca3_triangle_marks_are_not_interpreted() -> None:
             assert "記者" in err.next_action
     # 同じ引用の中に印のない同じ数値があれば、それと照らす
     assert calc.check_doc_value("前年度は12件、今年度は▲12件。", "12") == Decimal(12)
+
+
+def test_ca3_sign_and_mark_across_whitespace() -> None:
+    """CA-3（D-036）：引用の照合は空白を除いて比べるので、符号・印と数字の間の空白は飛ばして見る。"""
+    assert calc.check_doc_value("増減は - 12件。", "-12") == Decimal(-12)
+    mismatch("増減は - 12件。", "12")
+    err = mismatch("増減は▲ 12件。", "12")
+    assert "▲" in err.message
+    assert calc.check_doc_value("範囲は10 - 15件。", "15") == Decimal(15)  # 前が数字なら符号でない
+    assert calc.check_doc_value("比率は.5とする。", "0.5") == Decimal(
+        "0.5"
+    )  # 先頭の「.」も値に含む
+    mismatch("比率は.5とする。", "5")

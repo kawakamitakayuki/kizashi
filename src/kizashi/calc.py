@@ -9,6 +9,7 @@
 - 文書値：引用の中の数値の並び（NFKC の後の、数字と桁区切り・小数点の連なり）の、桁区切りを除いた値の
   どれかと等しいことを確かめる。部分一致では照らさない。直前の -・−・+ は、その前が数字・英字でなければ
   符号として値に含める。直前に ▲・△ がある数値は、符号の意味が資料ごとの決まりなので文書値にしない（D-033）。
+  符号・印と数字の間、符号の前の空白は飛ばして見る（引用の照合が空白を除いて比べるため。D-036）。
 
 呼び出し側（record）がトランザクションを持つ。
 """
@@ -348,6 +349,14 @@ class QuoteNumber:
     marked: bool  # 直前に ▲・△ がある（文書値にしない）
 
 
+def _char_before(text: str, index: int) -> tuple[str, int]:
+    """index より前の、空白でない最も近い文字とその位置。なければ ("", -1)。"""
+    i = index - 1
+    while i >= 0 and text[i].isspace():
+        i -= 1
+    return (text[i], i) if i >= 0 else ("", -1)
+
+
 def numbers_in_quote(quote: str) -> list[QuoteNumber]:
     """引用の中の数値の並び（桁区切りを除いて Decimal にできるもの）。符号と印を見る。"""
     text = nfkc(quote)
@@ -357,9 +366,8 @@ def numbers_in_quote(quote: str) -> list[QuoteNumber]:
             value = Decimal(m.group().replace(",", ""))
         except decimal.InvalidOperation:
             continue
-        start = m.start()
-        prev = text[start - 1] if start >= 1 else ""
-        before = text[start - 2] if start >= 2 else ""
+        prev, at = _char_before(text, m.start())
+        before, _ = _char_before(text, at)
         if prev in SIGNS and not _SIGN_BLOCKER_RE.fullmatch(before):
             value = value.copy_negate() if SIGNS[prev] < 0 else value
         found.append(QuoteNumber(value=value, marked=prev in MARKS))
