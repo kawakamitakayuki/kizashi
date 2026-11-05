@@ -180,7 +180,7 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 3. calc.py（基礎集計：SQLで行を選び Decimal で合計。条件に record_status = 'adopted' を必ず加える。派生計算：diff・ratio・rate・sum・product の5つの演算だけで、引数は計算IDだけ。数値の定数と同じ計算IDの重複は拒否。文書値：引用の中の数値の並びと値が等しいかで照合し、部分一致にしない）。
 4. quotes.py（implementation_spec 8章）。
 5. query.py（mode=ro、query_only、authorizer、1つの文だけ、50行、10秒、citable: false）。
-6. inspect_cmd.py（implementation_spec 4.3。inspect <run_id> と inspect <ID> --run <run_id>。失効の表示は P0-8 で仕上げるため、ここでは memo_hash の有無だけ）。
+6. inspect_cmd.py（implementation_spec 4.3。inspect <run_id> と inspect <ID> --run <run_id>。候補IDでは同種業務の対応（matches）と係数の提案（coefficients）も表示する（D-023）。失効の表示は P0-8 で仕上げるため、ここでは memo_hash の有無だけ）。
 7. fetch の追加資料・--index・--definition（ページ別テキストの保存、探索上限の計上）。
 8. テスト：IN-1、IN-2、CA-1〜CA-3、QU-1、QT-1、FT-4、KN-2、CP-1（登録まで）。
 
@@ -233,7 +233,7 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 目的：調査のセッションで1件を通す前に、Skill と CLAUDE.md を実装に合わせて見直す。
 
 作業：
-1. .claude/skills/investigate/SKILL.md、record-examples.md、.claude/skills/review-lead/SKILL.md、CLAUDE.md を、ここまでの実装（コマンド、引数、提案の種類、エラーコード）と照らし、食い違いを直す。とくに、inspect <ID> --run <run_id> の形、/review-lead [lead_id] [run_id] の引数、T6a・T6b を提案しないこと、run_config の compare_years・series_years を確かめる。SKILL.md の本文は5,000トークン以内に保つ。
+1. .claude/skills/investigate/SKILL.md、record-examples.md、.claude/skills/review-lead/SKILL.md、CLAUDE.md を、ここまでの実装（コマンド、引数、提案の種類、エラーコード）と照らし、食い違いを直す。とくに、inspect <ID> --run <run_id> の形、/review-lead [lead_id] [run_id] の引数、T6a・T6b を提案しないこと、run_config の compare_years・series_years を確かめる。SKILL.md の本文は5,000トークン以内に保つ。あわせて、adapter_cao_procurement.md の要点（対象年度、比較の単位、単価・指数表記・担当官の所属の注意点、実データの受注者名は書かないこと）を短くまとめた datasets/cao-procurement/README.md を作る（D-024）。
 2. 直した点を報告する。設計書や実装仕様と食い違う直しが要る場合は、直さずに報告する。
 ```
 
