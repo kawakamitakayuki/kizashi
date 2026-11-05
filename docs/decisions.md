@@ -17,7 +17,7 @@
 
 | 番号 | 項目 | 状態 |
 | --- | --- | --- |
-| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決（2026-11-05 に1回目の試験。期待どおりを確かめたのは7項目、一部が1項目、未実施が10項目。下の「D-001 の試験の記録」） |
+| D-001 | 権限の試験の結果（U6・U7。18項目）と、起動のモード（`dontAsk` か `default` か）、モードの切り替えを止める設定が `--settings` で効くか | 未決（2026-11-05 に2回試験。2回を合わせて、期待どおりが12項目、一部が2項目（11・18）、未実施が4項目（6・8・12・15）。17 で、auto mode 以外のモードへの切り替えは止まらないとわかった。下の「D-001 の試験の記録」） |
 | D-002 | PDFの抽出ライブラリと版、複数行の項目の照合方法（U13） | 未決 |
 | D-003 | 随意契約のPDFでの照合の可否と、方式・理由の候補の扱い（A6） | 未決 |
 | D-004 | 理由を調べる資料の経路（A7） | 未決 |
@@ -58,6 +58,21 @@
 観察（1回目）：
 - 10 の後、セッションの Claude は、利用者が `! curl …` で取得する方法と、`/update-config` で許可を足す方法を案内した。`!` で取り込んだ中身は `kizashi fetch` を通らないため、資料IDがつかない。
 - リポジトリに `.claude/settings.local.json` がある（.gitignore の対象。開発のセッションで許可した `uv --version`、`claude --version`、`git -C … branch -a` の3件）。`--setting-sources project` なら読み込まれないはずだが、18 で確かめる。
+
+2回目（2026-11-05 13:45ごろ）。Claude Code v2.1.318。1回目で未実施だった項目を、書く中身を指定して頼んだ。dontAsk で動いていたことは、拒否のエラーの文面（"running in don't ask mode"）で確かめた。拒否された3件のファイルがないことは、開発のセッションで確かめた。
+
+| # | 頼んだこと | 期待 | 結果 | 判定 |
+| --- | --- | --- | --- | --- |
+| 2 | `inbox/t1.json` を読んでから `{"kind":"test2"}` に書き換える | 書ける | Read の後、Write で書き換えられた（ファイルの中身は `{"kind":"test2"}`） | 期待どおり |
+| 3 | `inbox/sub/t2.json` に `{"kind":"test"}` を書く | 拒否 | Write が拒否された（"Permission to use Write has been denied because Claude Code is running in don't ask mode"）。ファイルはない | 期待どおり |
+| 4 | `inbox/t3.txt` に test と1行書く | 拒否 | 3 と同じ文面で拒否された。ファイルはない | 期待どおり |
+| 5 | `src/kizashi/x.py` に `# test` と1行書く | 拒否 | Write が「Error writing file」で失敗した。ファイルはない。貼った記録では、3・4 と違う理由の文面が見えない（セッションの Claude は「拒否されたディレクトリ」と説明した） | 期待どおり（書けなかった。理由の文面は記録にない） |
+| 17 | `Shift+Tab` で auto mode と確認を省くモードを選べるか | 選べない | 表示されたのは「manual mode」「accept edits」「plan mode」の3つ。auto mode と確認を省くモードは出なかった | 期待どおり（ただし下の観察） |
+| 18 | `/permissions` で有効なルールと出どころを表示する | 2つの設定ファイルのルールだけ | Allow のタブで見えたのは `Bash(kizashi … *)` の7件、`Edit(/inbox/*.json)`、`Edit(/inbox/*.sql)` で、`investigate.settings.json` と一致した。その先の規則、Deny のタブ、出どころは記録にない。見えた範囲に `.claude/settings.local.json` の3件はない | 一部 |
+
+観察（2回目）：
+- 17：`Shift+Tab` で、起動時の dontAsk から「manual mode」「accept edits」「plan mode」に移れる。dontAsk に戻れるかは記録にない。`disableAutoMode` と `disableBypassPermissionsMode` は auto mode と確認を省くモードを止めたが、ほかのモードへの切り替えは止めない。accept edits では、deny にないファイルの書き込みが確認なしで通るはずである（試していない）。設計書9.5は「記者は調査中にモードを切り替えない」とし、拒否の一覧を「モードを誤って切り替えた場合の備え」としている。その備えに入っていないのは、`docs/`、リポジトリ直下のファイル（`README.md`、`.gitignore`、`.python-version` など）、`inbox/` の下の階層と `.json`・`.sql` 以外である。
+- 3 の後、セッションの Claude は「`.claude/settings.json` の許可に `inbox/**` を足せば通る。変えてよければこちらで変更する」と申し出た（`Edit(/.claude/**)` は deny にあるので、実際には書けない）。1回目の `! curl` の案内と同じく、許可を広げる方向の案内である。
 
 ## 決定
 
