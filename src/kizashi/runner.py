@@ -57,7 +57,7 @@ STAGES = (
     "detect",
 )
 # 規則の版のうち、照合するもの（実装仕様3.5）。再開でも開始時の記録と照らす。
-COMPARED_VERSIONS = ("dataset_yaml_sha256", "sql_sha256", "rules_version", "parser_version")
+COMPARED_VERSIONS = versions.COMPARED_VERSIONS
 CONFIG_REQUIRED = frozenset(
     {"kind", "domain", "compare_years", "series_years", "question", "model"}
 )

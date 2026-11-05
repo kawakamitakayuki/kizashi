@@ -3,9 +3,10 @@
 本実装：起動時の検査（作業フォルダーと SQLite の版）、エラーの JSON 化、ID の書式と --run の欠けの検査
 （E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
 `run <分野> --config`（P0-2〜P0-5。plan〜detect）、`run --resume <run_id>`（P0-5）、
-`fetch <run_id> <URL> [--index | --definition]`・`inspect`・`query`・`record`（P0-4）。
-ほかの操作（fetch --recheck、check、render）は、引数を検査したうえで
-{"stub": "<操作名>"} を返す仮の実装である（P0-6〜P0-8 で本実装にする）。
+`fetch <run_id> <URL> [--index | --definition]`・`inspect`・`query`・`record`（P0-4）、
+`check <lead_id> --run <run_id>`・`render <lead_id> --run <run_id>`（P0-6）。
+ほかの形（fetch --recheck、check --publish、render <run_id>、render --public）は、引数を検査したうえで
+{"stub": "<操作名>"} を返す仮の実装である（P0-8 で本実装にする）。
 """
 
 from __future__ import annotations
@@ -306,12 +307,30 @@ def _record(args: argparse.Namespace) -> dict:
     return record.record(paths.repo_root(), args.run_id, args.json_file)
 
 
+def _check(args: argparse.Namespace) -> dict:
+    if args.publish is not None:
+        return {"stub": "check"}  # check --publish は P0-8
+    from kizashi import check
+
+    return check.run_check(paths.repo_root(), args.run_ids[0], args.lead_id)
+
+
+def _render(args: argparse.Namespace) -> dict:
+    if args.run_id is None or args.public:
+        return {"stub": "render"}  # 実行の概要と --public は P0-8
+    from kizashi import render
+
+    return render.render_lead(paths.repo_root(), args.run_id, args.target_id)
+
+
 HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {op: _stub(op) for op in OPERATIONS}
 HANDLERS["run"] = _run
 HANDLERS["fetch"] = _fetch
 HANDLERS["inspect"] = _inspect
 HANDLERS["query"] = _query
 HANDLERS["record"] = _record
+HANDLERS["check"] = _check
+HANDLERS["render"] = _render
 
 
 # ---------------------------------------------------------------------------

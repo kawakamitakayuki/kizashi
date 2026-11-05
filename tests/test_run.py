@@ -112,8 +112,9 @@ def test_run_completed_with_synthetic_data(
     # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった。
     # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた。6：P0-5 で検出（detect）を足した。
     # 7：D-038 で系列を系列のSQLで数え、再開で原本を照らし、引用の符号の境目を直した。
-    # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した
-    assert (versions["rules_version"], versions["parser_version"]) == ("8", "cao-procurement/1")
+    # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した。
+    # 9：P0-6 で check（V1〜V4・V8）と render（候補のメモ）を足した
+    assert (versions["rules_version"], versions["parser_version"]) == ("9", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）

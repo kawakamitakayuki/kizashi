@@ -1,0 +1,688 @@
+"""検証（kizashi check。test_plan.md の CK-1（V1〜V4・V8）、CK-2、CK-5、CP-1（V8）。implementation_spec.md
+4.6・9章）。
+
+合成データの実行の検出の候補「翻訳業務」（S1・amount_up）を使う。期待値は合成の CSV（tests/fixtures/
+make_cao_fixtures.py）から手で決めた：令和6年度は S001:000012（650,000円。契約日 R7.3.31。PDF の3ページ）、
+令和7年度は S005:000007（750,000円。契約日 R7.6.1。PDF の2ページ）。どちらも取り込みの照合と原本照合で一致する。
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from conftest import ledger_of, rec
+from kizashi import check, cli, hashing
+from kizashi.errors import KizashiError
+
+GROUP = "翻訳業務"
+ROW_FROM, ROW_TO = "S001:000012", "S005:000007"
+SEARCHED = "公表ページと公表元の告知を探したが、該当する記載は見つからなかった。"
+
+
+def lead_row(repo: Path, run_id: str, group: str = GROUP) -> sqlite3.Row:
+    conn = ledger_of(repo, run_id)
+    row = conn.execute(
+        "SELECT * FROM leads WHERE screen_id = 's1_amount_change' AND lead_key = ?", (group,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def explanation(lead_id: str, etype: str, judgment: str, **extra) -> dict:
+    return {
+        "kind": "explanation",
+        "lead_id": lead_id,
+        "type": etype,
+        "judgment": judgment,
+        "evidence": [],
+        "searched": SEARCHED,
+        **extra,
+    }
+
+
+T2_EVIDENCE = {
+    "source_id": "S001",
+    "position": {"row_ref": ROW_FROM, "column": "contract_date_raw"},
+    "quote": "R7.3.31",
+    "role": "background",
+}
+
+
+def prepare(
+    repo: Path, run_id: str, *, conclusion: dict | None = None, match: str = "full"
+) -> dict:
+    """比較成立の案の必須の中身をそろえた候補（conclusion を None にすると結論の案を登録しない）。"""
+    lead = lead_row(repo, run_id)
+    lid = lead["lead_id"]
+    hypothesis = {
+        "kind": "hypothesis",
+        "lead_id": lid,
+        "text": "翻訳の分量が増えたため、契約金額が増えた。",
+        "withdraw_if": "仕様書で分量が同じと分かった場合。",
+    }
+    rec(repo, run_id, hypothesis)
+    if match == "full":
+        rec(
+            repo,
+            run_id,
+            {
+                "kind": "match",
+                "lead_id": lid,
+                "left": [ROW_FROM],
+                "right": [ROW_TO],
+                "relation": "1:1",
+                "reason": "件名と業務の内容が同じ。",
+                "evidence": [],
+                "status": "confirmed",
+            },
+        )
+    observation = rec(
+        repo,
+        run_id,
+        {
+            "kind": "claim",
+            "lead_id": lid,
+            "type": "observation",
+            "text": f"契約金額の合計は{{calc:{lead['calc_from']}}}から{{calc:{lead['calc_to']}}}に増えた。",
+            "calc_ids": [lead["calc_from"], lead["calc_to"]],
+            "evidence": [],
+        },
+    )["id"]
+    record_claim = rec(
+        repo,
+        run_id,
+        {
+            "kind": "claim",
+            "lead_id": lid,
+            "type": "record",
+            "fiscal_year": 2025,
+            "text": "令和7年度の公表データの契約金額の欄に、翌年度の金額が記載されている。",
+            "calc_ids": [],
+            "evidence": [
+                {
+                    "source_id": "S005",
+                    "position": {"row_ref": ROW_TO, "column": "amount_raw"},
+                    "quote": "750,000",
+                    "role": "support",
+                }
+            ],
+        },
+    )["id"]
+    for etype in ("T1", "T3", "T4", "T5", "T6c"):
+        rec(repo, run_id, explanation(lid, etype, "unknown"))
+    rec(repo, run_id, explanation(lid, "T2", "refute", evidence=[T2_EVIDENCE], searched=""))
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "question",
+            "lead_id": lid,
+            "to": "内閣府の会計担当",
+            "question": "翻訳の分量と単価を示す仕様書はあるか。公表データの契約金額は契約書と同じか。",
+            "documents": "仕様書、契約書",
+            "decision_impact": "分量が増えていれば、金額の増加の説明になる。",
+        },
+    )
+    rec(repo, run_id, {**hypothesis, "result": "kept"})
+    if conclusion is not False:
+        rec(
+            repo,
+            run_id,
+            conclusion
+            or {
+                "kind": "conclusion",
+                "lead_id": lid,
+                "outcome": "change",
+                "comparison_state": "comparable",
+                "explanation_status": "none",
+            },
+        )
+    return {"lead": lid, "observation": observation, "record": record_claim, **dict(lead)}
+
+
+def codes(info: pytest.ExceptionInfo) -> list[str]:
+    return [f["code"] for f in info.value.failures]
+
+
+def failing(repo: Path, run_id: str, lead_id: str) -> list[str]:
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, run_id, lead_id)
+    assert info.value.stage == "check" and info.value.exit_code == 1
+    assert info.value.code == info.value.failures[0]["code"]
+    return codes(info)
+
+
+def tamper(repo: Path, run_id: str, sql: str, params: tuple = ()) -> None:
+    conn = ledger_of(repo, run_id)
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 合格と、T6a・T6b の機械の判定
+# ---------------------------------------------------------------------------
+
+
+def test_check_passes_and_marks_claims_checked(repo: Path, synthetic_run: str) -> None:
+    """CK-1：必須の中身をそろえた比較成立の案は合格する。メモに出る主張を checked にし、T6a・T6b を照合の
+    計算から「否定」として登録し（context='cli'）、巡回数を1増やし、events に検証記録のハッシュを残す。"""
+    lead = prepare(repo, synthetic_run)
+    result = check.run_check(repo, synthetic_run, lead["lead"])
+    assert result["passed"] is True
+    assert result["t6"] == {"T6a": "refute", "T6b": "refute"}
+    assert result["checked_claims"] == [lead["observation"], lead["record"]]
+    assert result["rounds"] == 1
+    conn = ledger_of(repo, synthetic_run)
+    states = [r[0] for r in conn.execute("SELECT state FROM claims ORDER BY claim_id")]
+    assert states == ["checked", "checked"]
+    t6 = {
+        r["type"]: r
+        for r in conn.execute(
+            "SELECT * FROM explanations WHERE lead_id = ? AND type IN ('T6a', 'T6b')",
+            (lead["lead"],),
+        )
+    }
+    assert {t: (r["judgment"], r["context"]) for t, r in t6.items()} == {
+        "T6a": ("refute", "cli"),
+        "T6b": ("refute", "cli"),
+    }
+    # 照合の計算：取り込みの照合 K0001（S001）・K0003（S005）、原本照合 K0005（S001）・K0007（S005）
+    assert json.loads(t6["T6a"]["evidence_json"]) == [{"calc_id": "K0001"}, {"calc_id": "K0003"}]
+    assert json.loads(t6["T6b"]["evidence_json"]) == [{"calc_id": "K0005"}, {"calc_id": "K0007"}]
+    # 実行設定の氏名の検査（D-040）の check の events は実行IDが対象。候補の検証は候補IDが対象
+    event = conn.execute(
+        "SELECT * FROM events WHERE kind = 'check' AND target_id = ?", (lead["lead"],)
+    ).fetchone()
+    assert json.loads(event["result_json"]) == {"passed": True, "failures": []}
+    assert event["check_hash"] == hashing.check_hash(conn, lead["lead"]) == result["check_hash"]
+    conn.close()
+
+
+def test_candidate_rows_are_the_memo_base_rows(repo: Path, synthetic_run: str) -> None:
+    """9章：候補の行は、メモに出る基礎集計の row_refs（比べる2年度の合計と件数）。"""
+    lead = prepare(repo, synthetic_run)
+    conn = ledger_of(repo, synthetic_run)
+    assert check.candidate_rows(conn, lead["lead"]) == [ROW_FROM, ROW_TO]
+    conn.close()
+
+
+def test_ck2_machine_t6a_t6b_override_and_fail_change(repo: Path, synthetic_run: str) -> None:
+    """CK-2：T6a・T6b は check のたびに照合の計算から機械で決める。取り込みの照合で候補の行が不一致なら T6a は
+    「支持」、原本照合で項目が不一致なら T6b は「支持」になり、比較成立の案は V8_CHANGE_NOT_NEGATED。"""
+    lead = prepare(repo, synthetic_run)
+    conn = ledger_of(repo, synthetic_run)
+    (result,) = conn.execute(
+        "SELECT result_json FROM computations WHERE calc_id = 'K0001'"
+    ).fetchone()
+    data = json.loads(result)
+    data["rows"][ROW_FROM]["row_status"] = "mismatch"
+    conn.execute(
+        "UPDATE computations SET result_json = ? WHERE calc_id = 'K0001'", (json.dumps(data),)
+    )
+    (result,) = conn.execute(
+        "SELECT result_json FROM computations WHERE calc_id = 'K0007'"
+    ).fetchone()
+    data = json.loads(result)
+    data["rows"][ROW_TO]["fields"]["amount_yen"] = "mismatch"
+    conn.execute(
+        "UPDATE computations SET result_json = ? WHERE calc_id = 'K0007'", (json.dumps(data),)
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert codes(info) == ["V8_CHANGE_NOT_NEGATED"]
+    assert "T6a" in info.value.failures[0]["message"] and "T6b" in info.value.failures[0]["message"]
+    conn = ledger_of(repo, synthetic_run)
+    judged = dict(
+        conn.execute(
+            "SELECT type, judgment FROM explanations WHERE lead_id = ? AND context = 'cli'",
+            (lead["lead"],),
+        ).fetchall()
+    )
+    assert judged == {"T6a": "support", "T6b": "support"}
+    # 不合格でも T6 の判定・巡回数・events は残る（check の記録）
+    assert (
+        conn.execute("SELECT rounds FROM leads WHERE lead_id = ?", (lead["lead"],)).fetchone()[0]
+        == 1
+    )
+    assert conn.execute("SELECT state FROM claims").fetchall()[0][0] == "draft"
+    conn.close()
+
+
+def test_ck2_unverifiable_source_check_needs_hold(repo: Path, synthetic_run: str) -> None:
+    """CK-2：原本照合で照合不能（unverifiable）の項目があれば T6b は「未確認」。比較成立は不合格、保留
+    （source_check）は合格する。"""
+    lead = prepare(repo, synthetic_run, conclusion=False)
+    conn = ledger_of(repo, synthetic_run)
+    (result,) = conn.execute(
+        "SELECT result_json FROM computations WHERE calc_id = 'K0005'"
+    ).fetchone()
+    data = json.loads(result)
+    data["rows"][ROW_FROM]["fields"]["contract_date"] = "unverifiable"
+    conn.execute(
+        "UPDATE computations SET result_json = ? WHERE calc_id = 'K0005'", (json.dumps(data),)
+    )
+    conn.commit()
+    conn.close()
+    base = {"kind": "conclusion", "lead_id": lead["lead"]}
+    rec(
+        repo,
+        synthetic_run,
+        {
+            **base,
+            "outcome": "change",
+            "comparison_state": "comparable",
+            "explanation_status": "none",
+        },
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_CHANGE_NOT_NEGATED"]
+    rec(
+        repo,
+        synthetic_run,
+        {
+            **base,
+            "outcome": "hold",
+            "comparison_state": "comparable",
+            "hold_reason": "source_check",
+        },
+    )
+    assert check.run_check(repo, synthetic_run, lead["lead"])["t6"]["T6b"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# CK-5：V8_MATCH_UNCONFIRMED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["none", "partial", "pending", "withdrawn"])
+def test_ck5_match_must_cover_both_years(repo: Path, synthetic_run: str, case: str) -> None:
+    """CK-5：比較成立の案で、対応がない・calc_to の行を覆わない・pending だけ・取り下げ済みだけは
+    V8_MATCH_UNCONFIRMED。同じ条件で保留（comparison）の案は合格する。"""
+    lead = prepare(repo, synthetic_run, match="none")
+    match = {
+        "kind": "match",
+        "lead_id": lead["lead"],
+        "left": [ROW_FROM],
+        "right": [ROW_TO],
+        "relation": "1:1",
+        "reason": "件名が同じ。",
+        "evidence": [],
+        "status": "confirmed",
+    }
+    if case == "partial":
+        rec(repo, synthetic_run, {**match, "right": [ROW_FROM]})  # 令和7年度の行を覆わない
+    elif case == "pending":
+        rec(repo, synthetic_run, {**match, "status": "pending"})
+    elif case == "withdrawn":
+        mid = rec(repo, synthetic_run, match)["id"]
+        rec(
+            repo,
+            synthetic_run,
+            {"kind": "withdraw", "target": mid, "reason": "別の業務と分かった。"},
+        )
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert codes(info) == ["V8_MATCH_UNCONFIRMED"]
+    assert ROW_TO in info.value.failures[0]["affected_ids"]
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# CP-1：V8_COEFFICIENT_PENDING
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "passes"), [("proposed", False), ("accepted", False), ("declined", True)]
+)
+def test_cp1_pending_coefficient_blocks_change(
+    repo: Path, synthetic_run: str, status: str, passes: bool
+) -> None:
+    """CP-1：係数の提案が proposed・accepted のまま残る比較成立は V8_COEFFICIENT_PENDING。declined だけなら
+    合格。保留は残っていても合格する。"""
+    lead = prepare(repo, synthetic_run)
+    coefficient = {
+        "kind": "coefficient",
+        "lead_id": lead["lead"],
+        "key": "tax",
+        "value": "1.1",
+        "meaning": "税込と税抜の換算",
+        "why_needed": "片方の年度が税抜かもしれない。",
+        "apply_to": "両年度の合計",
+        "basis": [],
+        "status": status,
+    }
+    if status != "proposed":
+        coefficient["reporter_note"] = "記者の判断の要約。"
+    rec(repo, synthetic_run, coefficient)
+    if passes:
+        assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+        return
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_COEFFICIENT_PENDING"]
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# CK-1：V1〜V4 の各コード（台帳か原本を手で壊す）
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_raw_csv(repo: Path, run_id: str, source_id: str, old: bytes, new: bytes) -> None:
+    """原本の CSV を書き換え、台帳の SHA-256 も合わせる（V2 の照合を通して V3(b) だけを見るため）。"""
+    import hashlib
+
+    conn = ledger_of(repo, run_id)
+    (sha,) = conn.execute("SELECT sha256 FROM sources WHERE source_id = ?", (source_id,)).fetchone()
+    raw = repo / "data" / "raw" / f"{sha}.csv"
+    data = raw.read_bytes()
+    assert old in data
+    changed = data.replace(old, new, 1)
+    new_sha = hashlib.sha256(changed).hexdigest()
+    (repo / "data" / "raw" / f"{new_sha}.csv").write_bytes(changed)
+    conn.execute("UPDATE sources SET sha256 = ? WHERE source_id = ?", (new_sha, source_id))
+    conn.commit()
+    conn.close()
+
+
+CK1_CASES = {
+    "V1_RUN_FAILED": ("UPDATE runs SET state = 'failed'", ()),
+    "V1_QUALITY_NOT_RUN": (
+        "UPDATE runs SET stages_json = json_set(stages_json, '$.quality.state', 'failed')",
+        (),
+    ),
+    "V1_INPUT_EMPTY": (
+        "UPDATE runs SET counts_json = json_set(counts_json, '$.records.S005.adopted', 0)",
+        (),
+    ),
+    "V2_REF_MISSING": (
+        "UPDATE claims SET calc_ids_json = '[\"K9999\"]' WHERE type = 'observation'",
+        (),
+    ),
+    "V2_STALE_OR_WITHDRAWN": ("UPDATE claims SET state = 'stale' WHERE type = 'observation'", ()),
+    "V2_BAD_EVIDENCE_SOURCE": ("UPDATE claims SET evidence_json = '[]' WHERE type = 'record'", ()),
+    "V3_UNCITED_NUMBER": (
+        "UPDATE claims SET calc_ids_json = '[\"K0001\"]' WHERE type = 'observation'",
+        (),
+    ),
+    "V4_QUOTE_NOT_FOUND": (
+        (
+            "UPDATE claims SET evidence_json = json_set(evidence_json, '$[0].quote', '760,000')"
+            " WHERE type = 'record'"
+        ),
+        (),
+    ),
+    "V4_QUOTE_TRUNCATED": (
+        (
+            "UPDATE claims SET evidence_json = json_set(evidence_json, '$[0].quote', '50,000')"
+            " WHERE type = 'record'"
+        ),
+        (),
+    ),
+    "V4_QUOTE_YEAR": ("UPDATE claims SET fiscal_year = 2024 WHERE type = 'record'", ()),
+}
+
+
+@pytest.mark.parametrize("code", sorted(CK1_CASES))
+def test_ck1_v1_to_v4_codes(repo: Path, synthetic_run: str, code: str) -> None:
+    """CK-1：合格する候補の台帳を1か所ずつ壊すと、9章の表のそのコードで不合格になる（ほかの不合格を伴わない）。"""
+    lead = prepare(repo, synthetic_run)
+    sql, params = CK1_CASES[code]
+    tamper(repo, synthetic_run, sql, params)
+    assert failing(repo, synthetic_run, lead["lead"]) == [code]
+
+
+def test_ck1_v2_hash_mismatch(repo: Path, synthetic_run: str) -> None:
+    """CK-1：候補の行の原本（data/raw の CSV）の中身が台帳の SHA-256 と違えば V2_HASH_MISMATCH。"""
+    lead = prepare(repo, synthetic_run)
+    conn = ledger_of(repo, synthetic_run)
+    (sha,) = conn.execute("SELECT sha256 FROM sources WHERE source_id = 'S005'").fetchone()
+    conn.close()
+    raw = repo / "data" / "raw" / f"{sha}.csv"
+    raw.write_bytes(raw.read_bytes() + b"\r\n")
+    assert "V2_HASH_MISMATCH" in failing(repo, synthetic_run, lead["lead"])
+
+
+def test_ck1_v3_recalc_and_derive(repo: Path, synthetic_run: str) -> None:
+    """CK-1：基礎集計の値を書き換えると V3A_RECALC_MISMATCH（同じ台帳で計算し直す）。派生計算の値を書き換えると
+    V3C_DERIVE_MISMATCH。意味か単位が空なら V3_NO_MEANING。"""
+    lead = prepare(repo, synthetic_run)
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET value = '650001' WHERE calc_id = ?",
+        (lead["calc_from"],),
+    )
+    found = failing(repo, synthetic_run, lead["lead"])
+    assert "V3A_RECALC_MISMATCH" in found and "V3B_REAGG_MISMATCH" in found
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET value = '650000' WHERE calc_id = ?",
+        (lead["calc_from"],),
+    )
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET value = '1' WHERE lead_id = ? AND kind = 'derived'"
+        " AND json_extract(request_json, '$.op') = 'diff'",
+        (lead["lead"],),
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V3C_DERIVE_MISMATCH"]
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET value = '100000' WHERE lead_id = ? AND kind = 'derived'"
+        " AND json_extract(request_json, '$.op') = 'diff'",
+        (lead["lead"],),
+    )
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET unit = '' WHERE calc_id = ?",
+        (lead["calc_to"],),
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V3_NO_MEANING"]
+
+
+def test_ck1_v3b_reaggregation_from_raw(repo: Path, synthetic_run: str) -> None:
+    """CK-1：原本の金額のセルを書き換えると（台帳の SHA-256 も合わせる）、別経路で数え直した合計が違い
+    V3B_REAGG_MISMATCH。見出しを書き換えると V3B_HEADER_UNRESOLVED。台帳の値で計算し直す V3(a) は合格のまま。"""
+    lead = prepare(repo, synthetic_run)
+    target = "750,000".encode("cp932")
+    _rewrite_raw_csv(repo, synthetic_run, "S005", target, "760,000".encode("cp932"))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V3B_REAGG_MISMATCH"]
+    _rewrite_raw_csv(repo, synthetic_run, "S005", "760,000".encode("cp932"), target)
+    _rewrite_raw_csv(
+        repo, synthetic_run, "S005", "契約金額".encode("cp932"), "契約の金額".encode("cp932")
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V3B_HEADER_UNRESOLVED"]
+
+
+def test_ck1_rule_version_is_exit_3(
+    repo: Path, synthetic_run: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CK-1（V2）：実行の規則の版といまの版が違えば E_RULE_VERSION（終了コード3）で、台帳を変えない。"""
+    lead = prepare(repo, synthetic_run)
+    yaml_path = repo / "datasets" / "cao-procurement" / "dataset.yaml"
+    yaml_path.write_text(yaml_path.read_text(encoding="utf-8") + "# 変更\n", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["check", lead["lead"], "--run", synthetic_run]) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert (
+        out["error"]["code"] == "E_RULE_VERSION"
+        and "dataset_yaml_sha256" in out["error"]["message"]
+    )
+    conn = ledger_of(repo, synthetic_run)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'check' AND target_id = ?", (lead["lead"],)
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CK-1：V8 の各コード
+# ---------------------------------------------------------------------------
+
+
+def test_ck1_v8_required_and_withdraw_result(repo: Path, synthetic_run: str) -> None:
+    """CK-1：結論の案がなければ V8_REQUIRED_MISSING。比較成立で取り下げ条件の結果がなければ
+    V8_NO_WITHDRAW_RESULT。"""
+    lead = prepare(repo, synthetic_run, conclusion=False)
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_REQUIRED_MISSING"]
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE leads SET proposed_outcome = 'change', comparison_state = 'comparable',"
+        " explanation_status = 'none', hypothesis_result = NULL WHERE lead_id = ?",
+        (lead["lead"],),
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_NO_WITHDRAW_RESULT"]
+
+
+def test_ck1_v8_questions_and_types(repo: Path, synthetic_run: str) -> None:
+    """CK-1：比較成立で取材質問がなければ V8_T6C_QUESTION と V8_REQUIRED_MISSING。型の判定が欠ければ
+    V8_REQUIRED_MISSING。"""
+    lead = prepare(repo, synthetic_run)
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE leads SET questions_json = '[]' WHERE lead_id = ?",
+        (lead["lead"],),
+    )
+    assert sorted(failing(repo, synthetic_run, lead["lead"])) == [
+        "V8_REQUIRED_MISSING",
+        "V8_T6C_QUESTION",
+    ]
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE leads SET questions_json = ? WHERE lead_id = ?",
+        (
+            json.dumps([{"to": "a", "question": "b", "documents": "c", "decision_impact": "d"}]),
+            lead["lead"],
+        ),
+    )
+    tamper(repo, synthetic_run, "DELETE FROM explanations WHERE type = 'T4'")
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert codes(info) == ["V8_REQUIRED_MISSING"] and "T4" in info.value.message
+
+
+def test_ck1_v8_change_not_negated_and_explanation_status(repo: Path, synthetic_run: str) -> None:
+    """CK-1：比較成立で T2 が否定されていなければ V8_CHANGE_NOT_NEGATED。T3 が支持なのに説明の状況が
+    「なし」なら V8_EXPLANATION_STATUS。"""
+    lead = prepare(repo, synthetic_run)
+    rec(repo, synthetic_run, explanation(lead["lead"], "T2", "unknown"))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_CHANGE_NOT_NEGATED"]
+    rec(
+        repo,
+        synthetic_run,
+        explanation(lead["lead"], "T2", "refute", evidence=[T2_EVIDENCE], searched=""),
+    )
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lead["lead"],
+            "T3",
+            "support",
+            scope="unknown",
+            no_quant_reason="仕様書に分量の記載がない。",
+        ),
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
+
+
+def test_ck1_v8_artifact_and_hold(repo: Path, synthetic_run: str) -> None:
+    """CK-1：見かけの変化で、T2・T5・T6a・T6b のどれも根拠付きで支持されていなければ V8_ARTIFACT_NO_FACTOR。
+    T2 を根拠付きで支持すれば合格。保留で取材質問がなければ V8_HOLD_REASON。"""
+    lead = prepare(repo, synthetic_run)
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "artifact",
+            "comparison_state": "comparable",
+        },
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_ARTIFACT_NO_FACTOR"]
+    rec(repo, synthetic_run, explanation(lead["lead"], "T2", "support", evidence=[T2_EVIDENCE]))
+    assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE leads SET questions_json = '[]' WHERE lead_id = ?",
+        (lead["lead"],),
+    )
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_HOLD_REASON"]
+
+
+def test_check_collects_all_failures_and_counts_rounds(repo: Path, synthetic_run: str) -> None:
+    """4.6：不合格をすべて集めて返す（最初の1件で止めない）。巡回数は比較成立・見かけの変化の案の check で
+    1増え、保留の案では増えない。"""
+    lead = prepare(repo, synthetic_run)
+    tamper(repo, synthetic_run, "UPDATE runs SET state = 'failed'")
+    tamper(repo, synthetic_run, "UPDATE claims SET state = 'stale' WHERE type = 'observation'")
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert codes(info) == ["V1_RUN_FAILED", "V2_STALE_OR_WITHDRAWN"]
+    assert info.value.code == "V1_RUN_FAILED"
+    assert lead_row(repo, synthetic_run)["rounds"] == 1
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    with pytest.raises(KizashiError):
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert lead_row(repo, synthetic_run)["rounds"] == 1

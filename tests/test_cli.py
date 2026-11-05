@@ -107,10 +107,9 @@ def test_cli1_e_cwd_before_argument_errors(tmp_path: Path, monkeypatch, capsys, 
 # 4.1〜4.7 の書式どおりの呼び出し。仮の実装は {"ok": true, "data": {"stub": "<操作名>"}} を返す。
 # run <分野> --config は P0-2 で本実装にした（test_cli2_run_is_implemented と test_run.py）。
 # fetch（--recheck を除く）・inspect・query・record は P0-4、run --resume は P0-5 で本実装にした
-# （IMPLEMENTED_FORMS）。
+# （IMPLEMENTED_FORMS）。check <lead_id> と render <lead_id>（--public なし）は P0-6 で本実装にした。
 VALID_FORMS = [
     ("fetch", ["fetch", "20261105-101500-a3f2", "--recheck", "S004"]),
-    ("check", ["check", "L0001", "--run", "20261105-101500-a3f2"]),
     (
         "check",
         ["check", "--publish", "examples/publish.manifest", "--run", "20261105-101500-a3f2"],
@@ -127,7 +126,6 @@ VALID_FORMS = [
             "20261106-090000-b7c1",
         ],
     ),
-    ("render", ["render", "L0001", "--run", "20261105-101500-a3f2"]),
     ("render", ["render", "L0001", "--run", "20261105-101500-a3f2", "--public"]),
     ("render", ["render", "20261105-101500-a3f2"]),
     ("render", ["render", "20261105-101500-a3f2", "--public"]),
@@ -157,6 +155,8 @@ IMPLEMENTED_FORMS = [
     ["inspect", "S004:000042", "--run", "20261105-000000-test", "--page", "3"],
     ["query", "20261105-101500-a3f2", "inbox/q-001.sql"],
     ["record", "20261105-101500-a3f2", "inbox/calc-001.json"],
+    ["check", "L0001", "--run", "20261105-101500-a3f2"],
+    ["render", "L0001", "--run", "20261105-101500-a3f2"],
 ]
 
 
@@ -368,7 +368,7 @@ def test_cli1_console_script(tmp_path: Path) -> None:
     (fake_repo / "pyproject.toml").write_text("", encoding="utf-8")
     (fake_repo / "datasets").mkdir()
     proc = subprocess.run(
-        [str(exe), "render", "L0001", "--run", "20261105-000000-test"],
+        [str(exe), "render", "20261105-000000-test"],  # 実行の概要は P0-8 まで仮の実装
         cwd=fake_repo,
         capture_output=True,
         text=True,
