@@ -26,6 +26,20 @@ OFFICER_KEY = "officer_raw"
 OTHER_ENCODINGS = ("cp932", "utf-8-sig")
 MAX_LISTED = 10
 
+# 取り込みの照合（T6a）で、別経路の読み込み処理の値と比べる元の値（アダプタ仕様6章）。方式は競争入札の
+# method_raw、随意契約の reason_raw（その年度・方式の take にあるものだけを比べる）。整数にした金額
+# （amount_yen）も比べる（reconcile.py）。担当官のセルは読まない。
+IMPORT_FIELDS = (
+    "no",
+    "title_raw",
+    "contract_date_raw",
+    "counterparty_raw",
+    "corp_number_raw",
+    "method_raw",
+    "reason_raw",
+    "amount_raw",
+)
+
 # ---------------------------------------------------------------------------
 # 4.3 契約担当官のセル
 # ---------------------------------------------------------------------------

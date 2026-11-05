@@ -1,4 +1,4 @@
-"""品質検査のテスト（test_plan.md の QC-1・QC-2。Q01〜Q16 の件数）。
+"""品質検査のテスト（test_plan.md の QC-1・QC-2・QC-3。Q01〜Q16 の件数）。
 
 期待値は、合成データ（tests/fixtures/make_cao_fixtures.py の表）から手で数えた値。
 金額の合計は、合成データの金額を手で足した値（Decimal の計算の出力ではない）。
@@ -42,7 +42,7 @@ EXPECTED = {
         "Q10": 4,
         "Q11": {"missing": 0, "foreign_currency": 0, "unit_price_text": 1, "non_numeric": 0},
         "Q12": ["S001:000009"],
-        "Q13": (12, 12, 11, "24520000"),
+        "Q13": (12, 12, 11, "24520000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (3, 1, 4),
     },
     "S003": {
@@ -54,7 +54,7 @@ EXPECTED = {
         "Q10": 1,
         "Q11": {"missing": 0, "foreign_currency": 1, "unit_price_text": 1, "non_numeric": 1},
         "Q12": [],
-        "Q13": (9, 9, 6, "17490000"),
+        "Q13": (9, 9, 6, "17490000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (5, 0, 5),
     },
     "S005": {
@@ -66,7 +66,7 @@ EXPECTED = {
         "Q10": 2,
         "Q11": {"missing": 0, "foreign_currency": 0, "unit_price_text": 0, "non_numeric": 0},
         "Q12": [],
-        "Q13": (12, 12, 12, "22260000"),
+        "Q13": (12, 12, 12, "22260000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (2, 0, 2),
     },
     "S007": {
@@ -78,7 +78,7 @@ EXPECTED = {
         "Q10": 1,
         "Q11": {"missing": 0, "foreign_currency": 1, "unit_price_text": 1, "non_numeric": 0},
         "Q12": [],
-        "Q13": (7, 7, 5, "22750000"),
+        "Q13": (7, 7, 5, "22750000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (3, 0, 3),
     },
 }
@@ -106,7 +106,14 @@ def test_quality_counts_match_hand_counts(repo: Path, completed: dict, source_id
         q13["amount_rows"],
         q13["amount_total"],
     ) == want["Q13"]
-    assert q13["state"] == "partial" and q13["independent_reader"] == "not_run"
+    # QC-3：別経路の読み込み処理の件数・合計が、正規化の経路と同じ（手で数えた値）
+    assert (
+        q13["reader_records"],
+        q13["ledger_records"],
+        q13["reader_amount_rows"],
+        q13["reader_amount_total"],
+    ) == want["Q13"]
+    assert q13["state"] == "pass"
     assert (q["Q15"]["estimate_missing"], q["Q15"]["estimate_text"], q["Q15"]["rate_dash"]) == want[
         "Q15"
     ]
@@ -115,12 +122,13 @@ def test_quality_counts_match_hand_counts(repo: Path, completed: dict, source_id
 
 
 def test_quality_report_is_written_without_names(repo: Path, completed: dict) -> None:
-    """品質レポートが出る。必須の検査の結果と Q13 の未実施が書かれ、氏名と所属の一覧は書かれない。"""
+    """品質レポートが出る。必須の検査の結果と Q13 の突合が書かれ、氏名と所属の一覧は書かれない。"""
     report = (repo / completed["quality_report"]).read_text(encoding="utf-8")
     assert report.startswith("# 品質レポート")
     for sid in ("S001", "S003", "S005", "S007"):
         assert f"## {sid}" in report
-    assert "別経路の読み込み処理との突合は未実施" in report
+    assert "未実施" not in report
+    assert "別経路の読み込み処理" in report
     assert "24,520,000円" in report
     for word in NAME_WORDS:
         assert word not in report, word
@@ -200,3 +208,68 @@ def test_qc2_duplicate_rows_kept_with_reason(repo: Path, completed: dict) -> Non
         ("S005:000006", "adopted", "S005:000005"),
     ]
     assert all(json.loads(r["incomparable_reasons_json"]) == ["duplicate_rows"] for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# QC-3：ファイル単位の件数・合計の突合（Q13）。別経路の読み込み処理と正規化の経路で比べ、違えば停止
+# ---------------------------------------------------------------------------
+
+
+def _failed_q13(repo: Path, err: KizashiError) -> dict:
+    assert err.code == "E_INTERNAL" and "Q13" in err.message
+    conn = ledger_of(repo, err.affected_ids[0])
+    run = conn.execute("SELECT state, stop_reason, stages_json, counts_json FROM runs").fetchone()
+    conn.close()
+    assert run["state"] == "failed"
+    assert json.loads(run["stop_reason"])["stage"] == "quality"
+    stages = json.loads(run["stages_json"])
+    assert stages["quality"]["state"] == "failed"
+    assert "reconcile_import" not in stages and "reconcile_source" not in stages
+    return json.loads(run["counts_json"])["quality"]
+
+
+def test_qc3_amount_total_mismatch_stops_run(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QC-3：正規化の経路だけ S001 の NO 1 の金額（1,200,000）を 1,201,000 と読むと、合計が
+    24,521,000円（正規化）と 24,520,000円（別経路）で違い、Q13 は不合格。実行は failed で、照合に進まない。"""
+    from kizashi import normalize as nz
+
+    original = nz.parse_amount
+
+    def skewed(raw: str | None) -> tuple[int | None, str | None]:
+        value, note = original(raw)
+        return (value + 1000, note) if raw == "1,200,000" else (value, note)
+
+    monkeypatch.setattr(nz, "parse_amount", skewed)
+    with pytest.raises(KizashiError) as info:
+        runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    q13 = _failed_q13(repo, info.value)["S001"]["Q13"]
+    assert q13["state"] == "fail"
+    assert (q13["amount_total"], q13["reader_amount_total"]) == ("24521000", "24520000")
+    assert (q13["amount_rows"], q13["reader_amount_rows"]) == (11, 11)
+
+
+def test_qc3_record_count_mismatch_stops_run(
+    repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QC-3：台帳の件数（正規化の経路が NO 12 を落として11件）が、CSV の件数（別経路で12件）と違えば不合格。"""
+    from kizashi.adapters import cao_procurement
+
+    original = cao_procurement.normalize_source
+
+    def drop_last(conn, adapter, **kwargs):
+        counts = original(conn, adapter, **kwargs)
+        if kwargs["source_id"] == "S001":
+            conn.execute("DELETE FROM procurement_contracts WHERE record_id = 'S001:000012'")
+            conn.execute("DELETE FROM records WHERE record_id = 'S001:000012'")
+        return counts
+
+    monkeypatch.setattr(cao_procurement, "normalize_source", drop_last)
+    with pytest.raises(KizashiError) as info:
+        runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    q13 = _failed_q13(repo, info.value)["S001"]["Q13"]
+    assert q13["state"] == "fail"
+    assert (q13["csv_records"], q13["reader_records"], q13["ledger_records"]) == (12, 12, 11)
+    # 落とした NO 12 の金額 650,000円の分だけ、合計も違う
+    assert (q13["amount_total"], q13["reader_amount_total"]) == ("23870000", "24520000")

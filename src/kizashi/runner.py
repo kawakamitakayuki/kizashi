@@ -1,4 +1,5 @@
-"""kizashi run の新しい実行（implementation_spec.md 4.1。P0-2 は plan・fetch・normalize・quality）。
+"""kizashi run の新しい実行（implementation_spec.md 4.1。plan・fetch・normalize・quality・reconcile_import・
+reconcile_source）。
 
 1. 設定ファイル（6.2 の run_config）を検査する。
 2. 実行IDを発行し、実行フォルダーと台帳を作る。runs に設定・版・profile を記録し、running にする。
@@ -8,8 +9,8 @@
    それ以外の失敗は failed。一時的な通信の失敗は failed とし、stop_reason の retryable を true にする。
 5. completed・partial なら、設定ファイルを accepted/ に写し、inbox/ から消す。
 
-照合（reconcile_import・reconcile_source）と検出（detect）は P0-3・P0-5 で足す。P0-2 では実行せず、
-出力の stages_not_run に書く（実行したことにしない）。
+検出（detect）は P0-5 で足す。いまは実行せず、出力の stages_not_run に書く（実行したことにしない）。
+照合の結果（不一致・照合不能）では実行を止めない。T6a・T6b の判定は check が行う（P0-6）。
 """
 
 from __future__ import annotations
@@ -26,14 +27,14 @@ from pathlib import Path
 
 import httpx
 
-from kizashi import fetcher, ledger, paths, quality, versions
+from kizashi import fetcher, ledger, paths, quality, reconcile, versions
 from kizashi.adapters import FAMILIES, Adapter, load_adapter
 from kizashi.adapters.cao_procurement import SCOPE_OPS
 from kizashi.errors import KizashiError
 from kizashi.hashing import canonical_json, sha256_text
 
-STAGES = ("plan", "fetch", "normalize", "quality")
-STAGES_NOT_RUN = ("reconcile_import", "reconcile_source", "detect")
+STAGES = ("plan", "fetch", "normalize", "quality", "reconcile_import", "reconcile_source")
+STAGES_NOT_RUN = ("detect",)
 CONFIG_REQUIRED = frozenset(
     {"kind", "domain", "compare_years", "series_years", "question", "model"}
 )
@@ -475,6 +476,46 @@ def _quality(ctx: RunContext) -> None:
         )
 
 
+def _records_input(ctx: RunContext) -> list:
+    return ctx.conn.execute(
+        "SELECT record_id, cells_sha256, status, status_reason FROM records ORDER BY record_id"
+    ).fetchall()
+
+
+def _reconcile_import(ctx: RunContext) -> None:
+    """取り込みの照合（T6a）。資料ごとに照合の計算を1つ登録する。"""
+    input_hash = sha256_text(
+        canonical_json({"records": _records_input(ctx), "sources": _fetched_csv(ctx)})
+    )
+    try:
+        with ledger.transaction(ctx.conn):
+            ctx.counts["reconcile_import"] = reconcile.reconcile_import(
+                ctx.conn, ctx.root, ctx.adapter
+            )
+            _update_run(ctx, counts_json=canonical_json(ctx.counts))
+            _set_stage(ctx, "reconcile_import", "done", input_hash)
+    except KizashiError as exc:
+        raise _fail_stage(ctx, "reconcile_import", input_hash, exc) from exc
+
+
+def _reconcile_source(ctx: RunContext) -> None:
+    """原本照合（T6b）。CSV と PDF の組ごとに照合の計算を1つ登録する。入力のハッシュは CSV と PDF の SHA-256。"""
+    pairs = ctx.conn.execute(
+        "SELECT source_id, logical_key, sha256 FROM sources WHERE kind = 'dataset'"
+        " AND status = 'fetched' ORDER BY source_id"
+    ).fetchall()
+    input_hash = sha256_text(canonical_json(pairs))
+    try:
+        with ledger.transaction(ctx.conn):
+            ctx.counts["reconcile_source"] = reconcile.reconcile_source(
+                ctx.conn, ctx.root, ctx.adapter
+            )
+            _update_run(ctx, counts_json=canonical_json(ctx.counts))
+            _set_stage(ctx, "reconcile_source", "done", input_hash)
+    except KizashiError as exc:
+        raise _fail_stage(ctx, "reconcile_source", input_hash, exc) from exc
+
+
 # ---------------------------------------------------------------------------
 # 4〜5. 状態の確定と設定ファイルの移動
 # ---------------------------------------------------------------------------
@@ -521,7 +562,7 @@ def _accept_config(ctx: RunContext, config_path: Path) -> str:
 def start_run(
     root: Path, domain: str, config_arg: str, *, transport: httpx.BaseTransport | None = None
 ) -> dict:
-    """新しい実行（plan〜quality）。completed・partial なら結果を返し、failed なら KizashiError を投げる。"""
+    """新しい実行（plan〜reconcile_source）。completed・partial なら結果を返し、failed なら KizashiError を投げる。"""
     adapter = load_adapter(root, domain)
     config_path = paths.resolve_inbox_file(root, config_arg, (".json",))
     config = validate_run_config(_load_config(config_path), adapter)
@@ -553,7 +594,14 @@ def start_run(
                 conn, run_id, "state_change", before={"state": None}, after={"state": "running"}
             )
         try:
-            for stage in (_plan, _fetch, _normalize, _quality):
+            for stage in (
+                _plan,
+                _fetch,
+                _normalize,
+                _quality,
+                _reconcile_import,
+                _reconcile_source,
+            ):
                 stage(ctx)
         except _StageFailed as failed:
             err = failed.error
@@ -604,6 +652,20 @@ def start_run(
         )
         _finish(ctx, state, stop_reason)
         accepted = _accept_config(ctx, config_path)
+        source_check = ctx.counts.get("reconcile_source", {})
+        not_checked = [
+            f"{sid}（{entry.get('error') or entry.get('reason')}）"
+            for sid, entry in source_check.items()
+            if "error" in entry or entry.get("state") == "not_run"
+        ]
+        message = (
+            "取得・正規化・品質検査・照合（reconcile_import・reconcile_source）を終えた。"
+            "検出（detect）は未実装のため実行していない（P0-5）。"
+        )
+        if not_checked:
+            message += "原本照合ができなかった資料がある（照合不能として記録した）：" + "、".join(
+                not_checked
+            )
         return {
             "run_id": run_id,
             "state": state,
@@ -613,11 +675,10 @@ def start_run(
             "sources": _sources_summary(ctx),
             "records": ctx.counts.get("records", {}),
             "quality_report": f"data/runs/{run_id}/{quality.REPORT_NAME}",
+            "reconcile_import": ctx.counts.get("reconcile_import", {}),
+            "reconcile_source": source_check,
             "config_accepted": accepted,
-            "message": (
-                "取得・正規化・品質検査を終えた。照合（reconcile_import・reconcile_source）と検出（detect）は"
-                "未実装のため実行していない（P0-3・P0-5）。"
-            ),
+            "message": message,
         }
     finally:
         client.close()
