@@ -1,4 +1,4 @@
-"""kizashi run（plan〜reconcile_source）のテスト（test_plan.md の CF-1、SC-1（取り込みでの除外まで）、
+"""kizashi run（plan〜detect）のテスト（test_plan.md の CF-1、SC-1（取り込みでの除外まで）、
 FT-1・FT-3 の実行の中での扱い、完了条件：completed・failed・氏名が台帳にない）。
 
 期待値は implementation_spec.md 4.1・6.2・6.3 と、合成データから手で数えた値。
@@ -46,7 +46,7 @@ def start(repo: Path, site: Site, **config: object) -> dict:
 def test_run_completed_with_synthetic_data(
     repo: Path, site: Site, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """令和6・7年度の4ファイル（と PDF）で completed。工程は plan〜reconcile_source が done、検出は未実行。"""
+    """令和6・7年度の4ファイル（と PDF）で completed。工程は plan〜detect が done（検出の中身は test_detect.py）。"""
     monkeypatch.setenv("KIZASHI_PROFILE", "investigate")
     monkeypatch.setenv("KIZASHI_CLAUDE_VERSION", "2.1.318 (Claude Code)")
     result = start(repo, site)
@@ -60,11 +60,18 @@ def test_run_completed_with_synthetic_data(
         "quality",
         "reconcile_import",
         "reconcile_source",
+        "detect",
     ]
     assert all(
         s["state"] == "done" and len(s["input_hash"]) == 64 for s in result["stages"].values()
     )
-    assert result["stages_not_run"] == ["detect"]
+    assert "stages_not_run" not in result
+    assert result["leads"] == 16
+    assert {name: entry["state"] for name, entry in result["detect"].items()} == {
+        "s1_amount_change": "done",
+        "s2_method_change": "done",
+        "s3_reason_change": "done",
+    }
     assert (repo / result["quality_report"]).is_file()
 
     conn = ledger_of(repo, run_id)
@@ -76,11 +83,20 @@ def test_run_completed_with_synthetic_data(
         versions["dataset_yaml_sha256"]
         == hashlib.sha256((DATASET_DIR / "dataset.yaml").read_bytes()).hexdigest()
     )
-    assert versions["sql_sha256"] == hashlib.sha256(b"").hexdigest()  # 検出SQLはまだない（P0-5）
+    # screens/*.sql と populations/*.sql を、パスの順（populations/ が先）に連結したハッシュ（3.5）
+    sql_files = [
+        DATASET_DIR / sub / f"{name}.sql"
+        for sub in ("populations", "screens")
+        for name in ("s1_amount_change", "s2_method_change", "s3_reason_change")
+    ]
+    assert (
+        versions["sql_sha256"]
+        == hashlib.sha256(b"".join(p.read_bytes() for p in sql_files)).hexdigest()
+    )
     # 規則の版（implementation_spec.md 3.5、共通ルール11）。2：照合を足し Q13 の結果が変わった。
     # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった。
-    # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた
-    assert (versions["rules_version"], versions["parser_version"]) == ("5", "cao-procurement/1")
+    # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた。6：P0-5 で検出（detect）を足した
+    assert (versions["rules_version"], versions["parser_version"]) == ("6", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -125,6 +141,7 @@ def test_run_completed_with_synthetic_data(
         ("stage", "quality"),
         ("stage", "reconcile_import"),
         ("stage", "reconcile_source"),
+        ("stage", "detect"),
         ("state_change", None),
     ]
     conn.close()

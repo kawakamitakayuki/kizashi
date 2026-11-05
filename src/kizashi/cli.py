@@ -2,10 +2,10 @@
 
 本実装：起動時の検査（作業フォルダーと SQLite の版）、エラーの JSON 化、ID の書式と --run の欠けの検査
 （E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
-`run <分野> --config`（P0-2・P0-3。plan〜reconcile_source）、
+`run <分野> --config`（P0-2〜P0-5。plan〜detect）、`run --resume <run_id>`（P0-5）、
 `fetch <run_id> <URL> [--index | --definition]`・`inspect`・`query`・`record`（P0-4）。
-ほかの操作（run --resume、fetch --recheck、check、render）は、引数を検査したうえで
-{"stub": "<操作名>"} を返す仮の実装である（P0-5〜P0-8 で本実装にする）。
+ほかの操作（fetch --recheck、check、render）は、引数を検査したうえで
+{"stub": "<操作名>"} を返す仮の実装である（P0-6〜P0-8 で本実装にする）。
 """
 
 from __future__ import annotations
@@ -271,10 +271,10 @@ def _stub(name: str) -> Callable[[argparse.Namespace], dict]:
 
 
 def _run(args: argparse.Namespace) -> dict:
-    if args.resume is not None:
-        return {"stub": "run"}  # run --resume は P0-5 で本実装にする
     from kizashi import runner
 
+    if args.resume is not None:
+        return runner.resume_run(paths.repo_root(), args.resume)
     return runner.start_run(paths.repo_root(), args.domain, args.config)
 
 

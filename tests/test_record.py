@@ -2,6 +2,8 @@
 
 合成データの実行（S001〜S009）に、探索SQL・計算・候補を record で足して確かめる。期待値は合成の CSV
 （tests/fixtures/make_cao_fixtures.py）から手で決めた（翻訳業務：令和6年度 650,000円、令和7年度 750,000円）。
+実行には検出（detect）の候補 L0001〜L0016 と計算 K0009〜K0080 があるので、record で足す計算は K0081 から、
+探索の候補は L0017 から（conftest.py の synthetic_run）。
 """
 
 from __future__ import annotations
@@ -51,13 +53,13 @@ def lead(repo: Path, run: str) -> dict:
 def test_in2_success_moves_to_accepted(repo: Path, run: str) -> None:
     """IN-2：成功したら accepted/<連番>-<kind>.json に移り、events に record が残る。値は手計算と同じ。"""
     result = rec(repo, run, calc_sum("翻訳業務", 2024))
-    assert (result["kind"], result["id"], result["value"]) == ("calc", "K0009", "650000")
+    assert (result["kind"], result["id"], result["value"]) == ("calc", "K0081", "650000")
     assert not (repo / "inbox" / "p.json").exists()
     accepted = repo / "data" / "runs" / run / "accepted" / "0002-calc.json"
     assert accepted.is_file() and result["accepted"] == f"data/runs/{run}/accepted/0002-calc.json"
     conn = ledger_of(repo, run)
     ev = conn.execute("SELECT * FROM events WHERE kind = 'record'").fetchall()
-    assert [e["target_id"] for e in ev] == ["K0009"]
+    assert [e["target_id"] for e in ev] == ["K0081"]
     assert json.loads(ev[0]["after_json"])["kind"] == "calc"
 
 
@@ -213,9 +215,9 @@ def test_record_v7_numbers_names_and_strong_words(repo: Path, run: str, lead: di
 def test_lead_from_exploration(repo: Path, run: str, lead: dict) -> None:
     """6.2 lead：screen_id='explore' で登録し、計算の lead_id を埋め、比べた組の数（探索）を1増やす。"""
     conn = ledger_of(repo, run)
-    row = conn.execute("SELECT * FROM leads").fetchone()
+    row = conn.execute("SELECT * FROM leads WHERE screen_id = 'explore'").fetchone()
     assert (row["lead_id"], row["screen_id"], row["query_file"], row["state"]) == (
-        "L0001",
+        "L0017",
         "explore",
         "q-001.sql",
         "candidate",
@@ -228,7 +230,7 @@ def test_lead_from_exploration(repo: Path, run: str, lead: dict) -> None:
     )
     assert json.loads(row["comparison_json"]) == COMPARISON
     owners = dict(conn.execute("SELECT calc_id, lead_id FROM computations WHERE origin = 'record'"))
-    assert owners == {lead["from"]: "L0001", lead["to"]: "L0001"}
+    assert owners == {lead["from"]: "L0017", lead["to"]: "L0017"}
     counts = json.loads(conn.execute("SELECT counts_json FROM runs").fetchone()[0])
     assert counts["explore"] == {"compared": 1}
 
@@ -269,7 +271,7 @@ def test_lead_requires_base_calcs_with_year(repo: Path, run: str, lead: dict) ->
     fails(repo, run, {**proposal, "query_file": "q-999.sql"}, "E_REF_NOT_FOUND")
     fails(repo, run, {**proposal, "change_category": "something_new"}, "E_SCHEMA")
     fails(repo, run, {**proposal, "calc_from": lead["from"]}, "E_SCHEMA")  # 別の候補の計算
-    assert rec(repo, run, proposal)["id"] == "L0002"
+    assert rec(repo, run, proposal)["id"] == "L0018"
     # 同じ (screen_id, lead_key, change_category, period_from, period_to) の候補は作らない
     k_from2 = rec(repo, run, calc_sum("研修会場借上げ", 2024))["id"]
     k_to2 = rec(repo, run, calc_sum("研修会場借上げ", 2025))["id"]
@@ -293,15 +295,15 @@ def test_hypothesis_sets_investigating_and_limits_leads(repo: Path, run: str, le
     rec(repo, run, {**hyp, "lead_id": others[1]})
     fails(repo, run, {**hyp, "lead_id": others[2]}, "E_LIMIT_LEADS")
     conn = ledger_of(repo, run)
-    states = dict(conn.execute("SELECT lead_id, state FROM leads"))
+    states = dict(conn.execute("SELECT lead_id, state FROM leads WHERE screen_id = 'explore'"))
     assert states == {
-        "L0001": "investigating",
-        "L0002": "investigating",
-        "L0003": "investigating",
-        "L0004": "candidate",
+        "L0017": "investigating",
+        "L0018": "investigating",
+        "L0019": "investigating",
+        "L0020": "candidate",
     }
     row = conn.execute(
-        "SELECT hypothesis_result, withdraw_if FROM leads WHERE lead_id = 'L0001'"
+        "SELECT hypothesis_result, withdraw_if FROM leads WHERE lead_id = 'L0017'"
     ).fetchone()
     assert row["hypothesis_result"] == "kept"
 
@@ -617,7 +619,8 @@ def test_ck4_name_in_comparison_is_e_v7(repo: Path, run: str, lead: dict, key: s
     err = fails(repo, run, _lead_proposal(repo, run, comparison=comparison), "E_V7")
     assert "V7_PERSONAL_NAME" in err.message and f"comparison.{key}" in err.message
     assert "架空" not in err.message and "太郎" not in err.message
-    assert ledger_of(repo, run).execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
+    explore = "SELECT COUNT(*) FROM leads WHERE screen_id = 'explore'"
+    assert ledger_of(repo, run).execute(explore).fetchone()[0] == 1
 
 
 def test_ck4_name_in_lead_key_unit_and_coefficient_key_is_e_v7(
@@ -650,7 +653,11 @@ def test_ck4_name_anywhere_in_the_proposal_is_e_v7(repo: Path, run: str, lead: d
     }
     err = fails(repo, run, {**conclusion, "comparison": {"population": f"{NAME}の契約"}}, "E_V7")
     assert "comparison.population" in err.message and "架空" not in err.message
-    row = ledger_of(repo, run).execute("SELECT comparison_json FROM leads").fetchone()[0]
+    row = (
+        ledger_of(repo, run)
+        .execute("SELECT comparison_json FROM leads WHERE lead_id = ?", (lead["lead"],))
+        .fetchone()[0]
+    )
     assert "架空" not in row
 
     sid = add_evidence(repo, run, [f"契約担当官は{NAME}とする。\n"])

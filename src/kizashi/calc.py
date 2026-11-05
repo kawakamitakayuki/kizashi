@@ -77,8 +77,14 @@ def _allowlist(adapter: Adapter) -> dict[str, dict[str, tuple[str, ...]]]:
     return getattr(adapter.module, "CALC_TABLES", {})
 
 
-def build_query(adapter: Adapter, request: dict) -> tuple[str, tuple, str, str | None]:
-    """基礎集計の依頼を検査し、(SQL, パラメーター, op, 合計の列) を返す。"""
+def build_query(
+    adapter: Adapter, request: dict, *, allow_empty_in: bool = False
+) -> tuple[str, tuple, str, str | None]:
+    """基礎集計の依頼を検査し、(SQL, パラメーター, op, 合計の列) を返す。
+
+    allow_empty_in は、run の検出（detect.py）が row_refs の行を `record_id in` で選ぶときだけ真にする
+    （合計できる行のない年度の件数0を、同じ組み立てで登録するため）。提案の calc では空の in を拒否する。
+    """
     op = request.get("op")
     if op not in BASE_OPS:
         raise _err("E_SCHEMA", f"基礎集計の op は {'・'.join(BASE_OPS)} のどれか：{op!r}")
@@ -131,7 +137,11 @@ def build_query(adapter: Adapter, request: dict) -> tuple[str, tuple, str, str |
             raise _err("E_SCHEMA", 'filter の要素は {"col", "op", "value"} の形で書く。')
         value = item["value"]
         if fop == "in":
-            if not isinstance(value, list) or not value or not all(_scalar_ok(v) for v in value):
+            if (
+                not isinstance(value, list)
+                or (not value and not allow_empty_in)
+                or not all(_scalar_ok(v) for v in value)
+            ):
                 raise _err("E_SCHEMA", "in の value は、文字列か整数の空でない配列で書く。")
             where.append(f"{col} IN ({', '.join('?' for _ in value)})")
             params.extend(value)
@@ -146,8 +156,10 @@ def build_query(adapter: Adapter, request: dict) -> tuple[str, tuple, str, str |
     return sql, tuple(params), op, column if op == "sum" else None
 
 
-def base_aggregate(conn: sqlite3.Connection, adapter: Adapter, request: dict) -> BaseResult:
-    sql, params, op, _ = build_query(adapter, request)
+def base_aggregate(
+    conn: sqlite3.Connection, adapter: Adapter, request: dict, *, allow_empty_in: bool = False
+) -> BaseResult:
+    sql, params, op, _ = build_query(adapter, request, allow_empty_in=allow_empty_in)
     rows = conn.execute(sql, params).fetchall()
     row_refs = sorted(r[0] for r in rows)
     null_rows = 0
@@ -218,11 +230,28 @@ def register_base(
     unit: str,
     lead_id: str | None = None,
     origin: str = "record",
+    extra: dict | None = None,
+    allow_empty_in: bool = False,
+    expect_rows: int | None = None,
 ) -> str:
-    """基礎集計を計算して登録し、計算IDを返す。"""
-    res = base_aggregate(conn, adapter, request)
+    """基礎集計を計算して登録し、計算IDを返す。
+
+    extra は request_json に足す項目（run の検出が、除いた行と理由と件数を残すのに使う。実装仕様4.8）。
+    expect_rows を渡すと、選ばれた行の数がそれと違えば E_INTERNAL にする（検出SQLの row_refs が、採用した行と
+    合わないとき）。
+    """
+    res = base_aggregate(conn, adapter, request, allow_empty_in=allow_empty_in)
+    if expect_rows is not None and len(res.row_refs) != expect_rows:
+        raise KizashiError(
+            "E_INTERNAL",
+            "run",
+            f"検出SQLの row_refs（{expect_rows}行）と、分野の表で選ばれた採用の行（{len(res.row_refs)}行）が"
+            "合わない。",
+            next_action="開発側で検出SQLを直す。",
+        )
     stored = {k: request[k] for k in ("op", "table", "column", "filter") if k in request}
     stored["null_rows"] = res.null_rows
+    stored.update(extra or {})
     return _insert(
         conn,
         kind="base",
@@ -321,6 +350,7 @@ def register_derived(
     meaning: str,
     unit: str,
     lead_id: str | None = None,
+    origin: str = "record",
 ) -> str:
     derived = derive_value(conn, op, args)
     assert isinstance(args, list)
@@ -332,7 +362,7 @@ def register_derived(
         unit=unit,
         meaning=meaning,
         lead_id=lead_id,
-        origin="record",
+        origin=origin,
         formula=derived.formula,
         ref_calc_ids=args,
     )

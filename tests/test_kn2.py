@@ -11,7 +11,8 @@
 
 置き換え：例の値は合成の例で、合成データ（tests/fixtures/make_cao_fixtures.py）にはない。翻訳業務
 （令和6年度 S001:000012 の 650,000円、令和7年度 S005:000007 の 750,000円）と、合成の仕様書
-（tests/fixtures/evidence/spec_sample.txt を追加資料として取得した S010）に合わせる。
+（tests/fixtures/evidence/spec_sample.txt を追加資料として取得した S010）に合わせる。実行には検出（detect）の
+候補 L0001〜L0016 と計算 K0009〜K0080 があるので、探索の候補は L0017、record の計算は K0081 から。
 """
 
 from __future__ import annotations
@@ -118,12 +119,12 @@ def test_kn2_all_examples_can_be_recorded(
         code, out = cli_record(repo, run_id, data, capsys, f"pre-{year}.json")
         assert code == 0, out
         ids[label] = out["data"]["id"]
-    assert [ids["K_FROM"], ids["K_TO"]] == ["K0009", "K0010"]
+    assert [ids["K_FROM"], ids["K_TO"]] == ["K0081", "K0082"]
 
     mapping = [
         ("荷物等の配送業務", "翻訳業務"),
         ("本業務は、…の配送を行うものである。", "本業務は、荷物等の配送を行うものである。"),
-        ("L0003", "L0001"),
+        ("L0003", "L0017"),
         ("K0030", ids["K_FROM"]),
         ("K0031", ids["K_TO"]),
         ("K0020", ids["K_FROM"]),
@@ -157,7 +158,7 @@ def test_kn2_all_examples_can_be_recorded(
     assert not pending
 
     conn = ledger_of(repo, run_id)
-    lead = conn.execute("SELECT * FROM leads WHERE lead_id = 'L0001'").fetchone()
+    lead = conn.execute("SELECT * FROM leads WHERE lead_id = 'L0017'").fetchone()
     assert (lead["screen_id"], lead["query_file"], lead["proposed_outcome"]) == (
         "explore",
         "q-002.sql",
@@ -182,8 +183,8 @@ def test_kn2_all_examples_can_be_recorded(
 
     # inspect（実行ID、候補ID、資料ID、row_ref、計算ID、主張ID）
     run = cli_inspect(run_id, run_id, capsys)
-    assert run["leads"]["total"] == 1 and run["counts"]["explore"] == {"compared": 1}
-    lead_view = cli_inspect("L0001", run_id, capsys)
+    assert run["leads"]["total"] == 17 and run["counts"]["explore"] == {"compared": 1}
+    lead_view = cli_inspect("L0017", run_id, capsys)
     assert [(m["left"], m["right"], m["status"]) for m in lead_view["matches"]] == [
         (["S001:000012"], ["S005:000007"], "confirmed")
     ]

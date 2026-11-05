@@ -45,8 +45,14 @@ def start(repo: Path, site: Site, **config: object) -> dict:
 
 
 def computations(repo: Path, run_id: str) -> list[dict]:
+    """照合の計算（kind='reconcile'）。検出（detect）の自動の基礎集計・派生計算は含めない。"""
     conn = ledger_of(repo, run_id)
-    rows = [dict(r) for r in conn.execute("SELECT * FROM computations ORDER BY calc_id")]
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM computations WHERE kind = 'reconcile' ORDER BY calc_id"
+        )
+    ]
     conn.close()
     for r in rows:
         r["request"] = json.loads(r["request_json"])
@@ -69,7 +75,7 @@ def completed(repo: Path, site: Site) -> dict:
 
 
 def test_run_has_reconcile_stages(repo: Path, completed: dict) -> None:
-    """工程 reconcile_import・reconcile_source が done になり、検出（detect）だけが未実行。"""
+    """工程 reconcile_import・reconcile_source が done になり、その後に検出（detect。P0-5）が続く。"""
     assert completed["state"] == "completed"
     assert list(completed["stages"]) == [
         "plan",
@@ -78,9 +84,10 @@ def test_run_has_reconcile_stages(repo: Path, completed: dict) -> None:
         "quality",
         "reconcile_import",
         "reconcile_source",
+        "detect",
     ]
     assert all(s["state"] == "done" for s in completed["stages"].values())
-    assert completed["stages_not_run"] == ["detect"]
+    assert "stages_not_run" not in completed
     calcs = computations(repo, completed["run_id"])
     # 資料ごとに取り込みの照合を1つ（K0001〜K0004）、資料の組ごとに原本照合を1つ（K0005〜K0008）
     assert [(c["calc_id"], c["kind"], c["origin"], c["lead_id"]) for c in calcs] == [
@@ -281,6 +288,7 @@ def test_stage_events_include_reconcile(repo: Path, completed: dict) -> None:
         "quality",
         "reconcile_import",
         "reconcile_source",
+        "detect",
     ]
 
 
