@@ -1,4 +1,4 @@
-"""CLI の共通仕様のテスト（test_plan.md の CLI-1・CLI-3）。
+"""CLI の共通仕様のテスト（test_plan.md の CLI-1・CLI-2・CLI-3）。
 
 期待値は implementation_spec.md の 3.1（作業フォルダーと SQLite の版）、3.2（出力と終了コード）、
 3.7（エラーコードの一覧）、9章（検証のコード）、4.1〜4.7（各操作の引数の形）から書き写したもの。
@@ -105,8 +105,8 @@ def test_cli1_e_cwd_before_argument_errors(tmp_path: Path, monkeypatch, capsys, 
 
 
 # 4.1〜4.7 の書式どおりの呼び出し。仮の実装は {"ok": true, "data": {"stub": "<操作名>"}} を返す。
+# run <分野> --config は P0-2 で本実装にした（test_cli2_run_is_implemented と test_run.py）。
 VALID_FORMS = [
-    ("run", ["run", "cao-procurement", "--config", "inbox/run-config.json"]),
     ("run", ["run", "--resume", "20261105-101500-a3f2"]),
     ("fetch", ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/x.pdf"]),
     ("fetch", ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/", "--index"]),
@@ -384,3 +384,131 @@ def test_cli3_new_sqlite_passes(repo_root: Path, monkeypatch, capsys, version: s
     code, payload, _ = run_cli(["inspect", "20261105-000000-test"], capsys)
     assert code == 0
     assert payload == {"ok": True, "data": {"stub": "inspect"}}
+
+
+# ---------------------------------------------------------------------------
+# CLI-2：書式に合わない ID、../ を含む引数を拒否する。実行ID以外の ID で --run がなければ E_BAD_ID
+# ---------------------------------------------------------------------------
+
+RUN = "20261105-101500-a3f2"
+
+BAD_ID_FORMS = [
+    ["inspect", "L0001"],  # 実行ID以外で --run がない
+    ["inspect", "S004:000042"],
+    ["inspect", "K0012", "--page", "2"],
+    ["inspect", "../etc/passwd"],
+    ["inspect", "L001"],  # 桁数
+    ["inspect", "L00001"],
+    ["inspect", "S004:42"],
+    ["inspect", "l0001", "--run", RUN],  # 小文字
+    ["inspect", "T6a", "--run", RUN],
+    ["inspect", "L0001", "--run", "../20261105-101500-a3f2"],
+    ["inspect", "L0001", "--run", "20261105-101500-A3F2"],
+    ["inspect", "20261105-1015-a3f2"],
+    ["fetch", "../x", "https://www.cao.go.jp/x.pdf"],
+    ["fetch", RUN, "--recheck", "S04"],
+    ["fetch", RUN, "--recheck", "../S004"],
+    ["query", "L0001", "inbox/q.sql"],
+    ["record", "run", "inbox/a.json"],
+    ["check", "L0001"],  # --run がない
+    ["check", "--publish", "examples/publish.manifest"],
+    ["check", "S004", "--run", RUN],
+    ["check", "L0001", "--run", "L0001"],
+    ["check", "--publish", "examples/publish.manifest", "--run", RUN, "--run", "../x"],
+    ["render", "L0001"],
+    ["render", "S004", "--run", RUN],
+    ["render", "C0001", "--run", RUN],
+    ["run", "--resume", "../20261105-101500-a3f2"],
+    ["run", "--resume", "L0001"],
+]
+
+
+@pytest.mark.parametrize("argv", BAD_ID_FORMS)
+def test_cli2_bad_ids_are_e_bad_id(repo_root: Path, capsys, new_sqlite, argv) -> None:
+    """CLI-2：ID の書式（3.3）に合わない引数と、--run の欠けは E_BAD_ID（終了コード2）。"""
+    code, payload, _ = run_cli(argv, capsys)
+    assert code == 2
+    assert_error(payload, "E_BAD_ID")
+
+
+BAD_INBOX_FORMS = [
+    ["run", "cao-procurement", "--config", "inbox/../x.json"],
+    ["run", "cao-procurement", "--config", "../inbox/x.json"],
+    ["run", "cao-procurement", "--config", "inbox/sub/x.json"],
+    ["run", "cao-procurement", "--config", "/tmp/x.json"],
+    ["run", "cao-procurement", "--config", "inbox/x.sql"],
+    ["query", RUN, "inbox/../q.sql"],
+    ["query", RUN, "inbox/q.json"],
+    ["record", RUN, "data/a.json"],
+    ["record", RUN, "inbox/a.txt"],
+]
+
+
+@pytest.mark.parametrize("argv", BAD_INBOX_FORMS)
+def test_cli2_bad_inbox_paths(repo_root: Path, capsys, new_sqlite, argv) -> None:
+    """CLI-2・IN-1：../ や inbox/ の外、許していない拡張子の提案ファイルは E_INBOX_PATH（終了コード1）。"""
+    code, payload, _ = run_cli(argv, capsys)
+    assert code == 1
+    assert_error(payload, "E_INBOX_PATH")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["inspect", "S004", "--run", RUN],
+        ["inspect", "S004:000042", "--run", RUN],
+        ["inspect", "K0012", "--run", RUN],
+        ["inspect", "C0031", "--run", RUN],
+        ["inspect", "M002", "--run", RUN],
+        ["inspect", RUN, "--page", "2"],
+        ["query", RUN, "inbox/q-001.sql"],
+        ["record", RUN, "./inbox/calc-001.json"],
+    ],
+)
+def test_cli2_valid_ids_pass(repo_root: Path, capsys, new_sqlite, argv) -> None:
+    """CLI-2：3.3 の書式どおりの ID は通る（操作は仮の実装）。"""
+    code, payload, _ = run_cli(argv, capsys)
+    assert code == 0
+    assert payload["ok"] is True
+
+
+def test_cli2_run_is_implemented(repo_root: Path, capsys, new_sqlite) -> None:
+    """run <分野> --config は仮の実装でない。datasets/<分野>/dataset.yaml がなければ E_USAGE。"""
+    code, payload, _ = run_cli(
+        ["run", "cao-procurement", "--config", "inbox/run-config.json"], capsys
+    )
+    assert code == 2
+    assert_error(payload, "E_USAGE")
+    code, payload, _ = run_cli(
+        ["run", "no-such-domain", "--config", "inbox/run-config.json"], capsys
+    )
+    assert code == 2
+    assert_error(payload, "E_USAGE")
+
+
+def test_cli_run_outputs_one_json(repo: Path, capsys, new_sqlite, monkeypatch) -> None:
+    """run の成功は1つのJSON（終了コード0）。見出しの違うファイルで failed なら E_FORMAT_CHANGED（終了コード3）。"""
+    import httpx
+
+    from conftest import URL, Site, fixture_bytes, write_config
+    from kizashi import fetcher
+
+    site = Site()
+    monkeypatch.setattr(
+        fetcher, "make_client", lambda transport=None: httpx.Client(transport=site.transport)
+    )
+    config = write_config(repo)
+    code, payload, _ = run_cli(["run", "cao-procurement", "--config", config], capsys)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["data"]["state"] == "completed"
+
+    site.routes[URL["k24_csv"]] = httpx.Response(200, content=fixture_bytes("kyoso_bad_header.csv"))
+    config = write_config(repo)
+    code, payload, _ = run_cli(["run", "cao-procurement", "--config", config], capsys)
+    assert code == 3
+    assert_error(payload, "E_FORMAT_CHANGED")
+    assert payload["error"]["stage"] == "run"
+    assert (
+        payload["error"]["affected_ids"][0] != payload["error"]["affected_ids"][-1]
+    )  # 実行IDと資料ID

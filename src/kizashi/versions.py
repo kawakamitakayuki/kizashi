@@ -1,0 +1,84 @@
+"""版の記録（implementation_spec.md 3.5）。
+
+- 照合するもの：dataset_yaml_sha256、sql_sha256、rules_version、parser_version。
+- 記録だけのもの：code_version、git_commit（と、Claude Code の版）。
+
+RULES_VERSION は、正規化・照合・検証の結果を変えるコードの変更をしたときに、人が手で上げる。
+テストの期待値を変えたときは上げる（共通ルール11）。
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from importlib import metadata
+from pathlib import Path
+
+import yaml
+
+from kizashi import paths
+from kizashi.hashing import sha256_bytes, sha256_file
+
+RULES_VERSION = "1"
+
+
+def code_version() -> str:
+    try:
+        return metadata.version("kizashi")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def git_commit(root: Path) -> str:
+    """いまのコミット（短い形）。git がない、リポジトリでないなどのときは unknown。"""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = proc.stdout.strip()
+    return commit if proc.returncode == 0 and commit else "unknown"
+
+
+def sql_sha256(root: Path, domain: str) -> str:
+    """screens/*.sql と populations/*.sql を、パスの順に連結したハッシュ（3.5）。"""
+    base = paths.dataset_dir(root, domain)
+    files = sorted(
+        [p for sub in ("screens", "populations") for p in (base / sub).glob("*.sql")],
+        key=lambda p: p.relative_to(base).as_posix(),
+    )
+    return sha256_bytes(b"".join(p.read_bytes() for p in files))
+
+
+def rule_versions(root: Path, domain: str) -> dict:
+    """runs.rule_versions_json に記録する版。"""
+    yaml_path = paths.dataset_dir(root, domain) / "dataset.yaml"
+    yaml_bytes = yaml_path.read_bytes()
+    config = yaml.safe_load(yaml_bytes)
+    versions = {
+        "dataset_yaml_sha256": sha256_bytes(yaml_bytes),
+        "sql_sha256": sql_sha256(root, domain),
+        "rules_version": RULES_VERSION,
+        "parser_version": str(config["parser_version"]),
+        "code_version": code_version(),
+        "git_commit": git_commit(root),
+    }
+    claude_version = os.environ.get("KIZASHI_CLAUDE_VERSION")
+    if claude_version:
+        # scripts/investigate が渡す Claude Code の版（3.5）。記録だけで、照合しない。
+        versions["claude_code_version"] = claude_version
+    return versions
+
+
+def knowledge_hashes(root: Path) -> dict[str, str]:
+    """references/ の知識ファイルの SHA-256（runs.knowledge_hashes_json）。"""
+    ref = root / "references"
+    if not ref.is_dir():
+        return {}
+    return {p.name: sha256_file(p) for p in sorted(ref.glob("*.md"))}
