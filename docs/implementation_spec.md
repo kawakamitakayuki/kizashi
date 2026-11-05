@@ -55,7 +55,7 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 | `render.py` | 候補のメモ、実行の概要、伏せた写し | `render_lead(...)`, `render_run(...)` |
 | `publish.py` | `check --publish` | `check_publish(manifest)` |
 
-`datasets/cao-procurement/` に `dataset.yaml`、`screens/*.sql`、`README.md`、`fixtures/` を置く（アダプタ仕様）。
+`datasets/cao-procurement/` に `dataset.yaml`、`screens/*.sql`（検出SQL）、`populations/*.sql`（比べた組の数）、`series/*.sql`（年度の系列。D-038④）、`README.md`、`fixtures/` を置く（アダプタ仕様）。
 
 ## 3. 共通仕様
 
@@ -117,7 +117,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 `run` の開始時に、次を `runs.rule_versions_json` に記録する。
 
 ```json
-{"dataset_yaml_sha256": "...", "sql_sha256": "...(screens/*.sql と populations/*.sql をパスの順に連結したハッシュ)",
+{"dataset_yaml_sha256": "...", "sql_sha256": "...(screens/*.sql、populations/*.sql、series/*.sql をパスの順に連結したハッシュ)",
  "rules_version": "1", "parser_version": "cao-procurement/1",
  "code_version": "0.1.0", "git_commit": "abc1234 または unknown"}
 ```
@@ -206,7 +206,13 @@ kizashi run --resume <run_id>
 **再開（`--resume`）**
 
 - 対象は、状態が `running`（強制終了で残ったもの）か、`stop_reason` が一時的な通信の失敗の `failed` だけ。`partial` と `completed` は `E_NOT_RESUMABLE`。
-- 終わった工程は、入力のハッシュがいまと同じなら飛ばす。違えば `E_INPUT_CHANGED` で止め、新しい実行を求める。
+- 終わった工程は、入力のハッシュがいまと同じなら飛ばす。違えば `E_INPUT_CHANGED` で止め、新しい実行を求める。入力のハッシュは、記録したときと同じ関数で、いまの台帳・`dataset.yaml`・分野のSQLから計算し直す。
+- 規則の版（3.5の照合する4つ）が開始時と違えば、未実行の工程だけが残っていても `E_INPUT_CHANGED` にする（途中から違う規則で続けると `check`・`render` が `E_RULE_VERSION` になるため。D-038⑫）。
+- 取得済みの原本（`kind` が `dataset` の CSV・PDF と `index` の公表ページの HTML）が `data/raw/` にないか、中身の SHA-256 が `sources.sha256` と違えば、`E_INPUT_CHANGED`（資料IDと「ない」「SHA-256 が違う」の別を書く）。工程の入力のハッシュは台帳の SHA-256 から作るので、原本そのものをここで照らす（D-038⑫）。
+- 以上の拒否は、状態を変える前に行い、台帳を変えない（`events` にも残さない）。通信もしない。
+- 取得は、予定のまま（`planned`）と取得できなかった（`failed`）資料を、一時的な失敗かどうかによらず取り直す（強制終了では一時的な失敗の印が残らないため）。非公表（`not_published`）は取り直さない。取得済みの資料と公表ページは取り直さず、照らした原本を使う。通信回数・バイト数の上限は開始時からの合計を引き継ぐ（D-038⑪）。
+- `failed` から再開するときは、状態を `running` に戻し、`stop_reason`・`finished_at` を消す（`events` に `failed` → `running`）。
+- `completed`・`partial` になったら、開始時の設定ファイル（最初の `state_change` の `events` の `config_file`）が `inbox/` に同じ中身で残っていれば `accepted/` に写して消す。同じ中身かは、キーの順と空白を問わず、数値の型（`2024` と `2024.0`、`true` と `1`）を区別する正規化JSON（11章の正規化）で照らす。なければ、または中身が違えば、台帳の設定（開始時のもの）を `accepted/` に書き、`inbox/` のファイルは触らない（D-038⑬）。
 - `detect` が終わっていれば候補を作り直さない。途中で止まった `detect` は、トランザクションが確定していないので最初からやり直す（候補は `(screen_id, lead_key, change_category, period_from, period_to)` で一意。5章の `leads` のUNIQUE）。
 - `events` に `resume` を記録する。
 
@@ -240,7 +246,7 @@ IDは実行ごとの台帳の中でだけ一意なので、実行ID以外を見�
 | 対象 | 表示 |
 | --- | --- |
 | 実行ID | 問い、状態、工程の状態、件数、上限の消費、候補の一覧（区分ごとに差の絶対値の大きい順、1ページ20件、総数と未調査の件数）、次の作業 |
-| 候補ID | 比較の単位、区分、計算（値・意味・単位）、年度の系列、同じ区分のほかの件数、比較の条件、比較できない理由、仮説、判定、主張、取材質問、状態、巡回数、メモの番号と失効の有無、同種業務の対応（matches）、係数の提案（coefficients）。対応と係数の提案は、`review-lead` が1回の `inspect` で `V8_MATCH_UNCONFIRMED` と `V8_COEFFICIENT_PENDING` に当たる状態を確かめられるように出す（D-023） |
+| 候補ID | 比較の単位、区分、計算（値・意味・単位）、年度の系列、同じ区分のほかの件数（同じ実行の検出の候補の数。探索の候補は数えない。4.8）、比較の条件、比較できない理由、仮説、判定、主張、取材質問、状態、巡回数、メモの番号と失効の有無、同種業務の対応（matches）、係数の提案（coefficients）。対応と係数の提案は、`review-lead` が1回の `inspect` で `V8_MATCH_UNCONFIRMED` と `V8_COEFFICIENT_PENDING` に当たる状態を確かめられるように出す（D-023） |
 | 資料ID | URL、取得日時、SHA-256、状態、新しい版の有無、ページ数 |
 | レコード（`row_ref`） | 元のセルの値（`cells_json`。キーは `take` のキーで、見出しを添える。氏名を除いた後）、分野の表の正規化した値、照合の結果 |
 | 計算ID | 種類、依頼、結果、`row_refs` の件数とハッシュ（一覧はページ分け） |
@@ -317,14 +323,19 @@ kizashi render <run_id> [--public]
 | `incomparable_reasons` | 比較できない理由（JSONの配列） |
 
 - CLIは、`excluded_*` の `ref` がすべて `row_refs_*` に含まれ、理由が空でないことを確かめる（違えば検出SQLの誤りとして `E_INTERNAL` で止める）。
-- CLIは、各候補について基礎集計（合計と件数）をDecimalで計算し直して登録する（`origin='run'`）。比べる2年度の基礎集計の計算IDを `leads.calc_from`・`leads.calc_to` に入れる（V8_MATCH_UNCONFIRMED とT6a・T6bの判定が使う）。合計の対象は `row_refs_*` から `excluded_*` を除いた行で、基礎集計の `row_refs` にはこの行だけを入れる。除いた行と理由と件数は、基礎集計の `request_json` に記録し、メモの比較の条件と記者の確認リストに出す。どの行を除くかを決めるのは検出SQLだけとし、CLIは同じ判定を別に書かない。
+- CLIは、各候補について基礎集計（合計と件数）をDecimalで計算し直して登録する（`origin='run'`）。比べる2年度の基礎集計の計算IDを `leads.calc_from`・`leads.calc_to` に入れる（V8_MATCH_UNCONFIRMED とT6a・T6bの判定が使う）。合計の対象は `row_refs_*` から `excluded_*` を除いた行で、基礎集計の `row_refs` にはこの行だけを入れる。除いた行と理由と件数は、基礎集計の `request_json` に記録し、メモの比較の条件と記者の確認リストに出す。どの行を除くかを決めるのは分野のSQL（検出SQLと、同じ除き方の系列のSQL）だけとし、CLIは同じ判定を別に書かない。
 - 金額の検出（S1）だけ、差額と増減率を派生計算として登録する。基準値が0以下なら増減率を作らない。`amount_incomparable`（片方の年度に合計できる行がない）では件数だけを登録し、差額と増減率を作らない。
-- CLIは、`incomparable_reasons` の `null` を除き、候補の行の分野の表の `incomparable_reasons_json`（重複、読めない日付など）と、`dataset.yaml` の年度の理由（`partial_year`）を合わせる。
+- CLIは、`incomparable_reasons` の `null` を除き、候補の `row_refs_*` の全行（除いた行を含む）の分野の表の `incomparable_reasons_json`（重複、読めない日付など）と、`dataset.yaml` の年度の理由（比べる年度が年度途中なら `partial_year`）を合わせ、重複を除いて文字の順に並べる（D-038⑥）。
 - 候補の比較の条件（`leads.comparison_json`：母集団、1行の意味、期間、単位、主体の対応、算式）を、`dataset.yaml` の `comparison_defaults`（検出SQLごと）で埋める。
-- 同じ `change_category` の候補の数を `peer_count` に入れる。
-- 候補のまとめに属する、`series_years` のすべての年度の合計を、年度ごとの基礎集計として登録し、系列として `leads.calc_ids_json` に入れる。
+- 基礎集計は年度ごとに、`row_refs_*` から `excluded_*` を除いた行の件数（単位 `件`）を必ず登録する。`metric` が `<列>_sum`（列は分野アダプタの `SUM_LABELS`）の検出SQLでは、この件数は「合計対象行の件数」で（`meaning` にそう書く）、金額の合計ではない。両年度に合計できる行があれば合計も登録し、`calc_from`・`calc_to` を合計にする。`amount_incomparable` では `calc_from`・`calc_to` を合計対象行の件数（単位 `件`）にする。件数と派生計算は `lead_id` で候補に結ぶ（D-038②）。
+- 同じ実行の、同じ `change_category` の検出の候補（`screen_id` が検出SQLの名前のもの）の数から、自分を除いた数を `peer_count` に入れる。探索の候補（`screen_id='explore'`）は数えず、探索の候補の `peer_count` は空のまま。所属や部局の別では数えない（「ほかの部局の数」ではない。D-038①）。
+- 年度の系列：検出SQLと同じ名前の `datasets/<分野>/series/<名前>.sql` を、`series_years` の年度ごとに名前付きのパラメーター `:year` で実行する。列は `lead_key`・`fiscal_year`・`row_refs`（その年度の、まとめに属する行すべて）・`excluded`（合計から除く行と理由。書式は `excluded_*` と同じ）。行の選び方と除き方は検出SQLと同じにする。CLIは、比べる2年度で、系列のSQLの `row_refs` と `excluded` が検出SQLと同じかを候補ごとに照らす（違えば分野のSQLの誤りとして `E_INTERNAL`）。
+- 比べる2年度は `calc_from`・`calc_to` を系列に使う。ほかの年度も比べる2年度と同じ数え方で、合計対象行の件数を必ず登録し（除いた行と理由と件数を `request_json` に残す）、合計の候補で合計できる行があれば合計を登録して系列に入れる。件数の候補（`amount_incomparable` と S2・S3）は件数を系列に入れる。系列は `series_years` の順に計算IDを並べて `leads.calc_ids_json` に入れる。
+- 合計の候補で、その年度に合計できる行がない（行がない、または行がすべて合計から除かれる）年度は、合計を作らず（0円にしない）系列に入れず、候補の `note` に年度と合計対象行の件数の計算IDを書く。その年度の資料（その検出SQLの `requires` の方式）が取得・品質検査を通っていなければ、系列のSQLを実行せず計算も作らず（0件・0円にしない。設計書5.2・M13）、`note` に年度と欠けた資料を書く。年度途中の年度（`dataset.yaml` の `files` の `partial_year`）の計算は `meaning` に「（年度途中）」を付ける（D-038④⑤）。
 - 検出SQLごとに、比べた組の数と、比較できなかった組の数を `runs.counts_json` に入れる。数え方は、検出SQLと同じ名前の `datasets/<分野>/populations/<名前>.sql`（`compared` と `incomparable` の2列を返す）で定める。`screens/` に置くと検出SQLとして実行されるため、場所を分ける。
-- 検出SQLを実行する前に、`dataset.yaml` の `screens.<名前>.requires`（`compare_years` の両年度でそろっていなければならない資料の種類）を確かめる。1つでも取得・品質検査を通っていなければ、検出SQLも母集団のSQLも実行せず、`runs.counts_json` に `{"<名前>": {"state": "not_run", "missing": ["kyoso:2025", ...]}}` と書く。`compared: 0` とは書かない（「比べた組が0」と「実行していない」を混同しないため）。実行した検出SQLは `{"state": "done", "compared": N, "incomparable": M, "leads": K}` と書く。
+- 検出SQLを実行する前に、`dataset.yaml` の `screens.<名前>.requires`（`compare_years` の両年度でそろっていなければならない資料の種類）を確かめる。1つでも取得・品質検査を通っていなければ、検出SQLも母集団のSQLも実行せず、`runs.counts_json` に `{"<名前>": {"state": "not_run", "missing": ["kyoso:2025", ...]}}` と書く。`compared: 0` とは書かない（「比べた組が0」と「実行していない」を混同しないため）。実行した検出SQLは `{"state": "done", "compared": N, "incomparable": M, "leads": K}` と書く。資料がそろうかは、その年度・方式の CSV が `fetched` で、品質検査の結果（`counts_json` の `quality`）にあることで決める（D-038⑧）。実行しなかった検出SQLは `runs.stop_reason` の `screens_not_run`（`[{"screen": "<名前>", "missing": [...]}]`）に、取得できなかった資料（`missing`）と並べて書き、どちらかがあれば `partial` にする（D-038⑦）。
+- 分野のSQL・`dataset.yaml` の誤り（`screens/` のSQLと `dataset.yaml` の `screens` の名前が合わない、`requires` が方式の配列でない、母集団のSQL・系列のSQLがない、`comparison_defaults` が6項目でない、列が違う、`excluded` の行が `row_refs` にない・理由が空、期間が `compare_years` と違う、`change_category` が `reconcile.fields_by_category` にない、同じ候補を2回返す、比べる2年度で系列のSQLの行が検出SQLと違う）は `E_INTERNAL` で `detect` を `failed` にし、トランザクションを巻き戻して候補を残さない（D-038⑨）。
+- 候補の採番は、検出SQLの名前の順、その中で `(change_category, lead_key)` の順。検出の候補の `query_file` は空（D-038⑩）。
 
 ## 5. 台帳（DDL）
 
@@ -527,7 +538,7 @@ CREATE TABLE events (
 - `field` は `dataset.yaml` の `scope_fields` にあるものだけ、`op` は `contains`・`not_contains`・`equals`・`not_equals` だけ。比べる前に両方をNFKCにし空白を除く。条件はすべてを満たす行を残す（AND）。`scope_fields` で `kind: json_array` の項目（所属の配列など）は、どれかの要素が `contains`・`equals` を満たせば満たすとし、`not_contains`・`not_equals` はどの要素も満たさないときに満たすとする。`instruction` が空、知らない `field`・`op` は `E_SCHEMA`。
 - `normalize` の後に適用する。条件に合わない行は、`records.status='excluded'`（`status_reason='out_of_scope'`）と分野の表の `record_status='excluded'` にする。行は消さない。品質検査と、取り込みの照合・原本照合（T6a・T6b）は全行で行う（絞り込みで検査を省かない）。
 - 検出SQLと母集団のSQLは `record_status='adopted'` の行だけを読むので、絞り込みは検出・比べた組の数・基礎集計に自動で効く（7.1）。
-- 候補の比較の条件の「母集団」に、CLIが「（記者の指示で絞り込み：<instruction>。条件：…）」を書き足す。実行の概要の「処理の範囲」に、指示、条件、資料ごとの除いた行の数を書く。
+- 候補の比較の条件の「母集団」に、CLIが「（記者の指示で絞り込み：<instruction>。条件：…）」を書き足す。検出の候補、探索の候補（`record` の `kind: lead`）、結論（`kind: conclusion`）で比較の条件を変えたときのどれにも、同じ処理（`detect.scope_population`）で書き足す。結論で母集団を書き換えても実行時の絞り込みは消えない（同じ書き足しがすでにあれば重ねない。D-038⑮）。実行の概要の「処理の範囲」に、指示、条件、資料ごとの除いた行の数を書く。
 - 絞り込みを変えるときは新しい実行にする（`run_config` は実行の入力のハッシュに入る）。
 
 ### 6.4 係数の提案（`kind: coefficient`）
@@ -611,7 +622,7 @@ CREATE TABLE events (
 
 - 資料のページ別テキスト（CSVは `records.cells_json` の `column` のキーの値）と引用を、どちらもNFKCで正規化し、空白と改行を除いて比べる。部分一致でよい。
 - 引用は文末（。．！？で終わる、または資料の段落・セルの終わり）まで含むこと。途中で切れていれば `E_QUOTE_TRUNCATED`。資料の中で直後が数字の `.`（NFKCの後。全角の `．` を含む）は小数点なので文末にしない。
-- 引用は、資料の数値の途中で始まっても、途中で終わってもいけない（`E_QUOTE_TRUNCATED`。D-033・D-036）。資料の数値は、空白を除いた後の、7.2 の数値の並び（前後が数字・`,`・`.` でない、数字と `,`・`.` の連なり。先頭の `.` を含む）に、直前の `▲`・`△` と符号（`-`・`−`・`+`。前が数字・英字でないもの）を含めたもので、段落・セルをまたいでつながない。`750,000` のセルの `000`、`1.5件。` の `1.`、`-12件。`・`▲12件。` の `12件。`、`.5` の `5` を通さない。範囲の `10-15` の `15` からの引用は通す。
+- 引用は、資料の数値の途中で始まっても、途中で終わってもいけない（`E_QUOTE_TRUNCATED`。D-033・D-036）。資料の数値は、空白を除いた後の、7.2 の数値の並び（前後が数字・`,`・`.` でない、数字と `,`・`.` の連なり。先頭の `.` を含む）に、直前の `▲`・`△` と符号（`-`・`−`・`+`。前が数字・英字でないもの）を含めたもので、段落・セルをまたいでつながない。`750,000` のセルの `000`、`1.5件。` の `1.`、`-12件。`・`▲12件。` の `12件。`、`.5` の `5` を通さない。範囲の `10-15` の `15` からの引用は通す。また、引用だけを読んだときの数値（同じ規則で、引用の始めの符号を含む）が、資料のその位置で読む数値と同じでなければ `E_QUOTE_TRUNCATED`（D-039）。資料で符号でない `-`・`+`（前が数字・英字のもの）から始めた引用（`10-15件。` の `-15件。`、`A-12型。` の `-12型。`）は、引用だけでは負・正の数値に読めるので通さない。
 - 主張の種類が「原資料の記載」で、主張の `fiscal_year` と資料の年度（データの資料は論理資料のキーの年度）がどちらも分かり、食い違えば `E_QUOTE_YEAR`。追加資料の年度は機械では決めず、`review-lead` で確かめる。
 - `sources.kind='index'` の資料、公表一覧のPDF（`kind='dataset'` で形式がPDFの資料。D-021）、`references/` の知識ファイルは根拠にできない（`E_BAD_EVIDENCE_SOURCE`）。公表一覧のPDFを指した場合は、`next_action` で同じ年度・方式のCSVの `row_ref` を使うよう案内する。知識ファイルの引用を照合するのは、係数の提案の手がかり（6.4）のときだけである。
 

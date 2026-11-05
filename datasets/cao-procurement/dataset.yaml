@@ -51,7 +51,7 @@ comparison_defaults:
     entity_mapping: 件名のまとめのキーによる同種業務の候補（確定は対応の登録）
     formula: 年度ごとの契約金額の合計の差と増減率
   s2_method_change:
-    population: 同上
+    population: 内閣府が公表した競争入札・随意契約（物品・役務等）のうち、件名のまとめのキーが両年度にある契約
     row_meaning: 1件の契約
     period: 会計年度
     unit: 件

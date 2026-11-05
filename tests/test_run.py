@@ -83,10 +83,11 @@ def test_run_completed_with_synthetic_data(
         versions["dataset_yaml_sha256"]
         == hashlib.sha256((DATASET_DIR / "dataset.yaml").read_bytes()).hexdigest()
     )
-    # screens/*.sql と populations/*.sql を、パスの順（populations/ が先）に連結したハッシュ（3.5）
+    # screens/*.sql、populations/*.sql、series/*.sql を、パスの順（populations/・screens/・series/）に
+    # 連結したハッシュ（3.5）
     sql_files = [
         DATASET_DIR / sub / f"{name}.sql"
-        for sub in ("populations", "screens")
+        for sub in ("populations", "screens", "series")
         for name in ("s1_amount_change", "s2_method_change", "s3_reason_change")
     ]
     assert (
@@ -95,8 +96,9 @@ def test_run_completed_with_synthetic_data(
     )
     # 規則の版（implementation_spec.md 3.5、共通ルール11）。2：照合を足し Q13 の結果が変わった。
     # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった。
-    # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた。6：P0-5 で検出（detect）を足した
-    assert (versions["rules_version"], versions["parser_version"]) == ("6", "cao-procurement/1")
+    # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた。6：P0-5 で検出（detect）を足した。
+    # 7：D-038 で系列を系列のSQLで数え、再開で原本を照らし、引用の符号の境目を直した
+    assert (versions["rules_version"], versions["parser_version"]) == ("7", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）

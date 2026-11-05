@@ -312,8 +312,8 @@ CREATE TABLE procurement_matches (
 
 ## 9. 検出SQL
 
-- 検出SQLは `screens/` に、比較の母集団を数えるSQLは同じ名前で `populations/` に置く（実装仕様4.8）。
-- どれも名前付きのパラメーター `:year_from`・`:year_to`（`run_config` の `compare_years`）を受け取る。年度の組は1つだけ比べる。
+- 検出SQLは `screens/` に、比較の母集団を数えるSQLは同じ名前で `populations/` に、年度の系列の行を返すSQLは同じ名前で `series/` に置く（実装仕様4.8。9.4）。
+- 検出SQLと母集団のSQLは、名前付きのパラメーター `:year_from`・`:year_to`（`run_config` の `compare_years`）を受け取る。年度の組は1つだけ比べる。系列のSQLは `:year`（`series_years` の1つの年度）を受け取る。
 - 実行の前に、CLIが `dataset.yaml` の `screens.<名前>.requires` の資料が両年度でそろっているかを確かめる。欠けていれば、検出SQLも母集団のSQLも実行せず `not_run` と記録する（実装仕様4.8）。
 - 集約の中の `ORDER BY`（`group_concat(x, '|' ORDER BY x)`）を使うため、SQLite 3.44以上を要る。CLIは起動時に `sqlite3.sqlite_version` を確かめ、古ければ `E_FORMAT_CHANGED` ではなく `E_USAGE` で止める（環境の問題として案内する）。
 - どの検出SQLも、実装仕様4.8の列（`excluded_from`・`excluded_to` を含む）を返す。SQLの中の合計は候補を選ぶためだけに使い、メモの値はCLIが `row_refs` から `excluded` を除いた行でDecimalで計算し直す。`json_array` の `null` はCLIが除く。行ごとの比較できない理由（重複、読めない日付）と年度の理由（`partial_year`）はCLIが足す。
@@ -434,7 +434,30 @@ WHERE r1.fiscal_year = :year_from AND (c1.s <> c2.s OR a1.s <> a2.s);
 
 `populations/s3_reason_change.sql`：両方の年度に随意契約で現れる `group_key` の数を `compared`、`incomparable` は0とする。
 
-**検出の値（基礎集計）**：S1は年度ごとの金額の合計と件数、差額と増減率。S2・S3は年度ごとの件数（参考として金額の合計）。
+### 9.4 `series/*.sql`（年度の系列）
+
+検出SQLと同じ名前で置き、`:year` の年度の、まとめ（`group_key`）ごとの行すべて（`row_refs`）と、合計から除く行と理由（`excluded`。書式は検出SQLの `excluded_*` と同じ）を、`lead_key`・`fiscal_year`・`row_refs`・`excluded` の4列で返す。行の選び方と除き方は検出SQLと同じにする（比べる年度と系列の年度で数え方を変えない。D-038④）。CLIは、比べる2年度で、この出力が検出SQLの `row_refs_*`・`excluded_*` と同じかを候補ごとに照らし、違えば `E_INTERNAL` で止める（実装仕様4.8）。
+
+`series/s1_amount_change.sql`：
+
+```sql
+SELECT group_key AS lead_key, fiscal_year,
+       json_group_array(record_id) AS row_refs,
+       json_group_array(json_object('ref', record_id,
+           'reason', CASE WHEN unit_price = 1 THEN 'unit_price' ELSE 'amount_not_numeric' END))
+         FILTER (WHERE unit_price = 1 OR amount_yen IS NULL) AS excluded
+FROM procurement_contracts
+WHERE record_status = 'adopted' AND fiscal_year = :year
+GROUP BY group_key, fiscal_year;
+```
+
+`series/s2_method_change.sql`：同じまとめの、方式を問わない行すべてを返し、`excluded` は `'[]'`。S2の候補は、比べる2年度とも1つの方式だけで現れるまとめなので、比べる2年度の行は検出SQLの `row_refs_*` と同じになる。
+
+`series/s3_reason_change.sql`：同じまとめの随意契約（`method_family = 'zuikei'`）の行すべてを返し、`excluded` は `'[]'`。
+
+- 合計の候補（S1の `amount_up`・`amount_down`）で、ある年度に合計できる行がない（行がない、または行がすべて単価契約・数値にならない金額）ときは、合計を作らず（0円にしない）、合計対象行の件数を登録して候補の `note` に書く。資料がそろわない年度は、系列のSQLを実行しない（実装仕様4.8）。
+
+**検出の値（基礎集計）**：S1は年度ごとの金額の合計と合計対象行の件数、差額と増減率（`amount_incomparable` は合計対象行の件数だけ）。S2・S3は年度ごとの件数だけとし、P0では金額の合計を作らない（S2・S3の検出SQLは合計から除く行を返さないので、合計すると単価契約の金額が混じるため。D-038③）。
 
 **令和5年度を比べない理由**：令和5年度の随意契約は理由の分類が `other` になる行が多い（4.7の規則で数えると、令和5年度286行、令和6年度11行、令和7年度1行【確認済み：資料の作成時に実データで計算】）。書式の違いによる見かけの候補が増えるため、P0では令和6・7年度だけを比べ、令和5年度は系列として読む。
 
@@ -489,7 +512,7 @@ comparison_defaults:
     entity_mapping: 件名のまとめのキーによる同種業務の候補（確定は対応の登録）
     formula: 年度ごとの契約金額の合計の差と増減率
   s2_method_change:
-    population: 同上
+    population: 内閣府が公表した競争入札・随意契約（物品・役務等）のうち、件名のまとめのキーが両年度にある契約
     row_meaning: 1件の契約
     period: 会計年度
     unit: 件
