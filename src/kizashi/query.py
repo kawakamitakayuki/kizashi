@@ -8,6 +8,8 @@
 - 結果は最大50行。実行時間が10秒を超えたら中断する（set_progress_handler）。
 - 成功したら SQL と結果を queries/ に保存し、events に記録し、SQL を accepted/<名前> に写して inbox/
   から消す。結果は citable: false（メモの数値に使えない）。
+- 実行の前に、SQL の全文（文字列・コメントを含む）に V7 の氏名の検査を当て、当たれば E_V7 で拒否する。
+  accepted/ にも queries/ にも保存しない（D-037）。
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from kizashi import inbox, ledger, limits, paths
+from kizashi import check, inbox, ledger, limits, paths
+from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 
 STAGE = "query"
@@ -145,6 +148,27 @@ def execute_readonly(root: Path, run_id: str, sql: str) -> tuple[list[str], list
     return columns, [[_cell(v) for v in r] for r in rows[: limits.QUERY_ROW_LIMIT]], truncated
 
 
+def _check_names(root: Path, run_id: str, sql: str) -> None:
+    """SQL の全文に氏名の検査を当てる（D-037）。氏名の一覧は実行の原本から作り、保存しない。"""
+    conn = ledger.open_ro(root, run_id)
+    try:
+        row = conn.execute("SELECT domain FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return  # 実行の記録がなければ、execute_readonly が型付きのエラーにする
+        adapter = load_adapter(root, row[0])
+        names = check.name_variants(adapter.module.name_list(conn, root, adapter))
+    finally:
+        conn.close()
+    hits = check.name_hits({"SQL": sql}, names)
+    if hits:
+        raise KizashiError(
+            "E_V7",
+            STAGE,
+            "探索SQL に氏名がある（実行せず、保存もしない）：" + "、".join(hits),
+            next_action="氏名を書かずに SQL を書き直す（台帳に氏名はない。コメントにも書かない）。",
+        )
+
+
 def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     """kizashi query <run_id> inbox/<名前>.sql"""
     path = paths.resolve_inbox_file(root, sql_arg, (".sql",))
@@ -161,6 +185,8 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
             f"accepted/ に同じ名前の探索SQL（{name}）がある。",
             next_action="別の名前（inbox/q-<番号>.sql）で書く。",
         )
+    if accepted is not None:
+        _check_names(root, run_id, sql)
     columns, rows, truncated = execute_readonly(root, run_id, sql)
     assert accepted is not None
 
