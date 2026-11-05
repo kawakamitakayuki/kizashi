@@ -106,9 +106,9 @@ def test_cli1_e_cwd_before_argument_errors(tmp_path: Path, monkeypatch, capsys, 
 
 # 4.1〜4.7 の書式どおりの呼び出し。仮の実装は {"ok": true, "data": {"stub": "<操作名>"}} を返す。
 # run <分野> --config は P0-2 で本実装にした（test_cli2_run_is_implemented と test_run.py）。
-# fetch（--recheck を除く）・inspect・query・record は P0-4 で本実装にした（IMPLEMENTED_FORMS）。
+# fetch（--recheck を除く）・inspect・query・record は P0-4、run --resume は P0-5 で本実装にした
+# （IMPLEMENTED_FORMS）。
 VALID_FORMS = [
-    ("run", ["run", "--resume", "20261105-101500-a3f2"]),
     ("fetch", ["fetch", "20261105-101500-a3f2", "--recheck", "S004"]),
     ("check", ["check", "L0001", "--run", "20261105-101500-a3f2"]),
     (
@@ -144,9 +144,10 @@ def test_cli1_stub_accepts_documented_forms(
     assert payload == {"ok": True, "data": {"stub": operation}}
 
 
-# P0-4 で本実装にした操作の書式。最小のフォルダー（台帳も inbox/ もない）では、引数の誤り（E_USAGE・E_BAD_ID）
-# でなく、操作の中の型付きのエラー（台帳がない、提案ファイルがない）を返す。
+# P0-4・P0-5 で本実装にした操作の書式。最小のフォルダー（台帳も inbox/ もない）では、引数の誤り（E_USAGE・
+# E_BAD_ID）でなく、操作の中の型付きのエラー（台帳がない、提案ファイルがない）を返す。
 IMPLEMENTED_FORMS = [
+    ["run", "--resume", "20261105-101500-a3f2"],
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/x.pdf"],
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/", "--index"],
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/y.html", "--definition"],

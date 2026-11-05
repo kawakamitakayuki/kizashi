@@ -174,13 +174,16 @@ def site() -> Site:
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """リポジトリの直下と見なされるフォルダー（pyproject.toml、datasets/cao-procurement/dataset.yaml、inbox/）。"""
+    """リポジトリの直下と見なされるフォルダー（pyproject.toml、datasets/cao-procurement/ の dataset.yaml・
+    screens/・populations/、inbox/）。"""
     root = tmp_path / "repo"
     (root / "datasets" / "cao-procurement").mkdir(parents=True)
     (root / "pyproject.toml").write_text('[project]\nname = "fake"\n', encoding="utf-8")
     shutil.copy(
         DATASET_DIR / "dataset.yaml", root / "datasets" / "cao-procurement" / "dataset.yaml"
     )
+    for sub in ("screens", "populations"):
+        shutil.copytree(DATASET_DIR / sub, root / "datasets" / "cao-procurement" / sub)
     (root / "inbox").mkdir()
     monkeypatch.chdir(root)
     monkeypatch.delenv("KIZASHI_PROFILE", raising=False)
@@ -197,7 +200,10 @@ def write_config(root: Path, name: str = "run-config.json", **overrides: object)
 
 @pytest.fixture
 def synthetic_run(repo: Path, site: Site) -> str:
-    """合成データ（令和6・7年度）で completed にした実行の ID。資料は S001〜S009（test_run.py）。"""
+    """合成データ（令和6・7年度）で completed にした実行の ID。資料は S001〜S009（test_run.py）。
+
+    計算は、照合が K0001〜K0008、検出（detect）の自動の基礎集計と派生計算が K0009〜K0080。
+    検出の候補は L0001〜L0016（test_detect.py）。"""
     from kizashi import runner
 
     result = runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)

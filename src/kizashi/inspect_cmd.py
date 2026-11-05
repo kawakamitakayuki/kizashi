@@ -105,9 +105,10 @@ def _next_actions(run: sqlite3.Row, stages: dict, leads: list[sqlite3.Row]) -> l
         return actions
     if run["state"] == "partial":
         actions.append(
-            "partial：取得できなかった資料がある。stop_reason を記者に伝える（候補なしと書かない）。"
+            "partial：取得できなかった資料か、資料がそろわず実行しなかった検出SQLがある"
+            "（stop_reason の missing・screens_not_run）。stop_reason を記者に伝える（候補なしと書かない）。"
         )
-    if "detect" not in stages:
+    if "detect" not in stages:  # P0-5 より前に作った実行
         actions.append(
             "検出（detect）は実行していない。探索SQL（kizashi query）で変化を探し、calc で計算してから"
             " kind: lead で登録できる。"
@@ -132,7 +133,7 @@ def _inspect_run(conn: sqlite3.Connection, run_id: str, page: int) -> dict:
         raise _not_found("実行の記録", run_id, run_id)
     config = json.loads(run["config_json"])
     stored = json.loads(run["stages_json"])  # キーを並べ替えて保存してある。工程の順に並べ直す
-    order = [*runner.STAGES, *runner.STAGES_NOT_RUN]
+    order = list(runner.STAGES)
     stages = {
         k: stored[k]
         for k in sorted(

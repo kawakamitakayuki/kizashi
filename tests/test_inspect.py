@@ -1,7 +1,7 @@
 """inspect の表示（implementation_spec.md 4.3、3.2 の1ページ20件、D-023）。
 
-合成データの実行（S001〜S009、照合の計算 K0001〜K0008）に、record で候補・計算・対応・係数・主張を足して
-確かめる。期待値は合成の CSV（tests/fixtures/make_cao_fixtures.py）と、このテストで登録した値から決めた。
+合成データの実行（S001〜S009、照合の計算 K0001〜K0008、検出の候補 L0001〜L0016 と計算 K0009〜K0080）に、
+record で候補（L0017 から）・計算（K0081 から）・対応・係数・主張を足して確かめる。期待値は合成の CSV（tests/fixtures/make_cao_fixtures.py）と、このテストで登録した値から決めた。
 """
 
 from __future__ import annotations
@@ -95,16 +95,25 @@ def test_inspect_run(repo: Path, filled: dict) -> None:
         "quality",
         "reconcile_import",
         "reconcile_source",
+        "detect",
     ]
     assert data["counts"]["explore"] == {"compared": 1}
+    assert data["counts"]["s3_reason_change"] == {
+        "state": "done",
+        "compared": 5,
+        "incomparable": 0,
+        "leads": 1,
+    }
     assert data["limits"]["deep_leads"] == {"used": 1, "max": 3}
     assert data["limits"]["evidence_fetches"] == {"used": 0, "max": 12}
     assert data["limits"]["http_requests"] == {"used": 9, "max": 40}
     leads = data["leads"]
-    assert (leads["total"], leads["uninvestigated"], leads["page"]) == (1, 0, 1)
-    [item] = leads["items"]
+    # 検出の候補16件（未調査）と、探索の候補1件（調査中）
+    assert (leads["total"], leads["uninvestigated"], leads["page"]) == (17, 16, 1)
+    assert len(leads["items"]) == 17
+    [item] = [x for x in leads["items"] if x["screen_id"] == "explore"]
     assert (item["lead_id"], item["screen_id"], item["state"]) == (
-        "L0001",
+        "L0017",
         "explore",
         "investigating",
     )
@@ -115,6 +124,9 @@ def test_inspect_run(repo: Path, filled: dict) -> None:
 def test_inspect_run_paging_and_order(repo: Path, synthetic_run: str) -> None:
     """3.2・4.3：候補は区分ごとに差の絶対値の大きい順、1ページ20件。超えた分は next_page。"""
     conn = sqlite3.connect(repo / "data" / "runs" / synthetic_run / "ledger.sqlite")
+    # 検出（detect）の候補と計算を除き、このテストで入れる22件だけにする
+    conn.execute("DELETE FROM computations WHERE lead_id IS NOT NULL")
+    conn.execute("DELETE FROM leads")
     for i in range(22):
         k_from, k_to = f"K{100 + 2 * i:04d}", f"K{101 + 2 * i:04d}"
         for cid, value in ((k_from, "1000"), (k_to, str(1000 + (i * 7) % 22 * 100))):
@@ -147,7 +159,7 @@ def test_inspect_lead_shows_matches_and_coefficients(repo: Path, filled: dict) -
     """4.3 候補ID（D-023）：計算、比較の条件、仮説、主張、同種業務の対応、係数の提案、メモの番号。"""
     data = show(repo, filled["lead"], filled["run_id"])
     assert (data["lead_id"], data["screen_id"], data["query_file"]) == (
-        "L0001",
+        "L0017",
         "explore",
         "q-001.sql",
     )
@@ -230,8 +242,8 @@ def test_inspect_calc_paging_and_reconcile(repo: Path, synthetic_run: str) -> No
             "unit": "件",
         },
     )
-    first = show(repo, "K0009", synthetic_run)
-    second = show(repo, "K0009", synthetic_run, page=2)
+    first = show(repo, "K0081", synthetic_run)  # 検出の計算（K0009〜K0080）の次
+    second = show(repo, "K0081", synthetic_run, page=2)
     assert (first["value"], first["row_count"], len(first["row_refs"]), first["next_page"]) == (
         "21",
         21,

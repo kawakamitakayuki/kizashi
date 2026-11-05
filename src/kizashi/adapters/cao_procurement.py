@@ -62,6 +62,29 @@ CALC_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+# 検出（run の detect。実装仕様4.8）の自動の基礎集計で使う、合計する列の表示名と単位。検出SQLの metric が
+# `<列>_sum`（例 amount_yen_sum）なら、その列の合計と件数を年度ごとに登録し、差額と増減率を作る。
+SUM_LABELS: dict[str, tuple[str, str]] = {"amount_yen": ("契約金額", "円")}
+
+# 年度の系列（実装仕様4.8）のうち、比べる2年度以外の年度の基礎集計に足す条件（検出SQLごと）。比べる2年度は
+# 検出SQLの row_refs から excluded を除いた行で計算し、系列でもその計算を使う。ほかの年度は検出SQLを実行しない
+# ので、同じまとめ（group_key）の行を、検出SQLの選び方に合わせたこの条件で選ぶ（D-038 で確認を求める）。
+# S1：単価契約を除く（金額が NULL の行は calc が合計に入れず、件数を null_rows に残す）。S3：随意契約だけ。
+SERIES_FILTERS: dict[str, tuple[dict, ...]] = {
+    "s1_amount_change": ({"col": "unit_price", "op": "=", "value": 0},),
+    "s2_method_change": (),
+    "s3_reason_change": ({"col": "method_family", "op": "=", "value": "zuikei"},),
+}
+
+
+def series_filter(screen_id: str, lead_key: str) -> list[dict] | None:
+    """系列の基礎集計の条件（fiscal_year を除く）。知らない検出SQLなら None。"""
+    extra = SERIES_FILTERS.get(screen_id)
+    if extra is None:
+        return None
+    return [{"col": "group_key", "op": "=", "value": lead_key}, *extra]
+
+
 # ---------------------------------------------------------------------------
 # 4.3 契約担当官のセル
 # ---------------------------------------------------------------------------
