@@ -41,6 +41,9 @@ IMPORT_FIELDS = (
     "amount_raw",
 )
 
+# 分野の表（アダプタ仕様8章）。inspect の row_ref で正規化した値を出す。
+RECORD_TABLE = "procurement_contracts"
+
 # 基礎集計に使える表と列（アダプタ仕様8章の許可リスト）。合計は amount_yen だけ。条件に使える列。
 # record_status = 'adopted' は calc.py が必ず加える（実装仕様7.1）ので、条件には書かせない。
 CALC_TABLES: dict[str, dict[str, tuple[str, ...]]] = {

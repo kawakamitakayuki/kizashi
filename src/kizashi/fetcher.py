@@ -8,12 +8,16 @@
 - 一時ファイルに保存し、形式（拡張子と中身の先頭）、空でないこと、HTML のエラーページでないことと、
   分野の検査（期待する見出し・年度）を通してから data/raw/<sha256>.<拡張子> に移す。上書きしない。
 - 取得に失敗した資料も sources に failed と理由を残す。ハッシュは求めない。
+- 追加資料（fetch_evidence）：PDF と HTML のページ別テキストを evidence/<資料ID>/pages/<n>.txt に書く。
+  公表一覧のデータは取得しない（D-021）。追加資料だけ MAX_EVIDENCE_FETCH に数える。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterable
@@ -23,9 +27,10 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from kizashi import limits, paths
+from kizashi import ledger, limits, paths, pdftext
+from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
-from kizashi.hashing import sha256_bytes
+from kizashi.hashing import canonical_json, sha256_bytes
 from kizashi.ledger import now_iso
 
 TIMEOUT_SEC = 30.0
@@ -251,10 +256,13 @@ def _looks_html(content: bytes) -> bool:
     return head.startswith((b"<!doctype html", b"<html", b"<?xml")) or b"<html" in head[:512]
 
 
-def check_content(url: str, content: bytes, fmt: str) -> None:
-    """形式（拡張子と中身の先頭）、空でないこと、HTML のエラーページでないこと（4.2）。"""
+def check_content(url: str, content: bytes, fmt: str, *, check_suffix: bool = True) -> None:
+    """形式（拡張子と中身の先頭）、空でないこと、HTML のエラーページでないこと（4.2）。
+
+    check_suffix が False のとき（拡張子のない追加資料の URL）は、中身の先頭だけで確かめる。
+    """
     suffix = PurePosixPath(httpx.URL(url).path).suffix.lower()
-    if suffix not in EXTENSIONS[fmt]:
+    if check_suffix and suffix not in EXTENSIONS[fmt]:
         raise _invalid(f"URL の拡張子が {fmt} でない：{url}")
     if not content:
         raise _invalid("空のファイル")
@@ -282,6 +290,27 @@ def fetch_to_raw(
     final_url, content, media_type = http_get(
         client, url, allowed_hosts=allowed_hosts, budget=budget
     )
+    sha, final, size = store_raw(root, url, content, fmt, validate=validate)
+    return Download(
+        url=url,
+        final_url=final_url,
+        sha256=sha,
+        path=final,
+        size_bytes=size,
+        media_type=media_type,
+    )
+
+
+def store_raw(
+    root: Path,
+    url: str,
+    content: bytes,
+    fmt: str,
+    *,
+    validate: Callable[[bytes], None] | None = None,
+    check_suffix: bool = True,
+) -> tuple[str, Path, int]:
+    """一時ファイルに保存して検査し、data/raw/<sha256>.<拡張子> に移す。(SHA-256, パス, 大きさ) を返す。"""
     raw = paths.raw_dir(root)
     raw.mkdir(parents=True, exist_ok=True)
     paths.ensure_in_data(root, raw)
@@ -291,7 +320,7 @@ def fetch_to_raw(
         with os.fdopen(fd, "wb") as fh:
             fh.write(content)
         saved = tmp.read_bytes()
-        check_content(url, saved, fmt)
+        check_content(url, saved, fmt, check_suffix=check_suffix)
         if validate is not None:
             validate(saved)
         sha = sha256_bytes(saved)
@@ -303,14 +332,7 @@ def fetch_to_raw(
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    return Download(
-        url=url,
-        final_url=final_url,
-        sha256=sha,
-        path=final,
-        size_bytes=len(saved),
-        media_type=media_type,
-    )
+    return sha, final, len(saved)
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +426,304 @@ def register_failure(
 
 def error_reason(exc: KizashiError) -> str:
     return f"{exc.code}: {exc.message}"
+
+
+# ---------------------------------------------------------------------------
+# 追加資料の取得（kizashi fetch <run_id> <URL> [--index | --definition]。4.2）
+# ---------------------------------------------------------------------------
+
+EVIDENCE_KINDS = ("evidence", "definition", "index")
+MAX_LINKS_SHOWN = 100  # 出力に載せるリンクの数。全部は evidence/<資料ID>/links.json に書く
+_MEDIA_FORMATS = {"application/pdf": "pdf", "text/html": "html", "application/xhtml+xml": "html"}
+_META_CHARSET_RE = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?([A-Za-z0-9_\-]+)", re.IGNORECASE)
+_SJIS_NAMES = {"shift_jis", "shift-jis", "sjis", "x-sjis", "windows-31j", "ms932"}
+BLOCK_TAGS = frozenset(
+    {
+        "address", "article", "aside", "blockquote", "caption", "dd", "div", "dl", "dt",
+        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table",
+        "td", "th", "title", "tr", "ul",
+    }
+)  # fmt: skip
+SKIP_TAGS = frozenset({"script", "style", "noscript", "template"})
+
+
+def detect_format(
+    url: str, final_url: str, media_type: str | None, content: bytes
+) -> tuple[str, str | None]:
+    """追加資料の形式（pdf か html）と、拡張子で決めたときはその URL を返す。
+
+    拡張子（.pdf・.html・.htm）があればそれで決め、なければ応答の種類と中身の先頭で決める。
+    """
+    for candidate in (url, final_url):
+        suffix = PurePosixPath(httpx.URL(candidate).path).suffix.lower()
+        for fmt in ("pdf", "html"):
+            if suffix in EXTENSIONS[fmt]:
+                return fmt, candidate
+    if media_type in _MEDIA_FORMATS:
+        return _MEDIA_FORMATS[media_type], None
+    if content.startswith(b"%PDF-"):
+        return "pdf", None
+    if _looks_html(content):
+        return "html", None
+    raise _invalid(
+        f"PDF か HTML の資料でない（応答の種類：{media_type}）。追加資料は PDF と HTML だけ"
+    )
+
+
+def decode_html(content: bytes) -> tuple[str, str]:
+    """HTML を文字列にする（BOM、meta の charset、UTF-8、cp932、EUC-JP の順に試す）。"""
+    if content.startswith(b"\xef\xbb\xbf"):
+        return content[3:].decode("utf-8", errors="replace"), "utf-8-sig"
+    candidates: list[str] = []
+    found = _META_CHARSET_RE.search(content[:4096])
+    if found:
+        name = found.group(1).decode("ascii").lower()
+        candidates.append("cp932" if name in _SJIS_NAMES else name)
+    candidates += ["utf-8", "cp932", "euc_jp"]
+    for encoding in candidates:
+        try:
+            return content.decode(encoding), encoding
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return content.decode("utf-8", errors="replace"), "utf-8"
+
+
+class _TextParser(HTMLParser):
+    """HTML の本文とリンクを取り出す。段落（ブロックの要素と表のセル）の間に空行を入れる（引用の照合の
+    段落の終わり。quotes.py）。スクリプトとスタイルの中身は捨てる。"""
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base = httpx.URL(base_url)
+        self.parts: list[str] = []
+        self.skip = 0
+        self.links: list[dict[str, str]] = []
+        self._anchor: tuple[str, list[str]] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in SKIP_TAGS:
+            self.skip += 1
+            return
+        if tag == "br":
+            self.parts.append("\n")
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n\n")
+        if tag == "a":
+            href = next((v for k, v in attrs if k.lower() == "href" and v), None)
+            self._anchor = (href.strip(), []) if href else None
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in SKIP_TAGS:
+            self.skip = max(0, self.skip - 1)
+            return
+        if tag in BLOCK_TAGS:
+            self.parts.append("\n\n")
+        if tag == "a" and self._anchor is not None:
+            href, texts = self._anchor
+            self._anchor = None
+            if href.startswith(("#", "javascript:", "mailto:")):
+                return
+            try:
+                absolute = str(self.base.join(href))
+            except httpx.InvalidURL:
+                return
+            if all(link["url"] != absolute for link in self.links):
+                text = re.sub(r"\s+", " ", "".join(texts)).strip()
+                self.links.append({"url": absolute, "text": text[:100]})
+
+    def handle_data(self, data: str) -> None:
+        if self.skip:
+            return
+        text = re.sub(r"\s+", " ", data)
+        self.parts.append(text)
+        if self._anchor is not None:
+            self._anchor[1].append(text)
+
+    def text(self) -> str:
+        lines = [line.strip() for line in "".join(self.parts).split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
+
+
+def html_text(content: bytes, base_url: str) -> tuple[str, list[dict[str, str]], str]:
+    """HTML の (本文のテキスト, リンクの一覧, 文字コード)。"""
+    decoded, encoding = decode_html(content)
+    parser = _TextParser(base_url)
+    parser.feed(decoded)
+    parser.close()
+    return parser.text(), parser.links, encoding
+
+
+def _register_evidence_failure(
+    conn: sqlite3.Connection, kind: str, url: str, exc: KizashiError, budget: Budget, run_id: str
+) -> str:
+    with ledger.transaction(conn):
+        source_id = ledger.next_id(conn, "S")
+        conn.execute(
+            "INSERT INTO sources (source_id, kind, url, fetched_at, status, failure_reason)"
+            " VALUES (?, ?, ?, ?, 'failed', ?)",
+            (source_id, kind, url, now_iso(), error_reason(exc)),
+        )
+        _save_budget(conn, run_id, budget)
+    return source_id
+
+
+def _save_budget(conn: sqlite3.Connection, run_id: str, budget: Budget) -> None:
+    conn.execute(
+        "UPDATE runs SET limits_json = ? WHERE run_id = ?",
+        (canonical_json(budget.to_json()), run_id),
+    )
+
+
+def fetch_evidence(
+    root: Path,
+    run_id: str,
+    url: str,
+    kind: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """追加資料（evidence）・定義（definition）・索引（index）を取得し、ページ別テキストを保存する。
+
+    - 追加資料だけ MAX_EVIDENCE_FETCH に数える（取得に成功したもの）。通信はすべて MAX_HTTP_REQUESTS に数える。
+    - PDF はページごと、HTML は1ページ（とリンクの一覧）。evidence/<資料ID>/pages/<n>.txt に書く。
+    - 公表一覧のデータ（dataset.yaml の link_pattern に合う URL と、run が取得した資料と同じ中身）は
+      取得しない（ページ別テキストを作らない。D-021）。
+    - 取得に失敗したら sources に failed と理由を残す（許可リスト外など、通信の前に拒否したものは残さない）。
+    """
+    if kind not in EVIDENCE_KINDS:
+        raise ValueError(f"未知の資料の種類：{kind}")
+    conn = ledger.open_rw(root, run_id)
+    try:
+        run = conn.execute(
+            "SELECT domain, limits_json FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if run is None:
+            raise KizashiError("E_REF_NOT_FOUND", "fetch", f"実行の記録がない：{run_id}")
+        adapter = load_adapter(root, run[0])
+        budget = Budget.from_json(json.loads(run[1]))
+        allowed = list(adapter.config["fetch"]["allowed_hosts"])
+        if kind == "evidence" and budget.evidence_fetches >= limits.MAX_EVIDENCE_FETCH:
+            raise KizashiError(
+                "E_LIMIT_EVIDENCE",
+                "fetch",
+                f"追加資料の取得が上限（{limits.MAX_EVIDENCE_FETCH}件）に達している。",
+                affected_ids=[run_id],
+                next_action="保留にして記者に伝える（上限に達しても結論を強めない）。",
+            )
+        check_url(url, allowed)
+        if re.search(adapter.config["source"]["link_pattern"], url):
+            raise KizashiError(
+                "E_BAD_EVIDENCE_SOURCE",
+                "fetch",
+                f"公表一覧のデータ（{url}）は run が取得する。追加資料としては取得しない（D-021）。",
+                next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
+            )
+        client = make_client(transport)
+        try:
+            final_url, content, media_type = http_get(
+                client, url, allowed_hosts=allowed, budget=budget
+            )
+            fmt, suffix_url = detect_format(url, final_url, media_type, content)
+            sha, path, size = store_raw(
+                root, suffix_url or url, content, fmt, check_suffix=suffix_url is not None
+            )
+            same = conn.execute(
+                "SELECT source_id FROM sources WHERE kind = 'dataset' AND sha256 = ?", (sha,)
+            ).fetchone()
+            if same is not None:
+                raise KizashiError(
+                    "E_BAD_EVIDENCE_SOURCE",
+                    "fetch",
+                    f"公表一覧の資料（{same[0]}）と同じ中身で、追加資料としては保存しない（D-021）。",
+                    next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
+                )
+            links: list[dict[str, str]] = []
+            encoding = None
+            if fmt == "pdf":
+                try:
+                    pages = pdftext.extract_pages(path)
+                except Exception as exc:  # noqa: BLE001  PDF のライブラリの例外をまとめて扱う
+                    raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
+            else:
+                text, links, encoding = html_text(content, final_url)
+                pages = [text]
+        except KizashiError as exc:
+            source_id = _register_evidence_failure(conn, kind, url, exc, budget, run_id)
+            raise KizashiError(
+                exc.code,
+                "fetch",
+                exc.message,
+                affected_ids=[run_id, source_id],
+                retryable=exc.retryable,
+                next_action=exc.next_action,
+            ) from None
+        finally:
+            client.close()
+
+        if kind == "evidence":
+            budget.evidence_fetches += 1
+        run_dir = paths.run_dir(root, run_id)
+        written: Path | None = None
+        try:
+            with ledger.transaction(conn):
+                source_id = ledger.next_id(conn, "S")
+                written = run_dir / "evidence" / source_id
+                page_dir = written / "pages"
+                page_dir.mkdir(parents=True)
+                paths.ensure_in_data(root, page_dir)
+                for number, page in enumerate(pages, start=1):
+                    (page_dir / f"{number}.txt").write_text(page, encoding="utf-8")
+                if links:
+                    (written / "links.json").write_text(
+                        json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8"
+                    )
+                conn.execute(
+                    "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, media_type,"
+                    " encoding, size_bytes, page_count, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                    " 'fetched')",
+                    (
+                        source_id,
+                        kind,
+                        url,
+                        final_url,
+                        now_iso(),
+                        sha,
+                        media_type,
+                        encoding,
+                        size,
+                        len(pages),
+                    ),
+                )
+                _save_budget(conn, run_id, budget)
+        except BaseException:
+            if written is not None:
+                shutil.rmtree(written, ignore_errors=True)
+            raise
+    finally:
+        conn.close()
+    result = {
+        "run_id": run_id,
+        "source_id": source_id,
+        "kind": kind,
+        "url": url,
+        "final_url": final_url,
+        "sha256": sha,
+        "media_type": media_type,
+        "page_count": len(pages),
+        "pages_dir": (written / "pages").relative_to(root).as_posix(),
+        "counted_as_evidence": kind == "evidence",
+        "limits": {
+            **budget.to_json(),
+            "max_evidence_fetches": limits.MAX_EVIDENCE_FETCH,
+            "max_http_requests": limits.MAX_HTTP_REQUESTS,
+        },
+    }
+    if fmt == "html":
+        result["links"] = links[:MAX_LINKS_SHOWN]
+        result["links_total"] = len(links)
+        if links:
+            result["links_file"] = (written / "links.json").relative_to(root).as_posix()
+    return result

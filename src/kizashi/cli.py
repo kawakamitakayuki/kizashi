@@ -2,9 +2,10 @@
 
 本実装：起動時の検査（作業フォルダーと SQLite の版）、エラーの JSON 化、ID の書式と --run の欠けの検査
 （E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
-`run <分野> --config`（P0-2・P0-3。plan〜reconcile_source）。
-ほかの操作（run --resume、fetch、inspect、query、record、check、render）は、引数を検査したうえで
-{"stub": "<操作名>"} を返す仮の実装である（P0-4〜P0-8 で本実装にする）。
+`run <分野> --config`（P0-2・P0-3。plan〜reconcile_source）、
+`fetch <run_id> <URL> [--index | --definition]`・`inspect`・`query`・`record`（P0-4）。
+ほかの操作（run --resume、fetch --recheck、check、render）は、引数を検査したうえで
+{"stub": "<操作名>"} を返す仮の実装である（P0-5〜P0-8 で本実装にする）。
 """
 
 from __future__ import annotations
@@ -277,8 +278,40 @@ def _run(args: argparse.Namespace) -> dict:
     return runner.start_run(paths.repo_root(), args.domain, args.config)
 
 
+def _fetch(args: argparse.Namespace) -> dict:
+    if args.recheck is not None:
+        return {"stub": "fetch"}  # fetch --recheck は P0-8 で本実装にする
+    from kizashi import fetcher
+
+    kind = "index" if args.index else "definition" if args.definition else "evidence"
+    return fetcher.fetch_evidence(paths.repo_root(), args.run_id, args.url, kind)
+
+
+def _inspect(args: argparse.Namespace) -> dict:
+    from kizashi import inspect_cmd
+
+    run_id = args.run_id if args.run_id is not None else args.target_id
+    return inspect_cmd.inspect(paths.repo_root(), args.target_id, run_id, page=args.page)
+
+
+def _query(args: argparse.Namespace) -> dict:
+    from kizashi import query
+
+    return query.run_query(paths.repo_root(), args.run_id, args.sql_file)
+
+
+def _record(args: argparse.Namespace) -> dict:
+    from kizashi import record
+
+    return record.record(paths.repo_root(), args.run_id, args.json_file)
+
+
 HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {op: _stub(op) for op in OPERATIONS}
 HANDLERS["run"] = _run
+HANDLERS["fetch"] = _fetch
+HANDLERS["inspect"] = _inspect
+HANDLERS["query"] = _query
+HANDLERS["record"] = _record
 
 
 # ---------------------------------------------------------------------------
@@ -319,5 +352,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _emit({"ok": False, "error": internal.to_dict()})
         return internal.exit_code
-    _emit({"ok": True, "data": data})
+    # 警告（W7_STRONG_WORD など）は data の外に置く。警告がなければ warnings を出さない（3.2。D-015）。
+    warnings = data.pop("warnings", None) if isinstance(data, dict) else None
+    payload: dict = {"ok": True, "data": data}
+    if warnings:
+        payload["warnings"] = warnings
+    _emit(payload)
     return EXIT_OK

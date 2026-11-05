@@ -11,23 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_evidence, ledger_of
-from kizashi import query, record
+from conftest import COMPARISON, add_evidence, calc_sum, ledger_of, make_lead, put, rec
+from kizashi import record
 from kizashi.errors import KizashiError
 
 PLAYBOOK = (
     "# テスト用の合成の知識ファイル（実在のノウハウ集ではない）\n\n### C900 テストの手順\n"
     "**応用手順**：①年度ごとに保存 ②契約金額を税込か確認 ③再照合\n"
 )
-
-
-def put(root: Path, name: str, data: dict) -> str:
-    (root / "inbox" / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    return f"inbox/{name}"
-
-
-def rec(root: Path, run_id: str, data: dict, name: str = "p.json") -> dict:
-    return record.record(root, run_id, put(root, name, data))
 
 
 def fails(root: Path, run_id: str, data: dict, code: str, name: str = "bad.json") -> KizashiError:
@@ -37,61 +28,6 @@ def fails(root: Path, run_id: str, data: dict, code: str, name: str = "bad.json"
     assert info.value.code == code, info.value.message
     assert (root / arg).exists()  # 失敗したら提案は inbox/ に残る
     return info.value
-
-
-def calc_sum(group: str, year: int, **extra) -> dict:
-    return {
-        "kind": "calc",
-        "op": "sum",
-        "table": "procurement_contracts",
-        "column": "amount_yen",
-        "filter": [
-            {"col": "group_key", "op": "=", "value": group},
-            {"col": "fiscal_year", "op": "=", "value": year},
-        ],
-        "label": f"{group}の契約金額の合計",
-        "unit": "円",
-        **extra,
-    }
-
-
-COMPARISON = {
-    "population": "内閣府の競争入札・随意契約のうち、件名のまとめのキーが両年度にある契約",
-    "row_meaning": "1件の契約",
-    "period": "会計年度",
-    "unit": "円",
-    "entity_mapping": "件名のまとめのキー",
-    "formula": "年度ごとの契約金額の合計の差",
-}
-
-
-def make_lead(root: Path, run_id: str, group: str = "翻訳業務", qname: str = "q-001.sql") -> dict:
-    """探索SQL → 両年度の計算 → 候補（screen_id='explore'）。計算ID と候補ID を返す。"""
-    (root / "inbox" / qname).write_text(
-        f"SELECT fiscal_year, amount_yen FROM procurement_contracts WHERE group_key = '{group}'",
-        encoding="utf-8",
-    )
-    query.run_query(root, run_id, f"inbox/{qname}")
-    k_from = rec(root, run_id, calc_sum(group, 2024))["id"]
-    k_to = rec(root, run_id, calc_sum(group, 2025))["id"]
-    lead = rec(
-        root,
-        run_id,
-        {
-            "kind": "lead",
-            "query_file": qname,
-            "lead_key": group,
-            "change_category": "amount_up",
-            "period_from": 2024,
-            "period_to": 2025,
-            "calc_from": k_from,
-            "calc_to": k_to,
-            "calc_ids": [],
-            "comparison": COMPARISON,
-            "note": "探索で見つけた",
-        },
-    )
-    return {"lead": lead["id"], "from": k_from, "to": k_to}
 
 
 @pytest.fixture
