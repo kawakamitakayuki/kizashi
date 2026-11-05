@@ -376,6 +376,7 @@ def test_match_question_conclusion_withdraw(repo: Path, run: str, lead: dict) ->
         "question": "翻訳の量は変わったか。",
         "documents": "令和6・7年度の仕様書",
         "decision_impact": "量の変化で説明できれば説明の状況を改める。",
+        "purposes": ["reason_breakdown"],  # 質問の目的（D-041⑩）
     }
     rec(repo, run, q)
     rec(repo, run, {**q, "question": "単価は変わったか。", "foia": "契約書"})

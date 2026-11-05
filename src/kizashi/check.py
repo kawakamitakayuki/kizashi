@@ -310,13 +310,16 @@ def _t6b(
             found[rid] = result["rows"][rid]
         if hit:
             used.append(calc_id)
+    pdf_fields = cfg.get("pdf_fields") or {}
     mismatch, unverified = [], []
     for rid in rows:
         entry = found.get(rid)
         if entry is None or entry.get("row_status") != "matched":
             unverified.append(rid)
             continue
-        values = [entry.get("fields", {}).get(f) for f in fields if f in entry.get("fields", {})]
+        # 分野の規則でその行に当たらない項目（その年度・方式の take に列がない項目）だけを除く（D-041④）
+        applicable = [f for f in fields if _field_applies(conn, adapter, rid, pdf_fields.get(f, f))]
+        values = [entry.get("fields", {}).get(f) for f in applicable]
         if "mismatch" in values:
             mismatch.append(rid)
         elif any(v != "match" for v in values):
@@ -345,6 +348,21 @@ def _t6b(
     )
 
 
+def _field_applies(
+    conn: sqlite3.Connection, adapter: Adapter, record_id: str, take_key: str
+) -> bool:
+    """照合項目（take のキー）が、その行の年度・方式の様式にあるか。様式が分からなければ当たるものとする。"""
+    row = conn.execute(
+        "SELECT logical_key FROM sources WHERE source_id = ?", (record_id.split(":", 1)[0],)
+    ).fetchone()
+    key = row[0] if row else None
+    if not key or key.count("|") != 3:
+        return True
+    _, year, family, _ = key.split("|")
+    spec = adapter.file_spec(int(year), family)
+    return spec is None or take_key in spec.take
+
+
 def _register_t6(
     conn: sqlite3.Connection,
     lead_id: str,
@@ -353,12 +371,19 @@ def _register_t6(
     calcs: list[str],
     searched: str,
 ) -> None:
+    """CLI の T6 の判定を登録する。判定・根拠・searched が同じなら行を変えない（updated_at も。内容の同じ再検査で
+    検証記録のハッシュを変えないため。D-041⑬）。"""
     conn.execute(
         "INSERT INTO explanations (lead_id, type, judgment, evidence_json, searched, context,"
         " updated_at) VALUES (?, ?, ?, ?, ?, 'cli', ?) ON CONFLICT (lead_id, type) DO UPDATE SET"
         " judgment = excluded.judgment, evidence_json = excluded.evidence_json,"
-        " searched = excluded.searched, recalc_calc_id = NULL, scope = NULL, no_quant_reason = NULL,"
-        " context = 'cli', updated_at = excluded.updated_at",
+        " searched = excluded.searched, recalc_calc_id = NULL, residual_calc_id = NULL, scope = NULL,"
+        " no_quant_reason = NULL, context = 'cli', updated_at = excluded.updated_at"
+        " WHERE explanations.judgment IS NOT excluded.judgment"
+        " OR explanations.evidence_json IS NOT excluded.evidence_json"
+        " OR explanations.searched IS NOT excluded.searched OR explanations.context IS NOT 'cli'"
+        " OR explanations.recalc_calc_id IS NOT NULL OR explanations.residual_calc_id IS NOT NULL"
+        " OR explanations.scope IS NOT NULL OR explanations.no_quant_reason IS NOT NULL",
         (
             lead_id,
             etype,
@@ -395,10 +420,49 @@ def _source_of(record_id: str) -> str:
     return record_id.split(":", 1)[0]
 
 
-def _v1(
-    conn: sqlite3.Connection, adapter: Adapter, lead: dict, rows: list[str], v: Verification
-) -> None:
-    run = _one(conn, "SELECT state, stages_json, counts_json FROM runs", ())
+def required_sources(
+    conn: sqlite3.Connection, adapter: Adapter, config: dict, lead_id: str
+) -> list[tuple[int, str]]:
+    """候補が依存する資料（年度, 方式）。取得できた行からではなく、メモに出る基礎集計の条件・年度と分野の規則から
+    決める（実装仕様9章の「依存する資料」。D-041⑤）。"""
+    screens = adapter.config.get("screens") or {}
+    every_year = sorted(int(y) for y in config.get("series_years") or [])
+    needed: set[tuple[int, str]] = set()
+    for calc_id in hashing.memo_calc_ids(conn, lead_id):
+        comp = _one(
+            conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
+        )
+        if comp is None or comp["kind"] != "base":
+            continue
+        request = json.loads(comp["request_json"])
+        filters = [f for f in request.get("filter", []) if isinstance(f, dict)]
+        years = _filter_values(filters, "fiscal_year")
+        years = every_year if years is None else [y for y in years if isinstance(y, int)]
+        screen = request.get("screen_id")
+        if screen in screens:
+            families = list((screens[screen] or {}).get("requires") or FAMILIES)
+        else:
+            chosen = _filter_values(filters, "method_family")
+            families = list(FAMILIES) if chosen is None else [f for f in chosen if f in FAMILIES]
+        needed |= {(y, f) for y in years for f in families}
+    return sorted(needed)
+
+
+def _filter_values(filters: list[dict], col: str) -> list | None:
+    """条件の列の値を限る `=`・`in` の値（複数あれば共通部分）。限っていなければ None。"""
+    found: set | None = None
+    for f in filters:
+        if f.get("col") != col or f.get("op") not in ("=", "in"):
+            continue
+        vals = [f.get("value")] if f.get("op") == "=" else f.get("value")
+        if not isinstance(vals, list):
+            continue
+        found = set(vals) if found is None else found & set(vals)
+    return None if found is None else sorted(found, key=str)
+
+
+def _v1(conn: sqlite3.Connection, adapter: Adapter, lead: dict, v: Verification) -> None:
+    run = _one(conn, "SELECT state, stages_json, counts_json, config_json FROM runs", ())
     assert run is not None
     stages, counts = json.loads(run["stages_json"]), json.loads(run["counts_json"])
     if run["state"] == "failed":
@@ -409,12 +473,7 @@ def _v1(
             "必須の品質検査が終わっていない（quality の工程）。",
             [lead["lead_id"]],
         )
-    years = [int(lead["period_from"]), int(lead["period_to"])]
     if lead["screen_id"] != "explore":
-        families = list(
-            ((adapter.config.get("screens") or {}).get(lead["screen_id"]) or {}).get("requires")
-            or FAMILIES
-        )
         screen = counts.get(lead["screen_id"]) or {}
         if screen.get("state") != "done":
             v.fail(
@@ -422,38 +481,28 @@ def _v1(
                 f"候補が依存する検出 {lead['screen_id']} が実行されていない。",
                 [lead["lead_id"]],
             )
-    else:
-        keys = {
-            r[0]
-            for r in conn.execute(
-                "SELECT logical_key FROM sources WHERE source_id IN"
-                f" ({', '.join('?' for _ in {_source_of(x) for x in rows}) or 'NULL'})",
-                tuple(sorted({_source_of(x) for x in rows})),
-            )
-        }
-        families = sorted({k.split("|")[2] for k in keys if k})
     quality = counts.get("quality") or {}
     records = counts.get("records") or {}
-    for year in years:
-        for family in families:
-            key = adapter.logical_key(year, family, "csv")
-            source = _one(
-                conn,
-                "SELECT source_id, status FROM sources WHERE logical_key = ? AND kind = 'dataset'",
-                (key,),
+    config = json.loads(run["config_json"])
+    for year, family in required_sources(conn, adapter, config, lead["lead_id"]):
+        key = adapter.logical_key(year, family, "csv")
+        source = _one(
+            conn,
+            "SELECT source_id, status FROM sources WHERE logical_key = ? AND kind = 'dataset'",
+            (key,),
+        )
+        if source is None or source["status"] != "fetched":
+            v.fail(
+                "V1_RUN_FAILED",
+                f"候補が依存する資料 {family}:{year} を取得できていない（{key}）。",
+                [lead["lead_id"]] + ([source["source_id"]] if source else []),
             )
-            if source is None or source["status"] != "fetched":
-                v.fail(
-                    "V1_RUN_FAILED",
-                    f"候補が依存する資料 {family}:{year} を取得できていない（{key}）。",
-                    [lead["lead_id"]],
-                )
-                continue
-            sid = source["source_id"]
-            if sid not in quality:
-                v.fail("V1_QUALITY_NOT_RUN", f"資料 {sid} の品質検査の結果がない。", [sid])
-            if int((records.get(sid) or {}).get("adopted", 0)) <= 0:
-                v.fail("V1_INPUT_EMPTY", f"候補が依存する資料 {sid} の有効な行が0。", [sid])
+            continue
+        sid = source["source_id"]
+        if sid not in quality:
+            v.fail("V1_QUALITY_NOT_RUN", f"資料 {sid} の品質検査の結果がない。", [sid])
+        if int((records.get(sid) or {}).get("adopted", 0)) <= 0:
+            v.fail("V1_INPUT_EMPTY", f"候補が依存する資料 {sid} の有効な行が0。", [sid])
 
 
 # ---------------------------------------------------------------------------
@@ -515,18 +564,8 @@ def _v2(
                     f"対応 {match['match_id']} のレコードがない：{ref}",
                     [match["match_id"], ref],
                 )
-    sources = {_source_of(r) for r in rows}
-    for item in [*claims, *explanations, *matches]:
-        for e in json.loads(item["evidence_json"]):
-            if isinstance(e, dict) and isinstance(e.get("source_id"), str):
-                sources.add(e["source_id"])
-    for calc_id in hashing.memo_calc_ids(conn, lead_id):
-        row = _one(
-            conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
-        )
-        if row is not None and row["kind"] == "doc_value":
-            sources.add(json.loads(row["request_json"]).get("source_id"))
-    for source_id in sorted(s for s in sources if s):
+    sources = hashing.dependency_sources(conn, lead_id)
+    for source_id in sources:
         source = _one(conn, "SELECT * FROM sources WHERE source_id = ?", (source_id,))
         if source is None:
             v.fail("V2_REF_MISSING", f"存在しない資料への参照：{source_id}", [source_id])
@@ -561,12 +600,9 @@ def _v3(
     claims: list[dict],
     v: Verification,
 ) -> None:
-    referenced = []
-    for claim in claims:
-        referenced += json.loads(claim["calc_ids_json"]) + hashing.CALC_REF_RE.findall(
-            claim["text"]
-        )
-    for calc_id in referenced:
+    referenced = [c for claim in claims for c in json.loads(claim["calc_ids_json"])]
+    referenced += hashing.text_calc_refs(conn, lead["lead_id"])  # メモが数値に展開する欄のすべて
+    for calc_id in dict.fromkeys(referenced):
         row = _one(conn, "SELECT kind FROM computations WHERE calc_id = ?", (calc_id,))
         if row is not None and row["kind"] == "reconcile":
             v.fail(
@@ -801,9 +837,11 @@ def _v8(
                 "比較成立なのに、取り下げ条件の結果（kept・withdrawn）がない。",
                 [lead_id],
             )
-        if not questions:
+        if not _has_purpose(questions, "verify_record"):
             v.fail(
-                "V8_T6C_QUESTION", "比較成立なのに、元の記載を確かめる取材質問がない。", [lead_id]
+                "V8_T6C_QUESTION",
+                "比較成立なのに、元の記載を確かめる取材質問（purposes に verify_record）がない。",
+                [lead_id],
             )
         _v8_matches(conn, lead, matches, v)
         coefs = [
@@ -836,7 +874,7 @@ def _v8(
                 "比較成立なのに否定されていない型がある：" + "、".join(not_negated),
                 [lead_id],
             )
-        _v8_explanation_status(lead, judged, questions, v)
+        _v8_explanation_status(conn, lead, judged, questions, v)
     elif outcome == "artifact":
         factors = [t for t in ("T2", "T5", "T6a", "T6b") if j(t) == "support" and has_evidence(t)]
         if not factors:
@@ -850,10 +888,11 @@ def _v8(
     else:  # hold
         if lead["hold_reason"] is None:
             v.fail("V8_HOLD_REASON", "保留なのに保留の理由（hold_reason）がない。", [lead_id])
-        if not questions:
+        if not _has_purpose(questions, "missing_documents"):
             v.fail(
                 "V8_HOLD_REASON",
-                "保留なのに、足りない資料と照会先・情報公開請求の候補（取材質問）がない。",
+                "保留なのに、足りない資料を照会する取材質問（purposes に missing_documents。照会先は to、"
+                "情報公開請求の候補は foia）がない。",
                 [lead_id],
             )
     if missing:
@@ -885,7 +924,32 @@ def _v8_matches(conn: sqlite3.Connection, lead: dict, matches: list[dict], v: Ve
         )
 
 
-def _v8_explanation_status(lead: dict, judged: dict, questions: list, v: Verification) -> None:
+def _has_purpose(questions: list, purpose: str) -> bool:
+    """目的（purposes）にその値を持つ取材質問があるか（D-041⑩。質問の中身の十分さは記者が確かめる）。"""
+    return any(purpose in (q.get("purposes") or []) for q in questions if isinstance(q, dict))
+
+
+def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
+    """説明を反映した値（recalc_calc_id）と残る差（residual_calc_id）が計算IDでそろっているか（D-041⑩）。
+
+    説明を反映した値は、候補の比べる2年度と系列の計算そのものではないこと。残る差は、説明を反映した値を引数に
+    含む派生計算か、条件をそろえた後に残る行を数えた基礎集計の件数。"""
+    recalc, residual = exp.get("recalc_calc_id"), exp.get("residual_calc_id")
+    originals = {lead["calc_from"], lead["calc_to"], *json.loads(lead["calc_ids_json"])}
+    if not recalc or not residual or recalc in originals:
+        return False
+    comp = _one(conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (residual,))
+    if comp is None:
+        return False
+    request = json.loads(comp["request_json"])
+    if comp["kind"] == "derived":
+        return recalc in (request.get("args") or [])
+    return comp["kind"] == "base" and request.get("op") == "count"
+
+
+def _v8_explanation_status(
+    conn: sqlite3.Connection, lead: dict, judged: dict, questions: list, v: Verification
+) -> None:
     status = lead["explanation_status"]
     supported = [
         t for t in ("T1", "T3", "T4") if t in judged and judged[t]["judgment"] == "support"
@@ -896,16 +960,18 @@ def _v8_explanation_status(lead: dict, judged: dict, questions: list, v: Verific
             f"支持された説明（{'・'.join(supported)}）があるのに、説明の状況が「なし」。",
             [lead["lead_id"]],
         )
-    if status in ("full", "part") and not any(judged[t]["recalc_calc_id"] for t in supported):
+    scoped = [t for t in supported if judged[t]["scope"] in ("full", "part")]
+    if status in ("full", "part") and not any(_residual_ok(conn, lead, judged[t]) for t in scoped):
         v.fail(
             "V8_EXPLANATION_STATUS",
-            "説明の状況が「全部」「一部」なのに、説明を反映した再計算と残る差がない。",
+            "説明の状況が「全部」「一部」なのに、支持の T1・T3・T4 に、説明を反映した値（recalc_calc_id。"
+            "比べる年度の合計そのものは不可）と残る差（residual_calc_id）がない。",
             [lead["lead_id"]],
         )
-    if status == "unknown" and not questions:
+    if status == "unknown" and not _has_purpose(questions, "reason_breakdown"):
         v.fail(
             "V8_EXPLANATION_STATUS",
-            "説明の状況が「範囲不明」なのに、理由と内訳を尋ねる取材質問がない。",
+            "説明の状況が「範囲不明」なのに、理由と内訳を尋ねる取材質問（purposes に reason_breakdown）がない。",
             [lead["lead_id"]],
         )
 
@@ -954,7 +1020,7 @@ def verify(
         conn, "SELECT * FROM procurement_matches WHERE lead_id = ? ORDER BY match_id", (lead_id,)
     )
     v.memo_claims = [c["claim_id"] for c in claims]
-    _v1(conn, adapter, lead, rows, v)
+    _v1(conn, adapter, lead, v)
     _v2(conn, root, lead, claims, explanations, matches, rows, v)
     _v3(conn, root, adapter, lead, claims, v)
     _v4(conn, root, run_id, adapter, lead, claims, explanations, matches, v)

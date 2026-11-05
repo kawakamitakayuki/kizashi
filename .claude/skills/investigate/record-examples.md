@@ -86,7 +86,7 @@ CSVの `column` は `kizashi inspect <row_ref> --run <run_id>` に出るキー�
 ## explanation（T1〜T5・T6c。T6a・T6bは kizashi が登録するので書かない）
 ```json
 {"kind": "explanation", "lead_id": "L0003", "type": "T3", "judgment": "support", "scope": "part",
- "recalc_calc_id": "K0024", "searched": "令和6・7年度の仕様書、入札公告",
+ "recalc_calc_id": "K0024", "residual_calc_id": "K0025", "searched": "令和6・7年度の仕様書、入札公告",
  "evidence": [{"source_id": "S012", "position": {"page": 4}, "quote": "配送予定数量は年間1,200件とする。", "role": "support"}]}
 ```
 
@@ -94,8 +94,10 @@ CSVの `column` は `kizashi inspect <row_ref> --run <run_id>` に出るキー�
 ```json
 {"kind": "question", "lead_id": "L0003", "to": "所管部署", "question": "令和7年度に配送の数量や範囲を変えた資料はあるか",
  "documents": "令和6・7年度の仕様書と変更契約書", "decision_impact": "数量の変更で差の大半が説明できれば、説明の状況を「全部」に改める",
- "foia": "変更契約書"}
+ "purposes": ["reason_breakdown", "missing_documents"], "foia": "変更契約書"}
 ```
+`purposes` は質問の目的（1つ以上）：`verify_record`（元の記載の確認。比較成立に必須）、`reason_breakdown`（理由・内訳の確認。説明の状況が「範囲不明」なら必須）、`missing_documents`（不足資料の照会。保留に必須）、`other`。
+説明の状況を「全部」「一部」にするときは、支持の判定に、説明を反映した値の `recalc_calc_id`（比べる年度の合計そのものは不可）と、残る差の `residual_calc_id`（`recalc_calc_id` を引数に含む派生計算か、条件をそろえた後に残る行の件数）を書く。
 
 ## coefficient（係数の提案。計算には使われない。値は value にだけ書く）
 ```json

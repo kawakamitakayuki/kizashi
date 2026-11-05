@@ -70,10 +70,10 @@ KINDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "explanation": (
         frozenset({"lead_id", "type", "judgment", "evidence", "searched"}),
-        frozenset({"scope", "recalc_calc_id", "no_quant_reason"}),
+        frozenset({"scope", "recalc_calc_id", "residual_calc_id", "no_quant_reason"}),
     ),
     "question": (
-        frozenset({"lead_id", "to", "question", "documents", "decision_impact"}),
+        frozenset({"lead_id", "to", "question", "documents", "decision_impact", "purposes"}),
         frozenset({"foia"}),
     ),
     "coefficient": (
@@ -144,6 +144,8 @@ COMPARISON_STATES = ("comparable", "adjusted", "unresolved", "not_applicable")
 EXPLANATION_STATUSES = ("none", "part", "full", "unknown")
 HOLD_REASONS = ("comparison", "source_check", "limit")
 HYPOTHESIS_RESULTS = ("kept", "withdrawn")
+# 質問の目的（D-041⑩）：元の記載の確認、理由・内訳の確認、不足資料の照会、そのほか
+QUESTION_PURPOSES = ("verify_record", "reason_breakdown", "missing_documents", "other")
 
 _CALC_REF_RE = re.compile(r"\{calc:([^}]*)\}")
 
@@ -557,6 +559,9 @@ def _do_explanation(ctx: Ctx) -> Result:
     recalc = ctx.data.get("recalc_calc_id")
     if recalc is not None:
         _calc(ctx, recalc, "recalc_calc_id")
+    residual = ctx.data.get("residual_calc_id")
+    if residual is not None:
+        _calc(ctx, residual, "residual_calc_id")
     no_quant = ctx.opt_text("no_quant_reason")
     needs_scope = judgment == "support" and etype in ("T1", "T3", "T4")
     if needs_scope and (scope is None or (recalc is None and no_quant is None)):
@@ -571,10 +576,12 @@ def _do_explanation(ctx: Ctx) -> Result:
     before = None if prev is None else dict(prev)
     ctx.conn.execute(
         "INSERT INTO explanations (lead_id, type, judgment, evidence_json, searched, recalc_calc_id,"
-        " scope, no_quant_reason, context, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'main_session', ?)"
+        " residual_calc_id, scope, no_quant_reason, context, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'main_session', ?)"
         " ON CONFLICT (lead_id, type) DO UPDATE SET judgment = excluded.judgment,"
         " evidence_json = excluded.evidence_json, searched = excluded.searched,"
-        " recalc_calc_id = excluded.recalc_calc_id, scope = excluded.scope,"
+        " recalc_calc_id = excluded.recalc_calc_id, residual_calc_id = excluded.residual_calc_id,"
+        " scope = excluded.scope,"
         " no_quant_reason = excluded.no_quant_reason, context = excluded.context,"
         " updated_at = excluded.updated_at",
         (
@@ -584,6 +591,7 @@ def _do_explanation(ctx: Ctx) -> Result:
             canonical_json(evidence),
             searched,
             recalc,
+            residual,
             scope,
             no_quant,
             ledger.now_iso(),
@@ -594,7 +602,18 @@ def _do_explanation(ctx: Ctx) -> Result:
 
 def _do_question(ctx: Ctx) -> Result:
     lead = _lead(ctx)
-    item = {k: ctx.text(k) for k in ("to", "question", "documents", "decision_impact")}
+    item: dict = {k: ctx.text(k) for k in ("to", "question", "documents", "decision_impact")}
+    purposes = ctx.data.get("purposes")
+    if not (
+        isinstance(purposes, list)
+        and purposes
+        and all(p in QUESTION_PURPOSES for p in purposes)
+        and len(set(purposes)) == len(purposes)
+    ):
+        raise _schema(
+            f"purposes は質問の目的（{'・'.join(QUESTION_PURPOSES)}）の空でない配列で書く（重複なし）。"
+        )
+    item["purposes"] = list(purposes)
     foia = ctx.opt_text("foia")
     if foia is not None:
         item["foia"] = foia
