@@ -265,10 +265,10 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 読む資料：設計書4.2・4.3・5.5・9.12、implementation_spec.md の3.5・4.2（--recheck）・4.3（失効の表示）・4.6・4.7・9・10.2・10.3・11・12章、test_plan.md の CK-1（V5〜V7）・CK-3・CK-4・RD-3・RD-4・HS・PB-1・KN-1・SF-1。
 
 作るもの：
-1. check.py の V5〜V7（V7 の氏名の一覧は検査のたびに原本から作り保存しない。強い語は警告）と巡回数の規則。record の時点の V7 の検査をつなぐ。
+1. check.py の V5〜V7（V7 の氏名の一覧と取り込まない列の値は検査のたびに原本から作り保存しない。取り込まない列の値は担当官の所在地（index 3）と相手方の住所（index 6）だけで、切り出し方は implementation_spec.md 12.2。D-032。強い語は警告）と巡回数の規則。record の時点の V7 の検査をつなぐ（取り込まない列の値も照らす）。
 2. render <run_id>（実行の概要。候補0件と partial の書き分け。絞り込みがあれば、記者の指示、条件、資料ごとの除いた行の数を「処理の範囲」に出す）。
 3. render --public（受注者名と法人番号の伏せ字、examples/disclosure.allow。CSVの受注者名の `?` は implementation_spec.md 12.1 の規則で照らす。D-022）。
-4. publish.py（check --publish の P0 の4項目。`?` を含む値は implementation_spec.md 12.2 の規則で照らす。補助資料のファイル名とハッシュは環境変数 KIZASHI_DENYLIST のファイルから読む）。検査の対象は、ファイル名の一覧ではなく中身にする：作業フォルダーの manifest のファイル、ステージの blob（git ls-files -s）、すべての参照からたどれる履歴の blob（git rev-list --objects --all）。テストは一時の Git リポジトリで行う（PB-1）。
+4. publish.py（check --publish の P0 の4項目。取り込まない列の値の範囲は 1. と同じ（D-032）。`?` を含む値は implementation_spec.md 12.2 の規則で照らす。補助資料のファイル名とハッシュは環境変数 KIZASHI_DENYLIST のファイルから読む）。検査の対象は、ファイル名の一覧ではなく中身にする：作業フォルダーの manifest のファイル、ステージの blob（git ls-files -s）、すべての参照からたどれる履歴の blob（git rev-list --objects --all）。テストは一時の Git リポジトリで行う（PB-1）。
 5. 失効：inspect の失効の表示、check と render の規則の版の照合（E_RULE_VERSION）、fetch --recheck（新しい版の保存、supersedes、古い版に依存する主張の stale、events の recheck）。
 6. テスト：CK-1（V5〜V7）、CK-3、CK-4、RD-3、RD-4、HS-1〜HS-3、PB-1、KN-1、SF-1、SC-1（実行の概要）。
 
