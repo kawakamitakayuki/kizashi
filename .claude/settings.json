@@ -1,0 +1,14 @@
+{
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "allow": ["WebFetch(domain:*.go.jp)", "WebFetch(domain:*.lg.jp)"],
+    "deny": [
+      "Read(.env)",
+      "Edit(/data/**)",
+      "Edit(/references/**)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(git push *)"
+    ]
+  }
+}

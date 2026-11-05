@@ -1,0 +1,9 @@
+data/
+inbox/
+.venv/
+__pycache__/
+*.pyc
+.claude/settings.local.json
+.env
+.pytest_cache/
+.ruff_cache/

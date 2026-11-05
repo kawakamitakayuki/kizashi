@@ -1,0 +1,25 @@
+{
+  "env": {
+    "KIZASHI_PROFILE": "investigate",
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Edit(/inbox/*.json)", "Edit(/inbox/*.sql)",
+      "Bash(kizashi run *)", "Bash(kizashi fetch *)", "Bash(kizashi inspect *)",
+      "Bash(kizashi query *)", "Bash(kizashi record *)", "Bash(kizashi check *)",
+      "Bash(kizashi render *)",
+      "Skill(investigate)", "Skill(investigate *)", "Skill(review-lead)", "Skill(review-lead *)",
+      "WebSearch"
+    ],
+    "deny": [
+      "Edit(/src/**)", "Edit(/tests/**)", "Edit(/datasets/**)", "Edit(/scripts/**)",
+      "Edit(/eval/**)", "Edit(/examples/**)", "Edit(/.claude/**)", "Edit(/.venv/**)",
+      "Edit(/CLAUDE.md)", "Edit(/investigate.settings.json)", "Edit(/pyproject.toml)", "Edit(/uv.lock)",
+      "NotebookEdit", "WebFetch", "Agent", "mcp__*",
+      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)"
+    ],
+    "disableAutoMode": "disable",
+    "disableBypassPermissionsMode": "disable"
+  }
+}

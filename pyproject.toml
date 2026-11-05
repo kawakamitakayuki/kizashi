@@ -1,0 +1,44 @@
+[project]
+name = "kizashi"
+version = "0.1.0"
+description = "公開データの年度比較で見つけた変化について、理由を公表資料で調べ、根拠付きの調査メモを返すツール"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "pyyaml",
+]
+
+[project.scripts]
+kizashi = "kizashi.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kizashi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not network'"
+markers = [
+    "network: 通信を使うテスト（既定では実行しない。pytest -m network で実行する）",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# ruff は Markdown も整形の対象にする。references/ の知識ファイルと docs/ の資料を書き換えないよう、
+# 対象を Python のファイルに限り、2つのフォルダーを明示して外す。
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+extend-exclude = ["references", "docs"]
+
+[tool.ruff.lint]
+extend-select = ["I", "B", "UP"]

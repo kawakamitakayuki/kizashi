@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# 調査用のClaude Codeセッションを起動する。開発には使わない。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+uv sync --frozen
+mkdir -p inbox
+export PATH="$PWD/.venv/bin:$PATH"
+export KIZASHI_CLAUDE_VERSION="$(claude --version)"
+exec claude --permission-mode dontAsk --setting-sources project \
+  --tools "Bash,Read,Grep,Glob,Skill,WebSearch,Write" \
+  --settings investigate.settings.json "$@"
