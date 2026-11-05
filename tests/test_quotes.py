@@ -129,6 +129,36 @@ def test_qt1_paragraph_and_cell_end_are_boundaries(ctx) -> None:
     verify(ctx, ev("S001", {"row_ref": "S001:000002", "column": "method_raw"}, "一般競争（単価）"))
 
 
+def test_qt1_quote_must_not_cut_a_number(ctx) -> None:
+    """QT-1（D-033）：資料の数値の途中で始まる・終わる引用は E_QUOTE_TRUNCATED。直後が数字の「.」は文末にしない。
+
+    S005:000007 の金額のセルは 750,000（セルの終わりまで含んでも、数値の途中から始まれば通さない）。
+    """
+    _, root, run_id, _ = ctx
+    sid = add_evidence(
+        root, run_id, ["予定数量は1.5件。\n\n合計1,200件とする。\n\n比率は.5とする。\n"]
+    )
+    assert sid == "S011"
+    cell = {"row_ref": "S005:000007", "column": "amount_raw"}
+    for evidence in (
+        ev("S005", cell, "000"),
+        ev("S005", cell, ",000"),
+        ev("S005", cell, "50,000"),
+        ev("S011", {"page": 1}, "予定数量は1."),  # 「1.5」の途中で終わる
+        ev("S011", {"page": 1}, "200件とする。"),  # 「1,200」の途中から始まる
+        ev("S011", {"page": 1}, ".5件。"),  # 「1.5」の途中から始まる
+        ev("S011", {"page": 1}, "比率は."),  # 直後が数字の「.」は文末でない
+    ):
+        assert code_of(ctx, evidence) == "E_QUOTE_TRUNCATED", evidence["quote"]
+    for evidence in (
+        ev("S005", cell, "750,000"),
+        ev("S011", {"page": 1}, "予定数量は1.5件。"),
+        ev("S011", {"page": 1}, "1,200件とする。"),
+        ev("S011", {"page": 1}, "比率は.5とする。"),
+    ):
+        verify(ctx, evidence)
+
+
 def test_qt1_fiscal_year_of_record_claim(ctx) -> None:
     """QT-1：「原資料の記載」の fiscal_year と資料（データ）の年度が違えば E_QUOTE_YEAR。"""
     evidence = ev("S005", {"row_ref": "S005:000007", "column": "method_raw"}, "一般競争")

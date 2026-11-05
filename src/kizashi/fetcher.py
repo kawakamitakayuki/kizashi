@@ -217,9 +217,17 @@ def _request(
 
 
 def http_get(
-    client: httpx.Client, url: str, *, allowed_hosts: Iterable[str], budget: Budget
+    client: httpx.Client,
+    url: str,
+    *,
+    allowed_hosts: Iterable[str],
+    budget: Budget,
+    refuse_redirect: Callable[[httpx.URL], None] | None = None,
 ) -> tuple[str, bytes, str | None]:
-    """許可リストとリダイレクトを1段ずつ検査して GET する。(最終の URL, 中身, media type) を返す。"""
+    """許可リストとリダイレクトを1段ずつ検査して GET する。(最終の URL, 中身, media type) を返す。
+
+    refuse_redirect は、リダイレクト先に通信する前に呼ぶ検査（拒否するときは KizashiError を出す）。
+    """
     allowed = list(allowed_hosts)
     current = check_url(url, allowed)
     for _ in range(limits.MAX_REDIRECTS + 1):
@@ -229,6 +237,8 @@ def http_get(
             if not location:
                 raise _fetch_failed(current, f"HTTP {status} に Location がない", retryable=False)
             current = check_url(current.join(location), allowed, redirect=True)
+            if refuse_redirect is not None:
+                refuse_redirect(current)
             continue
         if status != 200:
             raise _fetch_failed(current, f"HTTP {status}", retryable=False)
@@ -556,6 +566,30 @@ def html_text(content: bytes, base_url: str) -> tuple[str, list[dict[str, str]],
     return parser.text(), parser.links, encoding
 
 
+def is_dataset_url(url: str | httpx.URL, link_pattern: str) -> bool:
+    """公表一覧のデータの URL か（dataset.yaml の link_pattern。D-031⑪・D-034）。
+
+    問い合わせ（?…）と断片（#…）を除き、%の符号を戻したパスで、大文字と小文字を区別せずに照らす。
+    """
+    try:
+        parsed = httpx.URL(str(url))
+    except (httpx.InvalidURL, TypeError):
+        return False
+    plain = f"{parsed.scheme}://{parsed.host}{parsed.path}"
+    return re.search(link_pattern, plain, re.IGNORECASE) is not None
+
+
+def _dataset_refused(url: object, *, redirect: bool) -> KizashiError:
+    where = "リダイレクト先" if redirect else "取得先"
+    return KizashiError(
+        "E_BAD_EVIDENCE_SOURCE",
+        "fetch",
+        f"{where}が公表一覧のデータ（{url}）である。公表一覧のデータは run が取得し、"
+        "追加資料としては取得しない（D-021・D-034）。",
+        next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
+    )
+
+
 def _register_evidence_failure(
     conn: sqlite3.Connection, kind: str, url: str, exc: KizashiError, budget: Budget, run_id: str
 ) -> str:
@@ -590,7 +624,8 @@ def fetch_evidence(
     - 追加資料だけ MAX_EVIDENCE_FETCH に数える（取得に成功したもの）。通信はすべて MAX_HTTP_REQUESTS に数える。
     - PDF はページごと、HTML は1ページ（とリンクの一覧）。evidence/<資料ID>/pages/<n>.txt に書く。
     - 公表一覧のデータ（dataset.yaml の link_pattern に合う URL と、run が取得した資料と同じ中身）は
-      取得しない（ページ別テキストを作らない。D-021）。
+      取得しない（ページ別テキストを作らない。D-021）。URL は、リダイレクトの途中と最後の URL も、
+      通信の前に照らす（D-034）。
     - 取得に失敗したら sources に failed と理由を残す（許可リスト外など、通信の前に拒否したものは残さない）。
     """
     if kind not in EVIDENCE_KINDS:
@@ -614,17 +649,22 @@ def fetch_evidence(
                 next_action="保留にして記者に伝える（上限に達しても結論を強めない）。",
             )
         check_url(url, allowed)
-        if re.search(adapter.config["source"]["link_pattern"], url):
-            raise KizashiError(
-                "E_BAD_EVIDENCE_SOURCE",
-                "fetch",
-                f"公表一覧のデータ（{url}）は run が取得する。追加資料としては取得しない（D-021）。",
-                next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
-            )
+        link_pattern = adapter.config["source"]["link_pattern"]
+        if is_dataset_url(url, link_pattern):
+            raise _dataset_refused(url, redirect=False)
+
+        def refuse_redirect(target: httpx.URL) -> None:
+            if is_dataset_url(target, link_pattern):
+                raise _dataset_refused(target, redirect=True)
+
         client = make_client(transport)
         try:
             final_url, content, media_type = http_get(
-                client, url, allowed_hosts=allowed, budget=budget
+                client,
+                url,
+                allowed_hosts=allowed,
+                budget=budget,
+                refuse_redirect=refuse_redirect,
             )
             fmt, suffix_url = detect_format(url, final_url, media_type, content)
             sha, path, size = store_raw(

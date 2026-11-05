@@ -175,14 +175,19 @@ class Ctx:
     adapter: Adapter
     data: dict
     texts: dict[str, str] = field(default_factory=dict)  # V7 の対象（欄の名前 → 文字列）
+    # V7 の氏名の検査だけを当てる欄（数字を書いてよい欄。比較の条件、単位など。D-035）
+    name_texts: dict[str, str] = field(default_factory=dict)
     quotes: list[str] = field(default_factory=list)  # 照合済みの引用（V7 の対象外）
 
-    def text(self, key: str, *, allow_empty: bool = False, v7: bool = True) -> str:
+    def text(self, key: str, *, allow_empty: bool = False, v7_numbers: bool = True) -> str:
+        """Claude が書く文字列の欄。V7 の対象にする（v7_numbers=False なら氏名の検査だけ。D-035）。"""
         value = self.data.get(key)
         if not isinstance(value, str) or (not allow_empty and not value.strip()):
             raise _schema(f"{key} は空でない文字列で書く。")
-        if v7:
+        if v7_numbers:
             self.texts[key] = value
+        else:
+            self.name_texts[key] = value
         return value
 
     def opt_text(self, key: str) -> str | None:
@@ -302,7 +307,7 @@ Result = tuple[str, dict, object]
 
 def _do_calc(ctx: Ctx) -> Result:
     lead_id = _opt_lead_id(ctx)
-    label, unit = ctx.text("label"), ctx.text("unit", v7=False)
+    label, unit = ctx.text("label"), ctx.text("unit", v7_numbers=False)
     request = {k: ctx.data[k] for k in ("op", "table", "column", "filter") if k in ctx.data}
     cid = calc.register_base(
         ctx.conn, ctx.adapter, request, meaning=label, unit=unit, lead_id=lead_id
@@ -315,7 +320,7 @@ def _do_calc(ctx: Ctx) -> Result:
 
 def _do_derive(ctx: Ctx) -> Result:
     lead_id = _opt_lead_id(ctx)
-    label, unit = ctx.text("label"), ctx.text("unit", v7=False)
+    label, unit = ctx.text("label"), ctx.text("unit", v7_numbers=False)
     cid = calc.register_derived(
         ctx.conn, ctx.data["op"], ctx.data["args"], meaning=label, unit=unit, lead_id=lead_id
     )
@@ -324,7 +329,7 @@ def _do_derive(ctx: Ctx) -> Result:
 
 def _do_doc_value(ctx: Ctx) -> Result:
     lead_id = _lead(ctx)["lead_id"]
-    label, unit = ctx.text("label"), ctx.text("unit", v7=False)
+    label, unit = ctx.text("label"), ctx.text("unit", v7_numbers=False)
     evidence = {k: ctx.data[k] for k in ("source_id", "position", "quote")} | {"role": "support"}
     verified = quotes.verify_quote(ctx.conn, ctx.root, ctx.run_id, ctx.adapter, evidence)
     ctx.quotes.append(verified.quote)
@@ -362,7 +367,7 @@ def _do_lead(ctx: Ctx) -> Result:
             f"accepted/ に探索SQL {query_file} がない。",
             next_action="先に kizashi query で探索SQLを実行する（成功すると accepted/ に写る）。",
         )
-    lead_key = ctx.text("lead_key", v7=False)
+    lead_key = ctx.text("lead_key", v7_numbers=False)
     categories = tuple(ctx.adapter.config.get("reconcile", {}).get("fields_by_category", {}))
     category = ctx.choice("change_category", categories)
     period_from, period_to = (
@@ -388,10 +393,12 @@ def _do_lead(ctx: Ctx) -> Result:
     comparison = data.get("comparison")
     if not isinstance(comparison, dict) or set(comparison) != set(COMPARISON_KEYS):
         raise _schema(f"comparison は {'・'.join(COMPARISON_KEYS)} の6項目で書く。")
-    # 比較の条件は V7 の対象にしない（既定値にも「1件の契約」がある。設計書5.5の V7 の欄にない）
+    # 比較の条件は V7 の数値の検査を当てない（既定値にも「1件の契約」がある。D-031③）。
+    # 氏名の検査は当てる（D-035）
     for key in COMPARISON_KEYS:
         if not isinstance(comparison[key], str):
             raise _schema(f"comparison の {key} は文字列で書く。")
+        ctx.name_texts[f"comparison.{key}"] = comparison[key]
     note = ctx.text("note", allow_empty=True)
 
     lead_id = ledger.next_id(ctx.conn, "L")
@@ -597,7 +604,7 @@ def _do_question(ctx: Ctx) -> Result:
 
 def _do_coefficient(ctx: Ctx) -> Result:
     lead = _lead(ctx)
-    key = ctx.text("key", v7=False)
+    key = ctx.text("key", v7_numbers=False)
     value = ctx.data.get("value")
     if not isinstance(value, str) or not calc.DECIMAL_RE.fullmatch(value):
         raise _schema(f"係数の value は十進数の文字列で書く：{value!r}")
@@ -831,10 +838,13 @@ def _check_calc_refs(ctx: Ctx) -> None:
 
 def _v7(ctx: Ctx, target_id: str) -> list[dict]:
     texts = {k: v for k, v in ctx.texts.items() if v}
-    if not texts:
+    name_texts = {k: v for k, v in ctx.name_texts.items() if v}
+    if not texts and not name_texts:
         return []
     names = check.name_variants(ctx.adapter.module.name_list(ctx.conn, ctx.root, ctx.adapter))
-    errors, warnings = check.v7_findings(texts, names=names, quotes=ctx.quotes)
+    errors, warnings = check.v7_findings(
+        texts, names=names, quotes=ctx.quotes, names_only=name_texts
+    )
     if errors:
         parts = []
         for e in errors:

@@ -103,9 +103,11 @@ def v7_findings(
     *,
     names: Iterable[str] = (),
     quotes: Iterable[str] = (),
+    names_only: Mapping[str, str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """欄（名前 → 文字列）ごとの V7 の不合格と警告。
 
+    names_only の欄（数字を書いてよい欄。比較の条件、単位など）には、氏名の検査だけを当てる（D-035）。
     戻り値の不合格は {"code", "field", "hit"}（数値）か {"code", "field", "at"}（氏名。語は返さない）。
     警告は {"code": "W7_STRONG_WORD", "field", "hit"}。
     """
@@ -122,4 +124,7 @@ def v7_findings(
             errors.append({"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end]})
         for word in strong_words(text, quotes):
             warnings.append({"code": "W7_STRONG_WORD", "field": field, "hit": word})
+    for field, text in (names_only or {}).items():
+        for start, end in personal_names(text, names):
+            errors.append({"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end]})
     return errors, warnings

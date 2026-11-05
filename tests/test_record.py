@@ -582,3 +582,56 @@ def test_cp1_why_needed_raw_number_is_e_v7(repo: Path, run: str, lead: dict) -> 
     fails(repo, run, coefficient(lead["lead"], why_needed="税率10%の差がある"), "E_V7")
     fails(repo, run, coefficient(lead["lead"], apply_to="1.1を掛ける"), "E_V7")
     fails(repo, run, coefficient(lead["lead"], value="1.1倍"), "E_SCHEMA")
+
+
+# ---------------------------------------------------------------------------
+# V7 の氏名の検査を、数値の検査を当てない欄にも当てる（D-035。CK-4 の record の時点）
+# ---------------------------------------------------------------------------
+
+NAME = "架空　太郎"  # 合成の担当官の氏名（make_cao_fixtures.py）
+
+
+def _lead_proposal(repo: Path, run: str, **over) -> dict:
+    k_from = rec(repo, run, calc_sum("翻訳業務", 2024), name="kf.json")["id"]
+    k_to = rec(repo, run, calc_sum("翻訳業務", 2025), name="kt.json")["id"]
+    return {
+        "kind": "lead",
+        "query_file": "q-001.sql",
+        "lead_key": "翻訳業務（再）",
+        "change_category": "amount_up",
+        "period_from": 2024,
+        "period_to": 2025,
+        "calc_from": k_from,
+        "calc_to": k_to,
+        "calc_ids": [],
+        "comparison": COMPARISON,
+        "note": "探索で見つけた",
+        **over,
+    }
+
+
+@pytest.mark.parametrize("key", ["population", "row_meaning", "entity_mapping", "formula"])
+def test_ck4_name_in_comparison_is_e_v7(repo: Path, run: str, lead: dict, key: str) -> None:
+    """D-035：比較の条件に氏名があれば E_V7（V7_PERSONAL_NAME）。数値の検査は当てない（「1件の契約」は通る）。"""
+    comparison = {**COMPARISON, key: f"{NAME}が担当した契約"}
+    err = fails(repo, run, _lead_proposal(repo, run, comparison=comparison), "E_V7")
+    assert "V7_PERSONAL_NAME" in err.message and f"comparison.{key}" in err.message
+    assert "架空" not in err.message and "太郎" not in err.message
+    assert ledger_of(repo, run).execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
+
+
+def test_ck4_name_in_lead_key_unit_and_coefficient_key_is_e_v7(
+    repo: Path, run: str, lead: dict
+) -> None:
+    """D-035：候補の lead_key、計算・文書値の unit、係数の key に氏名があれば E_V7。数字は書いてよい。"""
+    err = fails(repo, run, _lead_proposal(repo, run, lead_key=f"{NAME}の業務"), "E_V7")
+    assert "lead_key" in err.message
+    err = fails(repo, run, calc_sum("翻訳業務", 2024, unit=NAME), "E_V7")
+    assert "unit" in err.message
+    err = fails(repo, run, coefficient(lead["lead"], key=NAME), "E_V7")
+    assert "key" in err.message
+    # 数値の検査はこれまでどおり当てない
+    assert (
+        rec(repo, run, calc_sum("翻訳業務", 2024, unit="1件あたりの円"))["unit"] == "1件あたりの円"
+    )
+    rec(repo, run, _lead_proposal(repo, run, lead_key="翻訳業務2"))
