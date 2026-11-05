@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-from kizashi import fetcher, inbox, ledger, paths, quality, reconcile, versions
+from kizashi import check, fetcher, inbox, ledger, paths, quality, reconcile, versions
 from kizashi.adapters import FAMILIES, Adapter, load_adapter
 from kizashi.adapters.cao_procurement import SCOPE_OPS
 from kizashi.errors import KizashiError
@@ -407,6 +407,24 @@ def _fetched_csv(ctx: RunContext) -> list[tuple[str, str, str]]:
     ).fetchall()
 
 
+def _check_config_names(ctx: RunContext) -> None:
+    """実行設定の文字列（question、scope の指示と条件の値など）に氏名の検査を当てる（D-037）。
+
+    氏名の一覧は取得した原本から作るので、取得の後・正規化の前に行う。当たれば E_V7 で正規化を止める。
+    """
+    adapter = ctx.adapter
+    names = check.name_variants(adapter.module.name_list(ctx.conn, ctx.root, adapter))
+    hits = check.name_hits(dict(check.string_leaves(ctx.config)), names)
+    if hits:
+        raise KizashiError(
+            "E_V7",
+            "normalize",
+            "実行設定に氏名がある：" + "、".join(hits),
+            affected_ids=[ctx.run_id],
+            next_action="記者の指示から氏名を除いた設定を inbox/ に書き直し、新しい実行を始める。",
+        )
+
+
 def _normalize(ctx: RunContext) -> None:
     adapter = ctx.adapter
     sources = _fetched_csv(ctx)
@@ -423,6 +441,7 @@ def _normalize(ctx: RunContext) -> None:
     )
     record_counts: dict[str, dict] = {}
     try:
+        _check_config_names(ctx)
         with ledger.transaction(ctx.conn):
             for source_id, logical_key, sha in sources:
                 _, year, family, _ = logical_key.split("|")

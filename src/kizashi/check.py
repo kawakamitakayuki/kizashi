@@ -89,6 +89,17 @@ def personal_names(text: str, names: Iterable[str]) -> list[tuple[int, int]]:
     return result
 
 
+def name_hits(fields: Mapping[str, str], names: Iterable[str]) -> list[str]:
+    """欄ごとの氏名の当たりを「V7_PERSONAL_NAME：<欄> の <始め>〜<終わり> 文字目」の形で返す。
+    氏名の語そのものは書かない（record 以外の経路でも使う。D-037）。"""
+    names = list(names)
+    return [
+        f"V7_PERSONAL_NAME：{field} の {start + 1}〜{end} 文字目"
+        for field, text in fields.items()
+        for start, end in personal_names(text, names)
+    ]
+
+
 def strong_words(text: str, quotes: Iterable[str] = ()) -> list[str]:
     """W7_STRONG_WORD：強い語（現れた順）。例外語と照合済みの引用の中は除く。"""
     rest = _without_quotes(text, quotes)

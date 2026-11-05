@@ -78,8 +78,9 @@ def test_run_completed_with_synthetic_data(
     )
     assert versions["sql_sha256"] == hashlib.sha256(b"").hexdigest()  # 検出SQLはまだない（P0-5）
     # 規則の版（implementation_spec.md 3.5、共通ルール11）。2：照合を足し Q13 の結果が変わった。
-    # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった
-    assert (versions["rules_version"], versions["parser_version"]) == ("4", "cao-procurement/1")
+    # 3：D-033〜D-035 で引用・文書値・取得・V7 の検査の結果が変わった。4：D-036 で引用と V7 が変わった。
+    # 5：D-037 で探索SQL と実行設定にも氏名の検査を当てた
+    assert (versions["rules_version"], versions["parser_version"]) == ("5", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -473,3 +474,45 @@ def test_sc1_filter_semantics(raw, kind, op, value, expected) -> None:
     from kizashi.adapters.cao_procurement import filter_matches
 
     assert filter_matches(raw, kind, op, value) is expected
+
+
+# ---------------------------------------------------------------------------
+# D-037：実行設定の氏名は、取得の後・正規化の前に検査する
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"question": "架空　太郎が担当した契約は、年度間で変わったか"},
+        {"scope": {**SCOPE_OK, "instruction": "記者の指示：架空太郎の担当の契約に絞る"}},
+        {
+            "scope": {
+                **SCOPE_OK,
+                "filters": [{"field": "title", "op": "contains", "value": "架空 太郎"}],
+            }
+        },
+    ],
+)
+def test_run_config_with_personal_name_fails_before_normalize(
+    repo: Path, site: Site, changes: dict
+) -> None:
+    """D-037：run_config の文字列（question・scope の指示と条件の値）に氏名があれば、取得の後・正規化の前に
+    E_V7 で実行を failed にする。行を書かず、設定は inbox/ に残す。エラーに氏名を書かない。"""
+    config = write_config(repo, **changes)
+    with pytest.raises(KizashiError) as info:
+        runner.start_run(repo, "cao-procurement", config, transport=site.transport)
+    err = info.value
+    assert (err.code, err.retryable) == ("E_V7", False)
+    assert "V7_PERSONAL_NAME" in err.message
+    assert "架空" not in err.message and "太郎" not in err.message
+    conn = ledger_of(repo, err.affected_ids[0])
+    run = conn.execute("SELECT state, stop_reason, stages_json FROM runs").fetchone()
+    stop = json.loads(run["stop_reason"])
+    assert (run["state"], stop["stage"], stop["code"]) == ("failed", "normalize", "E_V7")
+    assert "架空" not in stop["message"] and "太郎" not in stop["message"]
+    stages = json.loads(run["stages_json"])
+    assert (stages["fetch"]["state"], stages["normalize"]["state"]) == ("done", "failed")
+    assert conn.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0
+    conn.close()
+    assert (repo / config).is_file()

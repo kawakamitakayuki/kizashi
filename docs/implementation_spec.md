@@ -162,7 +162,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 | `E_DOC_VALUE_MISMATCH` | 1 | 文書値が引用の数値と合わない |
 | `E_BAD_EXPR`・`E_DIV_ZERO` | 1 | 派生計算の誤り（知らない演算、引数の数、計算ID以外の引数、同じ計算IDの重複）、0での割り算 |
 | `E_NOT_ALLOWED_COLUMN` | 1 | 基礎集計に許可していない表・列 |
-| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す） |
+| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す）。`query` の SQL と `run` の実行設定の氏名の検査の不合格（D-037） |
 | `E_LIMIT_LEADS`・`E_LIMIT_EVIDENCE`・`E_LIMIT_HTTP`・`E_LIMIT_BYTES` | 1 | 探索上限への到達（設計書4.3）。保留にする |
 | `E_ROUNDS_EXCEEDED` | 1 | 修正の巡回数の上限。保留以外の結論を受け付けない |
 | `E_HOST_NOT_ALLOWED`・`E_REDIRECT_NOT_ALLOWED` | 1 | 許可リスト外のホスト、許可リスト外へのリダイレクト |
@@ -194,7 +194,7 @@ kizashi run --resume <run_id>
 | --- | --- | --- |
 | `plan` | `dataset.yaml` の取得元から、対象の年度の論理資料（年度×方式×形式）の一覧を作り、`sources` に予定として登録する | 設定とdataset.yaml |
 | `fetch` | 予定の資料を取得する（4.2の規則）。資料ごとに確定する。成功した資料は再開時に取り直さない | 資料の一覧 |
-| `normalize` | CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
+| `normalize` | 最初に、実行設定の文字列（`question`、`scope` の指示と条件の値など）に V7 の氏名の検査を当て、当たれば `E_V7` で止める（氏名の一覧は取得した原本から作るので、ここで行う。D-037）。CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
 | `quality` | 品質検査を行い、`quality_report.md` と `runs.counts_json` に書く。必須の検査が1つでも実行できなければ `failed` | 前の工程の出力 |
 | `reconcile_import` | 別経路の読み込み処理で読み直し、正規化した値と行ごとに比べる（T6a）。資料ごとに照合の計算を1つ登録する | 同上 |
 | `reconcile_source` | CSVの全行をPDFと照合する（T6b。アダプタ仕様7章）。資料の組ごとに照合の計算を1つ登録する | CSVとPDFのSHA-256 |
@@ -257,6 +257,7 @@ kizashi query <run_id> inbox/<名前>.sql
 - `file:<台帳>?mode=ro` で開き、`PRAGMA query_only = ON` にする。
 - SQLiteのauthorizerで、SELECT と読み取りの関数以外（INSERT、UPDATE、DELETE、CREATE、DROP、ATTACH、PRAGMA、拡張の読み込み）を拒否する。
 - 1つの文だけを実行する。`sqlite3.complete_statement` と文の区切りの検査で、複数の文を拒否する。
+- 実行の前に、SQLの全文（文字列とコメントを含む）に V7 の氏名の検査（9章）を当て、当たれば `E_V7` で拒否する。`queries/` にも `accepted/` にも保存せず、提案は `inbox/` に残す（D-037）。
 - 結果は最大50行。実行時間が10秒を超えたら中断する（`set_progress_handler`）。
 - SQLと結果を `queries/` に保存し、`events` に記録する。返すJSONに `"citable": false` を付ける。
 - 成功したらSQLファイルを `accepted/` に写して消す。

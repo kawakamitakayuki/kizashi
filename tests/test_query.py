@@ -125,3 +125,28 @@ def test_qu1_same_name_in_accepted_is_rejected(repo: Path, synthetic_run: str) -
     assert info.value.code == "E_QUERY_REJECTED"
     accepted = repo / "data" / "runs" / synthetic_run / "accepted" / "q-001.sql"
     assert accepted.read_text(encoding="utf-8") == "SELECT 1"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM procurement_contracts WHERE group_key = '架空　太郎'",
+        "-- 架空太郎の担当の契約\nSELECT fiscal_year FROM procurement_contracts",
+    ],
+)
+def test_qu1_personal_name_in_sql_is_e_v7(repo: Path, synthetic_run: str, sql: str) -> None:
+    """QU-1（D-037）：SQL の全文（文字列・コメントを含む）に氏名があれば、実行せずに E_V7。
+    accepted/ にも queries/ にも保存せず、提案は inbox/ に残す。エラーに氏名を書かない。"""
+    arg = write_sql(repo, "q-009.sql", sql)
+    with pytest.raises(KizashiError) as info:
+        query.run_query(repo, synthetic_run, arg)
+    err = info.value
+    assert (err.code, err.stage) == ("E_V7", "query")
+    assert "V7_PERSONAL_NAME" in err.message
+    assert "架空" not in err.message and "太郎" not in err.message
+    run_dir = repo / "data" / "runs" / synthetic_run
+    assert (repo / arg).is_file()
+    assert not (run_dir / "accepted" / "q-009.sql").exists()
+    assert not (run_dir / "queries").exists()
+    conn = ledger_of(repo, synthetic_run)
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'query'").fetchone()[0] == 0

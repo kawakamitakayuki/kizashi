@@ -24,7 +24,8 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #    V7 の氏名の検査の欄）。引用・文書値・取得・V7 の検査の結果が変わる。
 # 4：D-036（引用の数値の範囲に符号・▲・△・先頭の「.」を含める、氏名の検査を提案のすべての文字列に、
 #    比較の条件に強い語の警告）。引用と V7 の検査の結果が変わる。
-RULES_VERSION = "4"
+# 5：D-037（探索SQL と実行設定にも氏名の検査）。query と run の結果が変わる。
+RULES_VERSION = "5"
 
 
 def code_version() -> str:
