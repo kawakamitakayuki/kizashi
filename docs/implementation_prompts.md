@@ -150,15 +150,15 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 
 目的：別経路の読み込み処理（T6a と V3(b) で共有）、取り込みの照合（reconcile_import）、原本照合（reconcile_source）を実装する。
 
-読む資料：設計書5.5、implementation_spec.md の4.1（工程）・7.4、adapter_cao_procurement.md の5章（Q13）・6章・7章（7.4 の変化の区分ごとの照合項目を含む）、docs/decisions.md の D-002・D-003、test_plan.md の IR・PD・QC-3。
+読む資料：設計書5.5、implementation_spec.md の4.1（工程）・7.4、adapter_cao_procurement.md の5章（Q13）・6章・7章（7.4 の変化の区分ごとの照合項目を含む）、docs/decisions.md の D-002・D-003・D-021、test_plan.md の IR・PD・QC-3。
 
 作るもの：
 1. independent_reader.py（見出しの行を「NO」で探し、縦に連結した見出しの文字列で列を特定する。正規化の経路の関数を呼ばない）。
 2. reconcile.py の reconcile_import（論理レコード番号ごとの比較を computations の kind='reconcile' に記録）。
-3. pdftext.py と reconcile.py の reconcile_source（D-002 で決めたライブラリと方法。行の対応と項目の照合を分け、結果を match・mismatch・unverifiable で記録）。項目の照合は adapter 7.3 のとおりにする：金額・法人番号は数値の並びの等しさ（部分一致にしない）、契約日は前後の境界付きの一致、件名・理由は (a) 列の完全一致か (b) 順に取り除いて全文が消えたときだけ match。割合で一致にしない。迷ったら unverifiable。pyproject.toml に D-002 のライブラリを本採用で入れ、版を固定する。
+3. pdftext.py と reconcile.py の reconcile_source（D-002 の方法(a)。adapter 7.1〜7.3：罫線の座標でセルを切り出し、NOの列と照合に使う列以外の文字は捨てる。NOのセルで行を対応させ、行の対応と項目の照合を分け、結果を match・mismatch・unverifiable で記録）。項目の照合は adapter 7.3 のとおりにする：金額・法人番号は数値の並びの等しさ（部分一致にしない）、契約日は前後の境界付きの一致、件名・相手方・方式・理由と数値でない金額はセルとの完全一致。割合で一致にしない。迷ったら unverifiable。公表一覧のPDFのページ別テキストは作らない（D-021）。pdfplumber は D-002 で実行時の依存に入れ、版を固定済み。
 4. quality.py の Q13 を、別経路と正規化の経路の件数・合計の突合に仕上げる。
 5. run の工程 reconcile_import と reconcile_source。
-6. テスト：IR-1、IR-2、PD-1、PD-2、QC-3（PDFのテストは pdftext.extract_pages を monkeypatch し、tests/fixtures/pdf_pages/*.txt の合成のページ別テキストを返す。PDFのライブラリをテストで動かさない）。
+6. テスト：IR-1、IR-2、PD-1、PD-2、QC-3（PDFのテストは pdftext の中で pdfplumber を呼ぶ関数を monkeypatch し、tests/fixtures/pdf_cells/*.json の合成の罫線と文字の座標を返す。PDFのライブラリをテストで動かさない）。
 
 完了条件：合成データで照合の記録が7.4の形で残る。わざと列をずらした正規化の結果を T6a が不一致として出す。実データの令和6・7年度で run を手で動かし、照合の件数（matched・not_found・ambiguous、項目ごとの一致・不一致・照合不能）を報告する。
 
@@ -180,7 +180,7 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 3. calc.py（基礎集計：SQLで行を選び Decimal で合計。条件に record_status = 'adopted' を必ず加える。派生計算：diff・ratio・rate・sum・product の5つの演算だけで、引数は計算IDだけ。数値の定数と同じ計算IDの重複は拒否。文書値：引用の中の数値の並びと値が等しいかで照合し、部分一致にしない）。
 4. quotes.py（implementation_spec 8章）。
 5. query.py（mode=ro、query_only、authorizer、1つの文だけ、50行、10秒、citable: false）。
-6. inspect_cmd.py（implementation_spec 4.3。inspect <run_id> と inspect <ID> --run <run_id>。失効の表示は P0-8 で仕上げるため、ここでは memo_hash の有無だけ）。
+6. inspect_cmd.py（implementation_spec 4.3。inspect <run_id> と inspect <ID> --run <run_id>。候補IDでは同種業務の対応（matches）と係数の提案（coefficients）も表示する（D-023）。失効の表示は P0-8 で仕上げるため、ここでは memo_hash の有無だけ）。
 7. fetch の追加資料・--index・--definition（ページ別テキストの保存、探索上限の計上）。
 8. テスト：IN-1、IN-2、CA-1〜CA-3、QU-1、QT-1、FT-4、KN-2、CP-1（登録まで）。
 
@@ -233,7 +233,7 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 目的：調査のセッションで1件を通す前に、Skill と CLAUDE.md を実装に合わせて見直す。
 
 作業：
-1. .claude/skills/investigate/SKILL.md、record-examples.md、.claude/skills/review-lead/SKILL.md、CLAUDE.md を、ここまでの実装（コマンド、引数、提案の種類、エラーコード）と照らし、食い違いを直す。とくに、inspect <ID> --run <run_id> の形、/review-lead [lead_id] [run_id] の引数、T6a・T6b を提案しないこと、run_config の compare_years・series_years を確かめる。SKILL.md の本文は5,000トークン以内に保つ。
+1. .claude/skills/investigate/SKILL.md、record-examples.md、.claude/skills/review-lead/SKILL.md、CLAUDE.md を、ここまでの実装（コマンド、引数、提案の種類、エラーコード）と照らし、食い違いを直す。とくに、inspect <ID> --run <run_id> の形、/review-lead [lead_id] [run_id] の引数、T6a・T6b を提案しないこと、run_config の compare_years・series_years を確かめる。SKILL.md の本文は5,000トークン以内に保つ。あわせて、adapter_cao_procurement.md の要点（対象年度、比較の単位、単価・指数表記・担当官の所属の注意点、実データの受注者名は書かないこと）を短くまとめた datasets/cao-procurement/README.md を作る（D-024）。
 2. 直した点を報告する。設計書や実装仕様と食い違う直しが要る場合は、直さずに報告する。
 ```
 
@@ -267,8 +267,8 @@ docs/day1_checklist.md の1（権限の試験）の結果を伝える。docs/dec
 作るもの：
 1. check.py の V5〜V7（V7 の氏名の一覧は検査のたびに原本から作り保存しない。強い語は警告）と巡回数の規則。record の時点の V7 の検査をつなぐ。
 2. render <run_id>（実行の概要。候補0件と partial の書き分け。絞り込みがあれば、記者の指示、条件、資料ごとの除いた行の数を「処理の範囲」に出す）。
-3. render --public（受注者名と法人番号の伏せ字、examples/disclosure.allow）。
-4. publish.py（check --publish の P0 の4項目。補助資料のファイル名とハッシュは環境変数 KIZASHI_DENYLIST のファイルから読む）。検査の対象は、ファイル名の一覧ではなく中身にする：作業フォルダーの manifest のファイル、ステージの blob（git ls-files -s）、すべての参照からたどれる履歴の blob（git rev-list --objects --all）。テストは一時の Git リポジトリで行う（PB-1）。
+3. render --public（受注者名と法人番号の伏せ字、examples/disclosure.allow。CSVの受注者名の `?` は implementation_spec.md 12.1 の規則で照らす。D-022）。
+4. publish.py（check --publish の P0 の4項目。`?` を含む値は implementation_spec.md 12.2 の規則で照らす。補助資料のファイル名とハッシュは環境変数 KIZASHI_DENYLIST のファイルから読む）。検査の対象は、ファイル名の一覧ではなく中身にする：作業フォルダーの manifest のファイル、ステージの blob（git ls-files -s）、すべての参照からたどれる履歴の blob（git rev-list --objects --all）。テストは一時の Git リポジトリで行う（PB-1）。
 5. 失効：inspect の失効の表示、check と render の規則の版の照合（E_RULE_VERSION）、fetch --recheck（新しい版の保存、supersedes、古い版に依存する主張の stale、events の recheck）。
 6. テスト：CK-1（V5〜V7）、CK-3、CK-4、RD-3、RD-4、HS-1〜HS-3、PB-1、KN-1、SF-1、SC-1（実行の概要）。
 

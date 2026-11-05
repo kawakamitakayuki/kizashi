@@ -80,7 +80,7 @@ exec claude --permission-mode dontAsk --setting-sources project \
 ```
 
 - 実行の権限を付ける（`chmod +x scripts/investigate`）。
-- `KIZASHI_CLAUDE_VERSION` は、`kizashi run` が実行の記録（`runs.versions_json`）に入れる（実装仕様3.5）。Claudeに版を書かせない。
+- `KIZASHI_CLAUDE_VERSION` は、`kizashi run` が実行の記録（`runs.rule_versions_json`）に入れる（実装仕様3.5）。Claudeに版を書かせない。
 - `dontAsk` で調査が進まない場合は、`--permission-mode default` に変えて起動し直す（設計書9.5）。その場合は `docs/decisions.md` に記録する。
 
 ## 4. `.gitignore`
@@ -183,6 +183,7 @@ argument-hint: "[分野] | [run_id]"
 - 資料は kizashi fetch <run_id> <URL> で取得する（WebFetch は使えない）。
   リンクをたどるだけのページは --index、項目の定義や記入要領は --definition。
 - 取得した資料のページ別テキストは data/runs/<run_id>/evidence/ にある。Grep と Read で読む。
+  公表一覧のPDFにはページ別テキストがない。その記載は kizashi inspect でCSVのレコードを読み、row_ref で引用する。
 - 6つの型（T1〜T5、T6a・T6b・T6c）を一つずつ当てる。T6a（取り込みの誤り）とT6b（公表形式間の食い違い）は
   kizashi が照合の結果から判定するので、提案しない。それ以外は kind: explanation で判定と根拠を登録する。
   未確認には探した範囲を書く。随意契約の理由の欄そのものを、説明の支持の根拠にしない。

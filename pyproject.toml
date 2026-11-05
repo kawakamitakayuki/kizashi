@@ -5,6 +5,7 @@ description = "公開データの年度比較で見つけた変化について�
 requires-python = ">=3.12"
 dependencies = [
     "httpx",
+    "pdfplumber==0.11.10",
     "pyyaml",
 ]
 
@@ -13,7 +14,6 @@ kizashi = "kizashi.cli:main"
 
 [dependency-groups]
 dev = [
-    "pdfplumber>=0.11.10",
     "pytest",
     "ruff",
 ]

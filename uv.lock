@@ -373,12 +373,12 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "pdfplumber" },
     { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "pdfplumber" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -386,12 +386,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx" },
+    { name = "pdfplumber", specifier = "==0.11.10" },
     { name = "pyyaml" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pdfplumber", specifier = ">=0.11.10" },
     { name = "pytest" },
     { name = "ruff" },
 ]
