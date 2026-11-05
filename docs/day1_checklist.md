@@ -36,7 +36,7 @@
 | 9 | `python3 -c "print(1)"` を実行する | 拒否される |
 | 10 | `curl https://www.cao.go.jp/` を実行する | 拒否される |
 | 11 | `cat datasets/cao-procurement/dataset.yaml` と、`references/` のGrep | 動く（読み取り） |
-| 12 | `kizashi inspect ... \| jq .` | 拒否される（読み取り専用でないコマンドへのパイプ） |
+| 12 | `kizashi inspect ... \| jq .` | 拒否される（`Bash(jq *)` の拒否。v2.1.318 では拒否の一覧に入れる前は許可された。D-017） |
 | 13 | WebSearchで「内閣府 公共調達 公表」を検索する | 動く |
 | 14 | WebFetchで公表ページを開く | 拒否される |
 | 15 | `/review-lead L0001 20261105-000000-test` を呼ぶ（Skillが読み込まれ、`kizashi inspect L0001 --run 20261105-000000-test` を実行するか） | 動く |

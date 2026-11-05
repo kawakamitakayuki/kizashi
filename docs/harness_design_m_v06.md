@@ -758,7 +758,7 @@ claude --permission-mode dontAsk --setting-sources project \
        --settings investigate.settings.json
 ```
 
-- **許可したものだけが動くモードで起動する。** Claude Code v2.1.283以降、ターミナルの対話セッションは既定でauto modeで始まり、作業フォルダー内の編集は確認なしで通り、Bashは分類器が判断する【確認済み】。これでは「許可していない操作には記者の確認が出る」という前提が成り立たない。`dontAsk` は、確認を求めるはずの操作をすべて自動で拒否し、許可ルールに当たる操作と、作業フォルダー内の読み取り（Read・Grep・Glob、`cat` や `grep` などの読み取り専用のBash）だけを動かす【確認済み】。そのため調査で使う操作は、下の許可にすべて書く。読み取り専用でないコマンドへのパイプ（`| jq` など）は拒否される。記者は調査中にモードを切り替えない。モードの切り替えを止める設定のキー（`permissions.disableAutoMode` など）は公式に記載があるが、どの設定に書けば効くかは確かめていない（U7）。
+- **許可したものだけが動くモードで起動する。** Claude Code v2.1.283以降、ターミナルの対話セッションは既定でauto modeで始まり、作業フォルダー内の編集は確認なしで通り、Bashは分類器が判断する【確認済み】。これでは「許可していない操作には記者の確認が出る」という前提が成り立たない。`dontAsk` は、確認を求めるはずの操作をすべて自動で拒否し、許可ルールに当たる操作と、作業フォルダー内の読み取り（Read・Grep・Glob、`cat` や `grep` などの読み取り専用のBash）だけを動かす【確認済み】。そのため調査で使う操作は、下の許可にすべて書く。読み取り専用でないコマンドへのパイプは拒否される。ただし、v2.1.318 では `kizashi inspect … | jq .` が許可されたため、`jq` を拒否の一覧に入れる（D-001・D-017）。記者は調査中にモードを切り替えない。モードの切り替えを止める設定のキー（`permissions.disableAutoMode` など）は公式に記載があるが、どの設定に書けば効くかは確かめていない（U7）。
 - `--setting-sources project` で、利用者の設定（`~/.claude/settings.json`）と、開発中に「今後は確認しない」で保存された `.claude/settings.local.json` の許可を読み込まない【確認済み：フラグの存在と値】。`--settings` のファイルはこれと別に読み込まれる（U7で確かめる）。
 - `--tools` は使える組み込みツールを列挙したものだけに絞る【確認済み】。Edit、NotebookEdit、WebFetch、Agentのほか、Artifact、SendMessageなど新しいツールも外れる。拒否するツールを列挙する方式では新しいツールが漏れるため、使ってよいツールのほうを列挙する。macOS・Linux・WSL2ではGrepとGlobは既定のツールに含まれないため、名前を挙げて使えるようにする【確認済み】。`--tools` はMCPのツールには効かない【確認済み】ため、`mcp__*` を拒否する。
 
@@ -780,8 +780,9 @@ claude --permission-mode dontAsk --setting-sources project \
       "Edit(/src/**)", "Edit(/tests/**)", "Edit(/datasets/**)", "Edit(/scripts/**)",
       "Edit(/eval/**)", "Edit(/examples/**)", "Edit(/.claude/**)", "Edit(/.venv/**)",
       "Edit(/CLAUDE.md)", "Edit(/investigate.settings.json)", "Edit(/pyproject.toml)", "Edit(/uv.lock)",
+      "Edit(/docs/**)", "Edit(/README.md)", "Edit(/.gitignore)", "Edit(/.python-version)",
       "NotebookEdit", "WebFetch", "Agent", "mcp__*",
-      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)"
+      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)", "Bash(jq *)"
     ]
   }
 }
