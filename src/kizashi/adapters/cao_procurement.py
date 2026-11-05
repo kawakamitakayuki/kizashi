@@ -66,6 +66,23 @@ CALC_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
 # `<列>_sum`（例 amount_yen_sum）なら、その列の合計と件数を年度ごとに登録し、差額と増減率を作る。
 SUM_LABELS: dict[str, tuple[str, str]] = {"amount_yen": ("契約金額", "円")}
 
+# 別経路の再集計（V3(b)。実装仕様9章）：合計する列 → 原本の列（take のキー）。値は independent_reader の
+# 規則で数にする（金額はアダプタ仕様4.4）。
+REAGG_COLUMNS: dict[str, str] = {"amount_yen": "amount_raw"}
+
+# 変化の区分の日本語名（メモの見出し。実装仕様10.1）。
+CATEGORY_LABELS: dict[str, str] = {
+    "amount_up": "契約金額の増加",
+    "amount_down": "契約金額の減少",
+    "amount_incomparable": "契約金額を比べられない組",
+    "kyoso_to_zuikei": "競争入札から随意契約への変化",
+    "zuikei_to_kyoso": "随意契約から競争入札への変化",
+    "reason_changed": "随意契約の理由の変化",
+}
+
+# 受注先の変化の区分（比較成立に T5 主体の同一性の否定を求める区分。設計書2.1・5.4）。P0 の検出SQLにはない。
+ENTITY_CATEGORIES: tuple[str, ...] = ()
+
 
 # ---------------------------------------------------------------------------
 # 4.3 契約担当官のセル

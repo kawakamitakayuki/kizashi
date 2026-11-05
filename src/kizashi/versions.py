@@ -31,7 +31,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #    run・record の結果が変わる。
 # 8：D-040（実行設定の全文を氏名の検査の後に保存し、検査の前に止まった実行は inbox/ の設定で再開する。探索SQL
 #    の結果・列名・SQLite のエラーの文にも氏名の検査）。run・query の結果が変わる。
-RULES_VERSION = "8"
+# 9：P0-6 で check（V1〜V4・V8、T6a・T6b の機械の判定）と render（候補のメモ、検証記録のハッシュ）を足した。
+#    check・render の結果が変わる。
+RULES_VERSION = "9"
 
 
 def code_version() -> str:
@@ -59,6 +61,8 @@ def git_commit(root: Path) -> str:
 
 
 SQL_DIRS = ("screens", "populations", "series")
+# 照合する版（3.5）。run の再開と、check・render が開始時の記録と照らす。
+COMPARED_VERSIONS = ("dataset_yaml_sha256", "sql_sha256", "rules_version", "parser_version")
 
 
 def sql_sha256(root: Path, domain: str) -> str:
@@ -97,3 +101,9 @@ def knowledge_hashes(root: Path) -> dict[str, str]:
     if not ref.is_dir():
         return {}
     return {p.name: sha256_file(p) for p in sorted(ref.glob("*.md"))}
+
+
+def drift(recorded: dict, root: Path, domain: str) -> list[str]:
+    """開始時に記録した版と、いまの版で違う項目（照合するものだけ）。"""
+    current = rule_versions(root, domain)
+    return [k for k in COMPARED_VERSIONS if recorded.get(k) != current.get(k)]

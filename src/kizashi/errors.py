@@ -108,6 +108,7 @@ class KizashiError(Exception):
         affected_ids: Iterable[str] = (),
         retryable: bool = False,
         next_action: str = "",
+        failures: Iterable[dict] | None = None,
     ) -> None:
         self.exit_code = exit_code_for(code)
         super().__init__(f"{code}: {message}")
@@ -117,9 +118,11 @@ class KizashiError(Exception):
         self.affected_ids = tuple(affected_ids)
         self.retryable = bool(retryable)
         self.next_action = next_action
+        # check の不合格は、すべてを集めて返す（4.6）。code は最初の不合格のコード
+        self.failures = None if failures is None else [dict(f) for f in failures]
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "code": self.code,
             "stage": self.stage,
             "message": self.message,
@@ -127,3 +130,6 @@ class KizashiError(Exception):
             "retryable": self.retryable,
             "next_action": self.next_action,
         }
+        if self.failures is not None:
+            data["failures"] = self.failures
+        return data

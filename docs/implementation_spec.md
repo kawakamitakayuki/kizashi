@@ -78,6 +78,8 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 {"ok": false, "error": {"code": "V3B_REAGG_MISMATCH", "stage": "check", "message": "...", "affected_ids": ["K0007"], "retryable": false, "next_action": "..."}}
 ```
 
+`check` と `render` の検証の不合格は、`code` を最初の不合格のコードにし、`failures` に不合格のすべて（`[{"code", "message", "affected_ids"}]`。9章の表の順）を入れる（D-041①）。
+
 | 終了コード | 意味 |
 | --- | --- |
 | 0 | 成功（警告があっても0） |
@@ -300,7 +302,8 @@ kizashi check --publish examples/publish.manifest --run <run_id>
 ```
 
 - 規則の版を照らす（3.5）。
-- V1〜V8（9章）を順に行い、不合格をすべて集めて返す（最初の1件で止めない）。
+- V1〜V8（9章）を順に行い、不合格をすべて集めて返す（最初の1件で止めない。3.2の `failures`）。P0-6では V1〜V4・V8 を行い、V5・V6と check の時点の V7 は P0-8 で足す（V7 は `record` の時点で行っている）。
+- 不合格でも、T6a・T6bの判定（9章の末尾）、巡回数、`events` の記録は確定する。主張は `checked` にしない（D-041②）。
 - 結論の案が登録されている場合、合格・不合格にかかわらず `leads.rounds` を1増やす。ただし結論の案が保留の場合は数えない。`render` の中の検査も数えない。`rounds` が上限を超えた候補は、保留以外の結論の案を `E_ROUNDS_EXCEEDED` で拒否する。
 - 合格したら、メモに出る主張を `checked` にする。
 - 結果と検証記録のハッシュを `events` に記録する。
