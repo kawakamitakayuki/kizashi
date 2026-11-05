@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import BASE, URL, WEB, Site, evidence_pdf_bytes, ledger_of
+from conftest import BASE, URL, WEB, Site, evidence_pdf_bytes, ledger_of, pdf_bytes
 from kizashi import fetcher, limits
 from kizashi.errors import KizashiError
 
@@ -161,6 +161,23 @@ def test_ft2_dataset_links_in_other_forms_are_refused(
     assert info.value.code == "E_BAD_EVIDENCE_SOURCE"
     assert len(evsite.requests) == before  # 通信していない
     assert ledger_of(repo, synthetic_run).execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 9
+
+
+def test_ft2_same_bytes_as_dataset_on_another_path_are_refused(
+    repo: Path, synthetic_run: str, evsite: Site
+) -> None:
+    """FT-2（D-036）：URL が link_pattern に合わなくても、run が取得した公表一覧の資料と同じ中身なら
+    SHA-256 の照合で拒否し、ページ別テキストを作らない。"""
+    url = "https://www.cao.go.jp/test/copy_of_kohyo.pdf"
+    evsite.routes[url] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=pdf_bytes("k25_pdf")
+    )
+    with pytest.raises(KizashiError) as info:
+        fetch(repo, synthetic_run, evsite, url)
+    assert info.value.code == "E_BAD_EVIDENCE_SOURCE"
+    assert url in evsite.requests
+    assert source(repo, synthetic_run, "S010")["status"] == "failed"
+    assert not (repo / "data" / "runs" / synthetic_run / "evidence").exists()
 
 
 @pytest.mark.parametrize("steps", [1, 2])

@@ -159,6 +159,34 @@ def test_qt1_quote_must_not_cut_a_number(ctx) -> None:
         verify(ctx, evidence)
 
 
+def test_qt1_quote_must_not_drop_a_sign_mark_or_leading_point(ctx) -> None:
+    """QT-1（D-036）：数値の直前の符号（-・－・−・+。前が数字・英字でないもの）と ▲・△、先頭の「.」も
+    数値の一部とみなし、それを落とした引用は E_QUOTE_TRUNCATED。範囲の「-」は符号でない。"""
+    _, root, run_id, _ = ctx
+    sid = add_evidence(
+        root,
+        run_id,
+        [
+            (
+                "増減は-12件。\n\n前年は▲12件。\n\n今年は△12件。\n\n差は－ 12件。\n\n"
+                "比率は.5とする。\n\n範囲は10-15件。\n"
+            )
+        ],
+    )
+    assert sid == "S011"
+    for quote in ("12件。", "5とする。", "差は－"):
+        assert code_of(ctx, ev("S011", {"page": 1}, quote)) == "E_QUOTE_TRUNCATED", quote
+    for quote in (
+        "増減は-12件。",
+        "前年は▲12件。",
+        "今年は△12件。",
+        "差は－ 12件。",
+        "比率は.5とする。",
+        "15件。",  # 「10-15」の「-」は符号でないので、15 から引用してよい
+    ):
+        verify(ctx, ev("S011", {"page": 1}, quote))
+
+
 def test_qt1_fiscal_year_of_record_claim(ctx) -> None:
     """QT-1：「原資料の記載」の fiscal_year と資料（データ）の年度が違えば E_QUOTE_YEAR。"""
     evidence = ev("S005", {"row_ref": "S005:000007", "column": "method_raw"}, "一般競争")

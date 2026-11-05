@@ -91,16 +91,40 @@ def test_v7_findings_collects_fields() -> None:
 
 
 def test_v7_names_only_fields_skip_numbers_but_not_names() -> None:
-    """V7（D-035）：数値の検査を当てない欄（比較の条件、単位、比較の単位、係数の key）にも氏名の検査を当てる。"""
+    """V7（D-035・D-036）：数値の検査を当てない欄（比較の条件、単位、引用など）にも氏名の検査を当てる。
+    強い語の警告は words_only の欄（比較の条件）にも出す（不合格にはしない）。"""
     names = check.name_variants([("架空", "太郎")])
+    comparison = {
+        "comparison.row_meaning": "1件の契約",
+        "comparison.population": "架空　太郎が担当した契約で、不正の有無は問わない",
+    }
     errors, warnings = check.v7_findings(
         {"text": "合計を見た。"},
         names=names,
-        names_only={
-            "comparison.row_meaning": "1件の契約",
-            "comparison.population": "架空　太郎が担当した契約で、不正の有無は問わない",
-            "unit": "円",
-        },
+        names_only={**comparison, "unit": "円", "evidence[0].quote": "担当は架空太郎とする。"},
+        words_only=comparison,
     )
-    assert errors == [{"code": "V7_PERSONAL_NAME", "field": "comparison.population", "at": [0, 5]}]
-    assert warnings == []  # 強い語の警告の範囲は変えない
+    assert errors == [
+        {"code": "V7_PERSONAL_NAME", "field": "comparison.population", "at": [0, 5]},
+        {"code": "V7_PERSONAL_NAME", "field": "evidence[0].quote", "at": [3, 7]},
+    ]
+    assert warnings == [{"code": "W7_STRONG_WORD", "field": "comparison.population", "hit": "不正"}]
+
+
+def test_string_leaves_walks_nested_values() -> None:
+    """D-036：提案の中の文字列の値を、入れ子（辞書・配列）も含めて欄の道筋と一緒に取り出す。"""
+    data = {
+        "kind": "claim",
+        "text": "本文",
+        "calc_ids": ["K0001"],
+        "evidence": [{"quote": "引用", "position": {"page": 1}}],
+        "comparison": {"population": "母集団"},
+        "flag": True,
+    }
+    assert list(check.string_leaves(data)) == [
+        ("kind", "claim"),
+        ("text", "本文"),
+        ("calc_ids[0]", "K0001"),
+        ("evidence[0].quote", "引用"),
+        ("comparison.population", "母集団"),
+    ]
