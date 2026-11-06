@@ -251,3 +251,30 @@ def test_knowledge_quote_is_checked_in_references(tmp_path: Path) -> None:
             tmp_path, {"file": "notes", "locator": "x", "quote": "テスト"}
         )
     assert info.value.code == "E_SCHEMA"
+
+
+def test_qt1_number_joined_across_pdf_line_break_explains_why() -> None:
+    """QT-1（D-031④・D-033。P0-7 の調査のセッションで詰まった箇所）：PDF の行の終わりは段落の終わりにしないので、
+    前の行の終わりの数字と次の行の始めの数字は1つの数値として読む（合成の「別紙２」の次の行の「２０２４（令和６）
+    年度…」は「22024」）。その途中から始めた引用は E_QUOTE_TRUNCATED のままだが、不合格の文で、前の行の数字と
+    つながったことと、数値を含まず文末で終わる文を引用することを案内する。"""
+    page = ["別紙２\n２０２４（令和６）年度契約状況（国内調達事業）\n契約件名 契約額"]
+    with pytest.raises(KizashiError) as info:
+        quotes._match(page, "２０２４（令和６）年度契約状況（国内調達事業）", "合成資料", ())
+    assert info.value.code == "E_QUOTE_TRUNCATED"
+    assert "前の行" in info.value.message and "PDF の行の終わり" in info.value.message
+
+
+def test_qt1_role_error_points_to_oppose(ctx) -> None:
+    """QT-1（6.1。P0-7 の調査のセッションで詰まった箇所）：根拠の role に判定の値（refute）を書くと E_SCHEMA で、
+    不合格の文が、反する根拠は oppose で、判定の judgment の値とは別だと案内する。"""
+    evidence = {
+        "source_id": "S010",
+        "position": {"page": 2},
+        "quote": "本年度は配送先を変更する予定はない。",
+        "role": "refute",
+    }
+    with pytest.raises(KizashiError) as info:
+        verify(ctx, evidence)
+    assert info.value.code == "E_SCHEMA"
+    assert "oppose" in info.value.message and "judgment" in info.value.message

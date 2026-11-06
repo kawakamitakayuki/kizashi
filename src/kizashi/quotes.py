@@ -134,7 +134,10 @@ def _match(segments: list[str], quote: str, where: str, affected: tuple) -> None
     ]
     if not whole:
         raise _truncated(
-            f"引用が資料の数値の途中で始まるか、途中で終わる（{where}。数値は全体を引用する）。",
+            f"引用が資料の数値の途中で始まるか、途中で終わる（{where}。数値は全体を引用する）。"
+            "PDF の行の終わりは段落の終わりにしないので、前の行の終わりの数字と次の行の始めの数字は1つの数値として"
+            "読む（例：「別紙２」の次の行の「２０２４年度」）。その場合は、数値を含まず文末で終わる別の文を引用する"
+            "（D-031④）。",
             affected,
         )
     run_set = set(runs)
@@ -230,7 +233,10 @@ def verify_quote(
     if not isinstance(quote, str) or not quote.strip():
         raise _schema("quote が空でない文字列でない。")
     if role not in ROLES:
-        raise _schema(f"role は {'・'.join(ROLES)} のどれか：{role!r}")
+        raise _schema(
+            f"role は {'・'.join(ROLES)} のどれか：{role!r}（根拠の役割。support は支える、oppose は反する、"
+            "background は背景。判定の judgment の値（refute など）とは別）"
+        )
     if not isinstance(position, dict):
         raise _schema("position がオブジェクトでない。")
 

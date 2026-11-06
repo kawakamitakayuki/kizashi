@@ -9,6 +9,7 @@ argument-hint: "[分野] | [run_id]"
 
 ## このセッションで守ること
 - 書いてよいのは inbox/ 直下の .json と .sql だけ。ほかのファイルは書かない。
+- Bash で実行できるのは kizashi のコマンドだけ（ls・cat なども使えない）。ファイルを探すときは Glob、読むときは Read と Grep。
 - 件数・金額・比率は自分で計算しない。inbox/ に calc・derive・doc_value の提案を書き、
   kizashi record <run_id> inbox/<名前>.json で計算させる。本文では {calc:ID} で参照する。
   record が通った提案は accepted/ に移る。通らなければ inbox/ に残るので、Read してから直す。
@@ -30,8 +31,9 @@ argument-hint: "[分野] | [run_id]"
   所属は契約担当官の所属で、約4分の3の契約は会計担当の参事官が結んでいる。部局で絞るよう指示されたら、
   所属で絞れるかを inspect と query で確かめ、絞れなければ件名の語で近似するかを記者に確かめる。
   業界で絞る列はないので、そう指示されたら制約を伝え、件名の語で近似するかを記者に確かめる。
-  決めた内容を inbox/run-config.json に書く（比べる2年度 compare_years、系列として読む年度 series_years、model。
-  compare_years は連続した2年度、series_years は compare_years を含む。Claude Code の版は書かない。起動スクリプトが渡す）。
+  決めた内容を inbox/run-config.json に書く。項目は kind（"run_config"）、domain、compare_years（比べる2年度。連続した2年度）、
+  series_years（系列として読む年度。compare_years を含む）、question、model で、形は record-examples.md の例のとおり。
+  Claude Code の版は書かない（起動スクリプトが渡す）。
 - kizashi run <分野> --config inbox/run-config.json を実行する。
   止まった実行は kizashi run --resume <run_id>。partial・completed は再開できない。
 

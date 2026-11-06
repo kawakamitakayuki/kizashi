@@ -143,6 +143,7 @@ argument-hint: "[分野] | [run_id]"
 
 ## このセッションで守ること
 - 書いてよいのは inbox/ 直下の .json と .sql だけ。ほかのファイルは書かない。
+- Bash で実行できるのは kizashi のコマンドだけ（ls・cat なども使えない）。ファイルを探すときは Glob、読むときは Read と Grep。
 - 件数・金額・比率は自分で計算しない。inbox/ に calc・derive・doc_value の提案を書き、
   kizashi record <run_id> inbox/<名前>.json で計算させる。本文では {calc:ID} で参照する。
   record が通った提案は accepted/ に移る。通らなければ inbox/ に残るので、Read してから直す。
@@ -164,8 +165,9 @@ argument-hint: "[分野] | [run_id]"
   所属は契約担当官の所属で、約4分の3の契約は会計担当の参事官が結んでいる。部局で絞るよう指示されたら、
   所属で絞れるかを inspect と query で確かめ、絞れなければ件名の語で近似するかを記者に確かめる。
   業界で絞る列はないので、そう指示されたら制約を伝え、件名の語で近似するかを記者に確かめる。
-  決めた内容を inbox/run-config.json に書く（比べる2年度 compare_years、系列として読む年度 series_years、model。
-  compare_years は連続した2年度、series_years は compare_years を含む。Claude Code の版は書かない。起動スクリプトが渡す）。
+  決めた内容を inbox/run-config.json に書く。項目は kind（"run_config"）、domain、compare_years（比べる2年度。連続した2年度）、
+  series_years（系列として読む年度。compare_years を含む）、question、model で、形は record-examples.md の例のとおり。
+  Claude Code の版は書かない（起動スクリプトが渡す）。
 - kizashi run <分野> --config inbox/run-config.json を実行する。
   止まった実行は kizashi run --resume <run_id>。partial・completed は再開できない。
 
@@ -283,7 +285,7 @@ Claude Code の版は書かない（`scripts/investigate` が `KIZASHI_CLAUDE_VE
  "quote": "令和6年度の配送予定数量は年間1,000件とした。", "value": "1000", "label": "令和6年度の年間配送数量（仕様書の記載）", "unit": "件"}
 ```
 
-数値は途中で切らずに、直前の符号や `▲`・`△` も含めて全体を引用する（`1,200` の `200` だけ、`1.5` の `1.` まで、`-12件` の `12件` だけの引用は通らない）。範囲の `10-15件` の `-15件` のように、符号でない `-` から始めた引用も通らない（`範囲は10-15件。` のように引用する）。負の数は符号ごと書く（`増減は-12件。` なら `"value": "-12"`）。`▲`・`△` の付いた数値は文書値にできないので、意味を記者に確かめる。どの提案でも、引用・条件の値・比較の条件を含め、担当官などの氏名を書かない（氏名を含まない範囲を引用する）。
+数値は途中で切らずに、直前の符号や `▲`・`△` も含めて全体を引用する（`1,200` の `200` だけ、`1.5` の `1.` まで、`-12件` の `12件` だけの引用は通らない）。範囲の `10-15件` の `-15件` のように、符号でない `-` から始めた引用も通らない（`範囲は10-15件。` のように引用する）。負の数は符号ごと書く（`増減は-12件。` なら `"value": "-12"`）。`▲`・`△` の付いた数値は文書値にできないので、意味を記者に確かめる。PDF の行の終わりは段落の終わりにならない。見出しや表の行のように「。」で終わらない文は、空行かページの終わりの直前まで含めないと通らない。前の行の終わりの数字と次の行の始めの数字は1つの数値として読む（「別紙２」の次の行の「２０２４年度…」は「22024」）。こうした箇所は、数値を含まず文末で終わる別の文を引用する。どの提案でも、引用・条件の値・比較の条件を含め、担当官などの氏名を書かない（氏名を含まない範囲を引用する）。
 
 ## hypothesis
 ```json
@@ -320,6 +322,7 @@ Claude Code の版は書かない（`scripts/investigate` が `KIZASHI_CLAUDE_VE
  "evidence": [{"source_id": "S006", "position": {"row_ref": "S006:000003", "column": "method_raw"}, "quote": "一般競争", "role": "support"}]}
 ```
 CSVの `column` は `kizashi inspect <row_ref> --run <run_id>` に出るキー（`amount_raw` など）で書く。見出しの文字列（`契約金額`）では書かない。
+根拠（`evidence`）の `role` は `support`（支える）・`oppose`（反する）・`background`（背景）の3つ。判定の `judgment`（`support`・`refute`・`unknown`・`na`）とは別の値で、`refute` は書けない。
 
 ## explanation（T1〜T5・T6c。T6a・T6bは kizashi が登録するので書かない）
 未確認は `"judgment": "unknown"`、`"evidence": []` とし、`searched` に探した範囲を書く（T6c は未確認でよい）。支持の T1・T3・T4 には `scope` と、`recalc_calc_id` か `no_quant_reason` が要る。説明の状況（結論の `explanation_status`）を「全部」「一部」にするときは、支持の判定に根拠と、説明を反映した値（`recalc_calc_id`）と残る差（`residual_calc_id`）を書く。
@@ -431,7 +434,8 @@ argument-hint: "[lead_id] [run_id]"
 1. kizashi inspect <lead_id> --run <run_id> で、計算、系列、同じ区分の件数、比較の条件、判定、主張、
    取材質問、同種業務の対応（matches）、係数の提案（coefficients）を読む。
    T6a・T6bの判定は kizashi check が照合の結果から登録する。自分で explanation を書かない。
-   結論の案を登録する前の check は巡回数に数えないので、判定を見るために先に1回実行してよい。
+   結論の案を登録する前の check は巡回数に数えないので、判定を見るために先に1回実行してよい（結論の案がないので
+   V8_REQUIRED_MISSING で不合格になるが、T6a・T6b は登録される。判定は inspect の explanations で読む）。
 2. 6つの型を当て、型ごとに支持・否定の資料を探す。一般論だけで「否定」にしない。
    説明の根拠は、説明する記録の外（公募の結果、仕様書、制度の改正など）に求める。
 3. 同じ区分の件数が多ければ、「固有のニュースではない」可能性として記録する。
