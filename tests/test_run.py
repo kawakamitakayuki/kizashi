@@ -115,7 +115,7 @@ def test_run_completed_with_synthetic_data(
     # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した。
     # 9：P0-6 で check（V1〜V4・V8）と render（候補のメモ）を足した。10：D-041 の修正。11：D-042 の修正。
     # 12：D-043 の修正。13：D-044 の修正
-    assert (versions["rules_version"], versions["parser_version"]) == ("13", "cao-procurement/1")
+    assert (versions["rules_version"], versions["parser_version"]) == ("14", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
