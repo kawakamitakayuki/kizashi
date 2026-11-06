@@ -10,6 +10,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from kizashi import paths
@@ -71,9 +72,32 @@ def record_id(source_id: str, logical_no: int) -> str:
     return f"{source_id}:{logical_no:06d}"
 
 
+def decimal_cmp(a: object, b: object) -> int | None:
+    """2つの値を十進数（Decimal）として比べ、-1・0・1 を返す（D-081。分野の SQL が使う decimal_cmp）。
+
+    SQLite の REAL にすると、十進数では異なる値（1000000000.0000003 と …004）が同じになるため。
+    どちらかが NULL、空、十進数として読めない、有限でない（NaN・無限大）なら None（SQL の NULL）。
+    """
+    if a is None or b is None:
+        return None
+    try:
+        x, y = Decimal(str(a)), Decimal(str(b))
+    except InvalidOperation:
+        return None
+    if not (x.is_finite() and y.is_finite()):
+        return None
+    return (x > y) - (x < y)
+
+
+def register_functions(conn: sqlite3.Connection) -> None:
+    """台帳の接続に、分野の SQL が使う関数を登録する（D-081）。"""
+    conn.create_function("decimal_cmp", 2, decimal_cmp, deterministic=True)
+
+
 def _configure(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    register_functions(conn)
 
 
 def ledger_path(root: Path, run_id: str) -> Path:
@@ -123,6 +147,7 @@ def open_ro(root: Path, run_id: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA query_only = ON")
+    register_functions(conn)
     return conn
 
 

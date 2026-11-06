@@ -150,8 +150,14 @@ def exponent_matches(number: str, raw: str | None) -> bool:
     match = _EXPONENT_PARTS_RE.fullmatch(nfkc(raw or "").strip())
     if match is None:
         return False
-    lead, fraction, exponent = match.group(1), match.group(2), int(match.group(3))
-    shift = exponent - len(fraction)
+    lead, fraction, exponent_text = match.group(1), match.group(2), match.group(3)
+    # 値の指数は（桁の数 − 1）で、仮数を四捨五入して 10.0… に繰り上がれば桁の数になる。それ以外の指数には
+    # 対応し得ないので、大きなべき乗や長い数を作る前に合わないとする（D-080。decimal.Overflow や
+    # int の桁の上限で実行全体を止めない）
+    digits = len(str(int(number)))
+    if len(exponent_text) > 2 or int(exponent_text) not in (digits - 1, digits):
+        return False
+    shift = int(exponent_text) - len(fraction)
     if shift < 0:
         return False
     rounded = (Decimal(int(number)) / (Decimal(10) ** shift)).quantize(

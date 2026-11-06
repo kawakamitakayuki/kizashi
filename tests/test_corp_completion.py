@@ -11,6 +11,7 @@ import json
 import unicodedata
 from pathlib import Path
 
+import httpx
 import pytest
 
 from conftest import Site, ledger_of, write_config
@@ -244,3 +245,60 @@ def test_cn1_run_without_pdf_numbers_keeps_exponent(repo: Path, site: Site) -> N
     ).fetchone()
     conn.close()
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# 回帰（D-080）：13桁に対応し得ない指数は、べき乗を計算せずに合わない（未確定）とする
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "1.00000E+1000010",  # 指数が大きすぎる（10 の 1000005 乗を作ると decimal.Overflow）
+        "1.0E+" + "1" * 5000,  # 指数の文字列が長すぎる（int にすると ValueError）
+        "1." + "0" * 5000 + "E+12",  # 仮数の桁が長すぎる
+        "1.00000E+11",  # 13桁の値（10の12乗以上）には対応しない指数
+        "1.00000E+14",
+        "1.00000E+0",
+    ],
+)
+def test_cn1_regression_d080_exponent_out_of_range(raw: str) -> None:
+    """CN-1 回帰（D-080）：対応し得ない指数表記は例外にせず False。補完は significant_digits で未確定。"""
+    assert normalize.exponent_matches("1000000000008", raw) is False
+    assert pdftext.corp_completion(raw, "1000000000008", MATCHED) == (
+        {"state": "unconfirmed", "failed": ["significant_digits"]},
+        None,
+    )
+
+
+def test_cn1_regression_d080_run_continues(
+    repo: Path, site: Site, pdf_with_corp_numbers: None
+) -> None:
+    """CN-1 回帰（D-080）：CSV の NO 1 の法人番号が `1.00000E+1000010` でも実行は完了し、その行は未確定。"""
+    from conftest import URL, fixture_bytes
+
+    data = fixture_bytes("kyoso_2024_mini.csv")
+    assert data.count(b"1.00000E+12") == 7  # 指数表記の行（NO 1・5・6・8・10・11・12）
+    site.routes[URL["k24_csv"]] = httpx.Response(
+        200,
+        headers={"content-type": "text/csv"},
+        content=data.replace(b"1.00000E+12", b"1.00000E+1000010", 1),
+    )
+    result = run(repo, site)
+    rows = source_rows(repo, result["run_id"], "S001")["rows"]
+    assert rows["S001:000001"]["corp_completion"] == {
+        "state": "unconfirmed",
+        "failed": ["significant_digits"],
+    }
+    conn = ledger_of(repo, result["run_id"])
+    state = conn.execute(
+        "SELECT corp_number_state, corp_numbers_json FROM procurement_contracts"
+        " WHERE record_id = 'S001:000001'"
+    ).fetchone()
+    conn.close()
+    assert tuple(state) == ("exponent", "[]")
+    assert result["reconcile_source"]["S001"]["corp_completion"] == {
+        "valid_from_pdf": 0,
+        "unconfirmed": 7,
+    }

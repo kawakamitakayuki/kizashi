@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from conftest import DROPPED_WORDS, NAME_WORDS, REPO
+from kizashi import ledger as kizashi_ledger
 from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 
@@ -129,6 +130,7 @@ def ledger() -> sqlite3.Connection:
     """共通の表と PRTR の表に、dataset.yaml の取り込む列だけを入れた台帳（メモリー上）。"""
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON")
+    kizashi_ledger.register_functions(conn)  # 検出SQLの decimal_cmp（D-081）
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     conn.executescript((PRTR / "tables.sql").read_text(encoding="utf-8"))
     cfg = config()
@@ -288,3 +290,100 @@ def test_pr1_cli_does_not_run_prtr(tmp_path: Path) -> None:
     with pytest.raises(KizashiError) as exc:
         load_adapter(REPO, "prtr")
     assert exc.value.code == "E_USAGE"
+
+
+# ---------------------------------------------------------------------------
+# 回帰（D-081）：量は十進数として正確に比べる（REAL にしない）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ("1000000000.0000003", "1000000000.0000004", -1),  # REAL では同じになる差 0.0000001
+        ("1000000000.0000004", "1000000000.0000003", 1),
+        ("3.0", "3.00", 0),
+        ("12.0", "3.5", 1),
+        ("0.0", "0", 0),
+        (None, "1.0", None),
+        ("1.0", "", None),
+        ("abc", "1.0", None),
+        ("NaN", "1.0", None),
+        ("1.0", "Infinity", None),
+    ],
+)
+def test_pr1_regression_d081_decimal_cmp(a: object, b: object, expected: object) -> None:
+    """PR-1 回帰（D-081）：decimal_cmp は十進数として -1・0・1 を返し、十進数でなければ NULL。"""
+    conn = sqlite3.connect(":memory:")
+    kizashi_ledger.register_functions(conn)
+    assert conn.execute("SELECT decimal_cmp(?, ?)", (a, b)).fetchone()[0] == expected
+
+
+def test_pr1_regression_d081_ledger_connections_have_decimal_cmp(tmp_path: Path) -> None:
+    """PR-1 回帰（D-081）：台帳の作成・書き込み用・読み取り専用の接続に decimal_cmp がある。"""
+    root = tmp_path / "repo"
+    (root / "data" / "runs").mkdir(parents=True)
+    run_id = "20261107-000000-test"
+    sql = "SELECT decimal_cmp('1000000000.0000003', '1000000000.0000004')"
+    conn = kizashi_ledger.create(root, run_id)
+    assert conn.execute(sql).fetchone()[0] == -1
+    conn.close()
+    for opener in (kizashi_ledger.open_rw, kizashi_ledger.open_ro):
+        conn = opener(root, run_id)
+        assert conn.execute(sql).fetchone()[0] == -1
+        conn.close()
+
+
+def set_air(conn: sqlite3.Connection, record_id: str, value: str) -> None:
+    conn.execute("UPDATE prtr_releases SET air = ? WHERE record_id = ?", (value, record_id))
+
+
+def test_pr1_regression_d081_tiny_decimal_difference(ledger: sqlite3.Connection) -> None:
+    """PR-1 回帰（D-081）：1000000000.0000003 → 1000000000.0000004（差 0.0000001 kg）を増加の候補にする。"""
+    set_air(ledger, "S002:000001", "1000000000.0000003")
+    set_air(ledger, "S004:000001", "1000000000.0000004")
+    got = screen(ledger, year_from=2023, year_to=2024, pref="東京都", substance_code="999")
+    first = [r for r in got if r["lead_key"].startswith("0000000000001|")]
+    assert [(r["change_category"], r["row_refs_from"], r["row_refs_to"]) for r in first] == [
+        ("air_release_up", ["S002:000001"], ["S004:000001"])
+    ]
+    set_air(ledger, "S004:000001", "1000000000.0000002")
+    got = screen(ledger, year_from=2023, year_to=2024, pref="東京都", substance_code="999")
+    assert [r["change_category"] for r in got if r["lead_key"].startswith("0000000000001|")] == [
+        "air_release_down"
+    ]
+
+
+def test_pr1_regression_d081_same_decimal_other_notation(ledger: sqlite3.Connection) -> None:
+    """PR-1 回帰（D-081）：表記が違っても十進数として同じ値（12.0 と 12.00）は候補にしない。"""
+    set_air(ledger, "S002:000001", "12.0")
+    set_air(ledger, "S004:000001", "12.00")
+    got = screen(ledger, year_from=2023, year_to=2024, pref="東京都", substance_code="999")
+    assert not [r for r in got if r["lead_key"].startswith("0000000000001|")]
+
+
+def test_pr1_regression_d081_not_decimal(ledger: sqlite3.Connection) -> None:
+    """PR-1 回帰（D-081）：十進数として読めない値は黙って落とさず、比較できない候補にして除く。"""
+    set_air(ledger, "S004:000001", "不明")
+    got = screen(ledger, year_from=2023, year_to=2024, pref="東京都", substance_code="999")
+    first = [r for r in got if r["lead_key"].startswith("0000000000001|")]
+    assert len(first) == 1
+    assert first[0]["change_category"] == "air_release_incomparable"
+    assert first[0]["excluded_to"] == [{"ref": "S004:000001", "reason": "air_not_decimal"}]
+    assert first[0]["incomparable_reasons"] == ["air_not_decimal"]
+
+
+def test_pr1_regression_d081_not_decimal_both_years(ledger: sqlite3.Connection) -> None:
+    """PR-1 回帰（D-081）：両年度とも十進数として読めなくても落とさず、両方を除いた比較できない候補にする。"""
+    set_air(ledger, "S002:000001", "不明")
+    set_air(ledger, "S004:000001", "－")
+    got = screen(ledger, year_from=2023, year_to=2024, pref="東京都", substance_code="999")
+    first = [r for r in got if r["lead_key"].startswith("0000000000001|")]
+    assert [(r["change_category"], r["excluded_from"], r["excluded_to"]) for r in first] == [
+        (
+            "air_release_incomparable",
+            [{"ref": "S002:000001", "reason": "air_not_decimal"}],
+            [{"ref": "S004:000001", "reason": "air_not_decimal"}],
+        )
+    ]
+    assert first[0]["incomparable_reasons"] == ["air_not_decimal"]

@@ -330,6 +330,7 @@ kizashi render <run_id> [--public]
 ### 4.8 検出と自動の基礎集計（`run` の `detect`）
 
 - `datasets/<分野>/screens/*.sql` を順に実行する。各SQLは、名前付きのパラメーター `:year_from` と `:year_to`（`compare_years`）を受け取り、次の列を返す（アダプタ仕様9章）。
+- 台帳の接続（`ledger.create`・`open_rw`・`open_ro`）には、関数 `decimal_cmp(a, b)` を登録する。2つの値を Decimal で比べて -1・0・1 を返し、どちらかが NULL・空・十進数として読めない・有限でないなら NULL を返す。小数を持つ量を比べる分野の SQL は、REAL にせずこれで比べる（D-081）。探索SQL の接続には登録しない。
 
 | 列 | 中身 |
 | --- | --- |
