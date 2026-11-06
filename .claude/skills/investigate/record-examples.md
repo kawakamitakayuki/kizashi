@@ -134,7 +134,7 @@ CSVの `column` は `kizashi inspect <row_ref> --run <run_id>` に出るキー�
  "searched": "公表元の告知、令和6・7年度の公募と企画競争の公告",
  "evidence": [{"source_id": "S013", "position": {"page": 1}, "quote": "令和7年度から、調査研究の委託は企画競争により相手方を選ぶこととした。", "role": "support"}]}
 ```
-`reflected_conditions` には、その残りを選ぶ条件を書く（説明できる行を選ぶ条件ではない）。条件は、その件数の条件にあり、候補の計算の条件になく、`fiscal_year`・`record_id`・`group_key`・`method_family` でないもの。その年度の候補の行に `reflected_conditions` だけを当てた行が、件数の行と一致しなければならない。件数の行は、その年度の候補の行の一部でなければならない。0件、件数が変わらない、一部だけ残る、のどれでも check は通るが、件数から説明の状況は決まらない（0件でも「全部」と決めつけず、残りを選ぶ条件が根拠の説明する範囲と合うかを記者に確かめてもらう）。条件の列が空の行（競争入札の行の `reason_category` など）は、`is_null` 以外の条件（`!=` を含む）に当たらず残りから外れ、説明できる行として扱われてしまう。そうなる条件（`=`・`!=`・`in`・`not_null`）は、check が判定ごとに `V8_EXPLANATION_STATUS` で拒否する（別の説明が合格していても）。空の行を残りに残すなら `is_null` を使う。定量化できなければ残りの件数を使わず、`scope` を `unknown` にして `no_quant_reason` と、目的が `reason_breakdown` の質問で扱う。
+`reflected_conditions` には、その残りを選ぶ条件を書く（説明できる行を選ぶ条件ではない）。条件は、その件数の条件にあり、候補の計算の条件になく、`fiscal_year`・`record_id`・`group_key`・`method_family` でないもの。その年度の候補の行に `reflected_conditions` だけを当てた行が、件数の行と一致しなければならない。件数の行は、その年度の候補の行の一部でなければならない。0件、件数が変わらない、一部だけ残る、のどれでも check は通るが、件数から説明の状況は決まらない（0件でも「全部」と決めつけず、残りを選ぶ条件が根拠の説明する範囲と合うかを記者に確かめてもらう）。条件の列が空の行（競争入札の行の `reason_category` など）は、`is_null` 以外の条件（`!=` を含む）に当たらず残りから外れ、説明できる行として扱われてしまう。そうなる条件（`=`・`!=`・`in`・`not_null`）は、check が判定ごとに `V8_EXPLANATION_STATUS` で拒否する（別の説明が合格していても）。拒否されないのは、その行が `reflected_conditions` に宣言した説明用の条件（`fiscal_year`・`record_id`・`group_key`・`method_family` でないもの）で、空でない値によって外れる場合だけ。集計にだけ足して宣言しない条件では外せない。空の行を残りに残すなら `is_null` を使う。定量化できなければ残りの件数を使わず、`scope` を `unknown` にして `no_quant_reason` と、目的が `reason_breakdown` の質問で扱う。
 
 ## question
 ```json

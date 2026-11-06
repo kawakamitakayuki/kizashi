@@ -1807,8 +1807,9 @@ def test_d048_applies_to_every_memo_with_a_residual(repo: Path, synthetic_run: s
 def test_d048_row_excluded_by_another_condition_is_not_flagged(
     repo: Path, synthetic_run: str
 ) -> None:
-    """V8（D-048）：列が空の行でも、空でない別の条件で外れる行は、空の値で外れた行としない（S001:000003 は
-    unit_price = 0 なので、unit_price = 1 の条件で外れる）。形の検査も通り、合格する。"""
+    """V8（D-048・D-049）：列が空の行でも、reflected_conditions に宣言した説明用の条件で、空でない値によって外れる
+    行は、空の値で外れた行としない（S001:000003 は unit_price = 0 なので、宣言した unit_price = 1 の条件で外れる）。
+    形の検査も通り、合格する。"""
     lead = s2_lead(repo, synthetic_run)
     lid = lead["lead"]
     evidence = rule_change_evidence(repo, synthetic_run)
@@ -1816,3 +1817,47 @@ def test_d048_row_excluded_by_another_condition_is_not_flagged(
     residual = _s2_count(repo, synthetic_run, 2024, conditions)
     rec(repo, synthetic_run, _support(lid, residual, conditions, evidence))
     assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# D-049 の回帰（先に失敗するテストとして書いた）
+# ---------------------------------------------------------------------------
+
+UNIT_PRICE_1 = {"col": "unit_price", "op": "=", "value": 1}
+ZUIKEI = {"col": "method_family", "op": "=", "value": "zuikei"}
+
+
+@pytest.mark.parametrize(
+    ("extra", "declared"),
+    [
+        (UNIT_PRICE_1, [NOT_PLANNING]),
+        (ZUIKEI, [NOT_PLANNING]),
+        (ZUIKEI, [NOT_PLANNING, ZUIKEI]),
+    ],
+    ids=["undeclared-unit-price", "undeclared-method-family", "declared-method-family"],
+)
+def test_d049_only_declared_explanation_conditions_exempt_null_rows(
+    repo: Path, synthetic_run: str, extra: dict, declared: list[dict]
+) -> None:
+    """V8（D-049）：空の値で外れた行の検査（D-048）を免除する「別の条件」は、その判定の reflected_conditions に宣言し、
+    説明用として認める条件（候補を選び直すだけの列 fiscal_year・record_id・group_key・method_family でないもの）に
+    限る。S2 の令和6年度の候補の行 S001:000003（reason_category は空、unit_price は0、競争入札）を、宣言していない
+    unit_price = 1・method_family = zuikei、または宣言しても説明用に認めない method_family = zuikei を集計に足して
+    外しても、宣言した reason_category != planning_competition だけで空の値によって0件になるので、免除せず
+    V8_EXPLANATION_STATUS。render はメモを書かない。"""
+    from kizashi import render
+
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    residual = _s2_count(repo, synthetic_run, 2024, [NOT_PLANNING, extra])
+    rec(repo, synthetic_run, _support(lid, residual, declared, evidence))
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lid)
+    assert set(codes(info)) == {"V8_EXPLANATION_STATUS"}
+    null = [f for f in info.value.failures if NULL_ROW in f["message"]]
+    assert len(null) == 1 and "reason_category" in null[0]["message"]
+    assert {lid, residual, NULL_ROW} <= set(null[0]["affected_ids"])
+    with pytest.raises(KizashiError):
+        render.render_lead(repo, synthetic_run, lid)
+    assert not list((repo / "data" / "runs" / synthetic_run / "memos").glob(f"{lid}.*"))
