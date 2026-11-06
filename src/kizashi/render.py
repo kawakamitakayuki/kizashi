@@ -65,7 +65,8 @@ COMPARISON_NAMES = {
     "formula": "算式",
 }
 HYPOTHESIS_RESULT_NAMES = {
-    "kept": "維持（取り下げ条件は満たされなかった）",
+    # 維持の判断だけを示す。取り下げ条件を調べて否定したことまでは書かない（P0-7 の後のレビュー）
+    "kept": "維持",
     "withdrawn": "取り下げた",
 }
 COEF_STATUS_NAMES = {

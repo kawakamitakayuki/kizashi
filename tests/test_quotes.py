@@ -254,15 +254,18 @@ def test_knowledge_quote_is_checked_in_references(tmp_path: Path) -> None:
 
 
 def test_qt1_number_joined_across_pdf_line_break_explains_why() -> None:
-    """QT-1（D-031④・D-033。P0-7 の調査のセッションで詰まった箇所）：PDF の行の終わりは段落の終わりにしないので、
-    前の行の終わりの数字と次の行の始めの数字は1つの数値として読む（合成の「別紙２」の次の行の「２０２４（令和６）
-    年度…」は「22024」）。その途中から始めた引用は E_QUOTE_TRUNCATED のままだが、不合格の文で、前の行の数字と
-    つながったことと、数値を含まず文末で終わる文を引用することを案内する。"""
-    page = ["別紙２\n２０２４（令和６）年度契約状況（国内調達事業）\n契約件名 契約額"]
+    """QT-1（D-031④・D-033・D-050。P0-7 の調査のセッションで詰まった箇所の形）：PDF の行の終わりは段落の終わりに
+    しないので、前の行の終わりの数字と次の行の始めの数字は1つの数値として読む（架空の「付録９」の次の行の
+    「１９９９（架空）年度…」は「91999」）。その途中から始めた引用は E_QUOTE_TRUNCATED のまま（境界の規則は変えない）。
+    不合格の文で、前の行の数字とつながったことを伝え、同じことを裏付ける別の文があるときだけそれを引用し、なければ
+    記者が原本で確かめる事項として残すよう案内する。ページの文は構造だけを残した架空のもの。"""
+    page = ["付録９\n１９９９（架空）年度テスト一覧（合成）\n項目 金額"]
     with pytest.raises(KizashiError) as info:
-        quotes._match(page, "２０２４（令和６）年度契約状況（国内調達事業）", "合成資料", ())
+        quotes._match(page, "１９９９（架空）年度テスト一覧（合成）", "合成資料", ())
     assert info.value.code == "E_QUOTE_TRUNCATED"
-    assert "前の行" in info.value.message and "PDF の行の終わり" in info.value.message
+    message = info.value.message
+    assert "前の行" in message and "PDF の行の終わり" in message
+    assert "同じことを裏付ける" in message and "原本で確かめる" in message
 
 
 def test_qt1_role_error_points_to_oppose(ctx) -> None:
