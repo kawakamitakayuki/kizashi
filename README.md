@@ -37,8 +37,8 @@
 ## 導入
 
 ```text
-git clone <このリポジトリ>
-cd kizashi
+git clone <このリポジトリの URL>
+cd <クローンしたフォルダー>   # 以後の操作はすべてリポジトリの直下で行う
 uv sync                 # 依存（実行と開発）を入れ、.venv/bin/kizashi を作る
 uv run pytest -q        # 合成データのテスト（通信なし）
 ```
