@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
 _WS_RE = re.compile(r"\s+")
 
@@ -117,6 +118,46 @@ def parse_corp_number(raw: str | None) -> tuple[str, list[str]]:
     if tokens and all(_CORP13_RE.fullmatch(t) for t in tokens):
         return ("digits13" if len(tokens) == 1 else "multiple"), tokens
     return "invalid", []
+
+
+_ASCII13_RE = re.compile(r"[0-9]{13}")
+_EXPONENT_PARTS_RE = re.compile(r"([0-9])\.([0-9]+)E\+([0-9]+)")
+
+
+def corp_check_digit_ok(number: str) -> bool:
+    """法人番号の検査用数字の検査（P1-b。D-076）。
+
+    法人番号の指定等に関する省令（平成26年財務省令第70号）第2条：先頭1桁が検査用数字、残りの12桁が基礎番号。
+    検査用数字 ＝ 9 −（Σ Pn × Qn を 9 で除した余り）。Pn は基礎番号の最下位の桁を1桁目としたときの n 桁目の数字、
+    Qn は n が奇数のとき1、偶数のとき2。13桁の半角数字でなければ False（全角は呼ぶ側で NFKC にする）。
+    """
+    if not _ASCII13_RE.fullmatch(number):
+        return False
+    base = number[1:]
+    total = sum(int(d) * (1 if n % 2 else 2) for n, d in enumerate(reversed(base), start=1))
+    return int(number[0]) == 9 - total % 9
+
+
+def exponent_matches(number: str, raw: str | None) -> bool:
+    """13桁の値が、CSV の指数表記（`8.70011E+12` の形）に残る有効桁と合うか（P1-b。設計書7.4の条件2）。
+
+    表示の桁（小数点以下の桁の数 k）で比べる：13桁の値を 10 の（指数 − k）乗で割り、四捨五入した整数が、
+    仮数の数字を並べた整数と等しければ合う。表示は丸めた値なので、切り捨ての値とは比べない
+    （実データの 3,427 行は、どれも四捨五入で合った。D-077）。
+    """
+    if not _ASCII13_RE.fullmatch(number):
+        return False
+    match = _EXPONENT_PARTS_RE.fullmatch(nfkc(raw or "").strip())
+    if match is None:
+        return False
+    lead, fraction, exponent = match.group(1), match.group(2), int(match.group(3))
+    shift = exponent - len(fraction)
+    if shift < 0:
+        return False
+    rounded = (Decimal(int(number)) / (Decimal(10) ** shift)).quantize(
+        Decimal(1), rounding=ROUND_HALF_UP
+    )
+    return int(rounded) == int(lead + fraction)
 
 
 # ---------------------------------------------------------------------------

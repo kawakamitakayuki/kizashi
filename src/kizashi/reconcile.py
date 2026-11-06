@@ -248,6 +248,7 @@ def reconcile_source(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> 
             "pdf_source": pdf_id,
             **{k: counts[k] for k in ("rows", "matched", "not_found", "ambiguous", "skipped")},
             "fields": counts["fields"],
+            "corp_completion": counts["corp_completion"],
         }
         if "error" in pair:
             entry["error"] = pair["error"]
@@ -279,7 +280,10 @@ def _match_rows(
         "ambiguous": 0,
         "skipped": total - len(contracts),
         "fields": {f: {MATCH: 0, MISMATCH: 0, UNVERIFIABLE: 0} for f in field_keys},
+        "corp_completion": {"valid_from_pdf": 0, "unconfirmed": 0},
     }
+    corp_column = tspec.field_columns.get("corp_numbers")
+    adopted: list[tuple[str, str]] = []
     rows: dict[str, dict] = {}
     for rid, cells_json, amount_yen, amount_note, corp_state, corp_json in contracts:
         cells = json.loads(cells_json)
@@ -315,7 +319,26 @@ def _match_rows(
         counts[entry["row_status"]] += 1
         for f, outcome in entry["fields"].items():
             counts["fields"][f][outcome] += 1
+        if corp_state == "exponent" and corp_column is not None:
+            # 法人番号の補完（P1-b。設計書7.4）。行が対応しなければ未確定
+            if entry["row_status"] == "matched" and table is not None:
+                completion, number = pdftext.corp_completion(
+                    cells.get("corp_number_raw"),
+                    found.row.cells.get(corp_column, ""),
+                    entry["fields"],
+                )
+            else:
+                completion, number = {"state": "unconfirmed", "failed": ["row"]}, None
+            entry["corp_completion"] = completion
+            counts["corp_completion"][completion["state"]] += 1
+            if number is not None:
+                adopted.append((canonical_json([number]), rid))
         rows[rid] = entry
+    conn.executemany(
+        "UPDATE procurement_contracts SET corp_number_state = 'valid_from_pdf',"
+        " corp_numbers_json = ? WHERE record_id = ?",
+        adopted,
+    )
     return {"type": "source", "pairs": [pair], "rows": rows, "counts": counts}
 
 

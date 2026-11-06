@@ -183,6 +183,10 @@ EXPECTED_SOURCE = {
 }
 
 
+# 指数表記の法人番号の行の数（合成の CSV から数えた。CN-1）。合成の PDF も同じ指数表記なので、どれも未確定
+EXPONENT_ROWS = {"S001": 7, "S003": 3, "S005": 10, "S007": 0}
+
+
 @pytest.mark.parametrize("csv_source", sorted(EXPECTED_SOURCE))
 def test_reconcile_source_record_shape_and_counts(
     repo: Path, completed: dict, csv_source: str
@@ -212,6 +216,7 @@ def test_reconcile_source_record_shape_and_counts(
         "ambiguous": 0,
         "skipped": 0,
         "fields": fields,
+        "corp_completion": {"valid_from_pdf": 0, "unconfirmed": EXPONENT_ROWS[csv_source]},
     }
     assert sorted(result["rows"]) == [f"{csv_source}:{i:06d}" for i in range(1, n + 1)]
     # 1ページに5件（6件目から2ページ目、11件目から3ページ目）

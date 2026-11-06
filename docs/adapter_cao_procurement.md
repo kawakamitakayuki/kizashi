@@ -128,8 +128,10 @@
 | `missing` | 空欄、`-`、`－` |
 | `multiple` | 13桁の数字が2つ以上（改行で区切られる） |
 | `invalid` | それ以外 |
+| `valid_from_pdf` | 正規化では付けない。`exponent` の行のうち、原本照合（T6b。7.2で `matched`）の PDF の法人番号の欄（7列目）が13桁ちょうど1つで、設計書7.4の3条件をすべて満たすものに、工程 `reconcile_source` が付け、13桁を `corp_numbers_json` に入れる（P1-b。D-077） |
 
-- 13桁の文字列は `corp_numbers_json`（配列）に入れる。検査用数字の検査はP1（U8）。
+- 13桁の文字列は `corp_numbers_json`（配列）に入れる。
+- 補完の3条件（P1-b。D-077）：①検査用数字が合う（法人番号の指定等に関する省令第2条の算式。D-076）。②CSV の指数表記に残る有効桁と合う（表示の小数点以下の桁の数で、13桁の値を四捨五入して仮数と比べる。表示は末尾の0を省いた形で、桁の数は1〜5桁）。③同じ行の件名（`title_raw`）と金額（`amount_yen`）の照合が `match`。1つでも満たさない行と、PDF の行が対応しない行は `exponent` のまま（未確定）とし、同一法人として数えない。CSV と PDF のどちらかを正解にはしない。結果と満たさない条件は、照合の記録の行の `corp_completion` に書く（実装仕様7.4）。品質検査の Q07 は補完の前に数える。【確認済み：2026-11-07 に令和5〜7年度の6本（P0-7 の実行）で照らし、指数表記の 3,427 行のうち 3,419 行が3条件を満たし、検査用数字が合わない4行と件名か金額が合わない4行が未確定。有効桁は 3,427 行すべてが四捨五入で合い、切り捨てでだけ合う行はなかった】
 - 指数表記の分布：競争入札は全年度、随意契約は令和5・6年度。令和7年度の随意契約は13桁で入っている【確認済み】。
 
 ### 4.7 方式と理由
@@ -240,7 +242,7 @@
 | 項目（照合の記録のキー） | 列 | 照らし方 |
 | --- | --- | --- |
 | `amount_yen` | 10 | CSVの金額が数値（4.4で `amount_yen` が整数）のとき：セルをNFKCにし、数値の並び（数字と桁区切り `,` の連なりで、前後が数字・`,`・`.` でないもの）を取り出す。桁区切りを除いた値がCSVの値と**等しい**ものがあれば `match`、数値の並びはあるが等しいものがなければ `mismatch`、なければ `unverifiable`。部分一致では照らさない（CSVの `1,000,000` はPDFの `11,000,000` に一致しない）。CSVの金額が数値でない（`amount_note` が `unit_price_text`・`foreign_currency`・`non_numeric`）とき：`amount_raw` とセルをNFKC・空白除去して、完全一致なら `match`、違えば `mismatch`、どちらかが空なら `unverifiable`。`amount_note` が `missing` なら `unverifiable` |
-| `corp_numbers` | 7 | CSVの法人番号が13桁（4.6の `digits13`）のとき、金額と同じ数値の並びの等しさで照らす。ほかの状態は `unverifiable`（PDFの13桁での補完はP1） |
+| `corp_numbers` | 7 | CSVの法人番号が13桁（4.6の `digits13`）のとき、金額と同じ数値の並びの等しさで照らす。ほかの状態は `unverifiable`。PDFの13桁で補完した行（`valid_from_pdf`）も、CSV では有効桁までしか確かめられないので `unverifiable`（4.6。D-077） |
 | `contract_date` | 4 | CSVの表記（`R6.4.1` の形。NFKC・空白除去）が、セルの中に前後が数字・`.` でない形であれば `match`。セルに `R数字.数字.数字` の形があり等しいものがなければ `mismatch`、なければ `unverifiable`。CSVの表記が `R…` の形でなければ、セルとの完全一致で照らす（8本の日付はすべて `R…` の形だった） |
 | `title_raw`・`counterparty_raw`・`method_raw`・`reason_raw` | 1・5・8・8 | CSVの値とセルの文字列をNFKC・空白除去して、完全一致なら `match`、違えば `mismatch`、どちらかが空なら `unverifiable` |
 
@@ -280,7 +282,7 @@ CREATE TABLE procurement_contracts (
   contract_date TEXT,
   counterparty_raw TEXT,
   corp_numbers_json TEXT NOT NULL DEFAULT '[]',
-  corp_number_state TEXT NOT NULL CHECK (corp_number_state IN ('digits13','exponent','missing','multiple','invalid')),
+  corp_number_state TEXT NOT NULL CHECK (corp_number_state IN ('digits13','exponent','missing','multiple','invalid','valid_from_pdf')),
   method_raw TEXT,
   method_detail_json TEXT,
   unit_price INTEGER NOT NULL CHECK (unit_price IN (0,1)),

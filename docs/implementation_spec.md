@@ -623,6 +623,7 @@ CREATE TABLE events (
 
 項目の結果は `match`（一致）・`mismatch`（不一致）・`unverifiable`（照合不能）。行の結果は `matched`・`not_found`・`ambiguous`。1件が複数の罫線の行に分かれたおそれがある場合は `ambiguous` とし、`"row_reason": "split_row"` を添える（アダプタ仕様7.1）。項目のキーと照らし方はアダプタ仕様7.3（`dataset.yaml` の `reconcile.pdf_fields`）による。
 
+- 法人番号の補完（P1-b。アダプタ仕様4.6。D-077）：CSV の法人番号が指数表記の行に、`"corp_completion": {"state": "valid_from_pdf"}` か `{"state": "unconfirmed", "failed": [...]}` を書く。`failed` は満たさない条件を `pdf_cell`（PDF の欄が13桁ちょうど1つでない）・`check_digit`・`significant_digits`・`title_amount`（件名か金額の照合が `match` でない）の順に並べ、PDF の行が対応しなければ `row` だけにする。`counts` に `"corp_completion": {"valid_from_pdf": 件数, "unconfirmed": 件数}` を書き、`run` の出力と `runs.counts_json` の照合の要約にも入れる。採用した行は、同じトランザクションで分野の表を `valid_from_pdf` と13桁にする。
 - `counts` は行の結果ごとの件数と、項目ごとの件数（`fields`）にする。`skipped` は照合しなかったレコード（空のレコードと NO が数でない保留の行）の数。
 - `pairs` の要素の `pages` は PDF のページ数、`skipped_pages` は列の数が違って使わなかったページ（`{"page", "columns"}`）、`split_pages` は分かれた行のあるページ。`ambiguous` の行には候補のページ `pdf_pages` を添える。
 - PDF を取得できていない CSV は照合せず、計算を作らない（`runs.counts_json` に `not_run` と理由）。PDF を読めないときは、組に `error` を書き、全行を `not_found`（`"row_reason": "pdf_unreadable"`）、項目をすべて `unverifiable` にする。実行は止めず、`run` の出力の `message` に照合できなかった資料を書く。
@@ -828,7 +829,7 @@ kizashi check --publish examples/publish.manifest --run <run_id> [--run <run_id>
 | --- | --- | --- |
 | 承認した係数の適用 | 記者が承認した係数（6.4の `accepted`）を計算に使う。承認は、調査のセッションのClaudeが書けない経路（例：記者が別の端末で `data/runs/<run_id>/approvals.json` を書く。Claudeには `data/` の書き込みを許していない）から受け取り、メモに「記者が承認した係数（資料の根拠なし）」と出す | P0がすべて動いた |
 | 別セッションでの読み直し | `scripts/review-memo <run_id> <lead_id>`（作った。D-075）。設計書9.3のコマンドで起動し、最初の指示は `--` の後に渡す（`--tools` と `--disallowedTools` は値を複数取るため）。候補の最新のメモ（番号の最大）とページ別テキストの場所を渡して読ませる。引数の数か ID の書式（3.3）の誤りは終了コード2、実行のフォルダーかメモがなければ終了コード3で、起動しない。メモの失効は確かめない（README で起動の前の `kizashi inspect` を案内する）。指摘は記者が読み、必要なら主張を直す | P0がすべて動いた |
-| 法人番号の補完 | PDFの13桁を、設計書7.4の3条件（検査用数字、有効桁、件名と金額）で採用し、`corp_number_state='valid_from_pdf'` を加える | 同上 |
+| 法人番号の補完 | PDFの13桁を、設計書7.4の3条件（検査用数字、有効桁、件名と金額）で採用し、`corp_number_state='valid_from_pdf'` を加える（作った。工程 `reconcile_source`。アダプタ仕様4.6、7.4、D-076・D-077） | 同上 |
 | PRTRの骨組み | `datasets/prtr/`。設計書8.4。着手するときにアダプタ仕様を書く | 同上 |
 | サンドボックス | 設計書9.5の設定を試す | 同上 |
 | 新しい版の自動検出、接続先のアドレスの検査、ZIPの安全な展開、公開の検査の残り | 設計書の各節 | 同上 |
