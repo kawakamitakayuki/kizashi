@@ -499,3 +499,14 @@ def test_d042_source_list_includes_required_csv_without_rows(
     )
     listing = text.split("### 資料の一覧")[1].split("## 4")[0]
     assert "- S003：" in listing and "- S007：" in listing
+
+
+def test_rd1_kept_hypothesis_is_shown_only_as_kept(repo: Path, synthetic_run: str) -> None:
+    """RD-1（10.1。P0-7 の後のレビュー）：仮説の結果 kept は「維持」とだけ出す。取り下げ条件を調べて否定したこと
+    （「取り下げ条件は満たされなかった」）までは書かない（仮説を維持する判断と、反証の条件を調べて否定したことは別）。"""
+    lead = prepare(repo, synthetic_run)
+    text = (repo / render.render_lead(repo, synthetic_run, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    assert "- 結果：維持\n" in text
+    assert "満たされなかった" not in text
