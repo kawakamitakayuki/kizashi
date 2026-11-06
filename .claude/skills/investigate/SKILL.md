@@ -8,7 +8,7 @@ argument-hint: "[分野] | [run_id]"
 # 調査の手順
 
 ## このセッションで守ること
-- 書いてよいのは inbox/ 直下の .json と .sql だけ。ほかのファイルは書かない。
+- 書いてよいのは inbox/ 直下の .json と .sql だけ。ほかのファイルは書かない。ファイル名は英数字と - _ . だけにする（日本語の名前は kizashi が受け付けない）。
 - Bash で実行できるのは kizashi のコマンドだけ（ls・cat なども使えない）。ファイルを探すときは Glob、読むときは Read と Grep。
 - 件数・金額・比率は自分で計算しない。inbox/ に calc・derive・doc_value の提案を書き、
   kizashi record <run_id> inbox/<名前>.json で計算させる。本文では {calc:ID} で参照する。
