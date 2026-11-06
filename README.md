@@ -4,6 +4,8 @@
 
 最初の分野は、内閣府の公共調達（競争入札・随意契約の契約の公表のCSVとPDF）である。分野の設定（`datasets/cao-procurement/dataset.yaml`）が読めるのは令和5〜8年度で、令和8年度は年度途中として扱う。
 
+環境分野（NITE の PRTR 個別事業所データ）は、分野アダプタの骨組み（`datasets/prtr/` の設定・型付きの表・検出SQL 1本・合成のテスト用データ。仕様は `docs/adapter_prtr.md`）だけを作った。取得・正規化・検証からメモまでは通していないので、2つの分野で動くことは実証していない。示せるのは、分野を追加できる設計であることまでである（設計書8.3・8.4。`kizashi run prtr` は分野の登録がないので `E_USAGE` で止まる）。
+
 - 設計：`docs/harness_design_m_v06.md`（設計書）
 - 実装の仕様：`docs/implementation_spec.md`、内閣府のデータの仕様：`docs/adapter_cao_procurement.md`
 - 決めたことと未決の点：`docs/decisions.md`
@@ -196,6 +198,7 @@ Built with Claude: Japan 2026 の開催期間は2026年11月2日〜10日（設�
 | --- | --- |
 | `src/kizashi/` | CLI（`kizashi`）の実装 |
 | `datasets/cao-procurement/` | 内閣府の分野アダプタ（`dataset.yaml`、検出SQL、比べた組の数、年度の系列、分野の README） |
+| `datasets/prtr/` | PRTR の分野アダプタの骨組み（`dataset.yaml`、型付きの表 `tables.sql`、検出SQL 1本、合成のテスト用データ。CLI には未登録。P1） |
 | `tests/` | テスト（合成データ。通信なし） |
 | `.claude/skills/` | Skill：`investigate`（調査の手順）、`review-lead`（反証と結論の点検） |
 | `scripts/investigate` | 調査のセッションの起動 |
