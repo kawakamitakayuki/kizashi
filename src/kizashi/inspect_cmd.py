@@ -273,6 +273,14 @@ def _inspect_lead(conn: sqlite3.Connection, lead_id: str, run_id: str, page: int
                 "searched": _excerpt(e["searched"]),
                 "evidence": json.loads(e["evidence_json"]),
                 "recalc_calc_id": e["recalc_calc_id"],
+                # 残る差と説明によって足した・変えた条件（review-lead が V8_EXPLANATION_STATUS の条件と、根拠と
+                # 条件の意味の対応を inspect で点検できるように出す。D-045③）
+                "residual_calc_id": e["residual_calc_id"],
+                "reflected_conditions": (
+                    None
+                    if e["reflected_conditions_json"] is None
+                    else json.loads(e["reflected_conditions_json"])
+                ),
                 "no_quant_reason": _excerpt(e["no_quant_reason"]),
                 "context": e["context"],
             }
