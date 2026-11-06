@@ -88,6 +88,8 @@
 
 | D-078 | P1-c（PRTR の骨組み）の未決：`docs/adapter_prtr.md` の13章の1〜5。①最初の範囲（1地域・1物質。排出先は大気）の値。②事業者・事業所の名称（本紙11・14列）と町域名（19列）を取り込むか（個人事業者の氏名・住所を含みうる）。③見出しのない原本の、別経路の読み込み（V3b）の方法。④ZIP の取得と展開（SF-2）。⑤排出年度2022以前を比べるか | 一部決定（2026-11-07。`docs/adapter_prtr.md` の内容で骨組みを作ることと、①を空のままにすることは利用者が決めた。決定の表の D-078。①の値と②〜⑤は未決） |
 
+| D-079 | P1-d：サンドボックス（設計書9.5、U14）を調査の設定に入れるか。試験で、共通設定の `Edit(/data/**)` が `kizashi run` の台帳の書き込みを塞いだ | 決定（2026-11-07。決定の表の D-079。入れない。下の「P1-d のサンドボックスの試験の記録」） |
+
 ### D-001 の試験の記録
 
 1回目（2026-11-05）。Claude Code v2.1.318。`scripts/investigate` で起動した（`--permission-mode dontAsk --setting-sources project --tools "Bash,Read,Grep,Glob,Skill,WebSearch,Write" --settings investigate.settings.json`）。利用者が貼ったセッションの記録から書いた。記録には一部欠けた箇所がある。
@@ -580,6 +582,21 @@ D-071 の後の再試験（2026-11-06 22:09ごろ。v2.1.319。コミット 5cc5
 
 観察（MCP）：`--disallowedTools "mcp__*"` を付けても、接続した MCP のサーバー（claude.ai Claude Docs）の説明文は文脈に入る（`/context` の MCP server instructions、717 tokens）。道具の欄はないので、説明文に従って操作することはできない。サーバーそのものを読み込まないなら `--strict-mcp-config` を足す案がある（`claude --help` の `--restricted` の説明に「MCP のサーバーも除くには `--strict-mcp-config` を足す」とある）。ただし試していない。claude.ai のサーバーにも効くかは確かめておらず、設計書9.3の引数を変えることになるので、利用者が決める。
 
+### P1-d のサンドボックスの試験の記録（D-079）
+
+2026-11-07 7:29〜7:34（上限1時間）。Claude Code v2.1.319、WSL2（Ubuntu 20.04、カーネル 6.18.54.1-microsoft-standard-WSL2）、bubblewrap 0.4.0、socat（利用者が試験の前に `apt-get` で入れた。版は記録していない）。
+開発のセッションから、調査と同じ引数（`--permission-mode dontAsk --setting-sources project`、道具は Bash・Read・Grep・Glob）で非対話の Claude Code を起動し、`--settings` に `investigate.settings.json` の写し（リポジトリの直下に置き、試験の後に消した）を渡した。写しには設計書9.5の `sandbox`（`enabled`・`failIfUnavailable: true`・`autoAllowBashIfSandboxed: false`・`allowUnsandboxedCommands: false`・`network.allowedDomains: ["*.go.jp", "*.lg.jp"]`）を足した。
+キーの名前と、`Edit` の拒否ルールがサンドボックスの書き込みの制限に合流することは、公式ドキュメント（https://code.claude.com/docs/en/sandboxing 、2026-11-07 に読んだ）で確かめた。
+
+| 回 | 写しの設定 | コマンド | 結果 |
+| --- | --- | --- | --- |
+| 1 | 設計書9.5のとおり | `kizashi inspect 20261106-132648-3zdx` | 動いた（`ok: true`） |
+| 1 | 同上 | `kizashi run cao-procurement --config inbox/sandbox-test.json` | 台帳のフォルダー `data/runs/<run_id>` を作るところで `OSError: [Errno 30] Read-only file system`（`E_INTERNAL`、終了コード5）。新しい実行のフォルダーはできていない。起動で止まらず OS の水準の拒否が出たので、サンドボックスは有効だった |
+| 2 | 1に `sandbox.filesystem.allowWrite: [<リポジトリ>/data]` を足した | `kizashi run …`（同じ） | 1と同じ `Read-only file system`。`Edit(/data/**)` の拒否が許可より勝った |
+| 3 | 共通設定から `Edit(/data/**)` を一時的に外す（設計書9.5の「有効にする場合」） | — | 未実施。開発のセッションの Claude が `.claude/settings.json` を書き換えようとし、権限の設定を変える操作として拒否された。利用者は共通設定を変えずに終えることを選んだ |
+
+試していないこと：取得（許可リストのホストへのプロキシ経由の通信。`kizashi run` は台帳を作る前に止まったので、通信の前で終わった）、Write ツール・Skill・WebSearch を含む調査のセッションでの動き、対話のセッションでの `/sandbox` の表示。
+
 ## 決定
 
 （初日の確認の結果は D-001 から追記する。資料の作成中に決めたことは D-010 から記録した）
@@ -663,3 +680,4 @@ D-071 の後の再試験（2026-11-06 22:09ごろ。v2.1.319。コミット 5cc5
 | D-075 | 2026-11-07 | P1-a の `scripts/review-memo` を、未決の表の D-075 の①〜⑦のとおりにする。①設計書9.3の引数の後に `--` を置いて、最初の指示を渡す。②候補の最新のメモ（番号を数で比べた最大）を渡し、伏せた写し（`public/`）は渡さない。③メモの失効はスクリプトで確かめず、README で起動の前の `kizashi inspect` を案内する。④引数の数か ID の書式（3.3）の誤りは終了コード2、実行のフォルダーかメモがなければ終了コード3で、Claude Code を起動しない（標準エラー出力に日本語の文）。⑤最初の指示に、独立した検証ではないこと、ページ別テキストのパスの対応、指摘の書き方（メモの節、主張ID か型、資料ID とページ）、確かめられない根拠と指摘がない場合の書き方を足す。⑥MCP の拒否は、README の手順（対話のセッション）で確かめる。⑦テストは RV-1。`--strict-mcp-config` は足さない（設計書9.3の引数のままにする。MCP のサーバーの説明文が文脈に入ることは、観察として残す） | `--tools` と `--disallowedTools` は値を複数取る（v2.1.319 の `claude --help`）。非対話の実行（2026-11-07）と対話のセッション（「P1-a の読み直しの試験の記録」）で、最初の指示が渡ること、使った道具が Grep・Read だけであること、書き込みを頼んでもファイルができないこと、MCP の道具（guide）が呼ばれないことを確かめた。MCP の道具を呼べない原因が `mcp__*` の拒否だけかは、拒否を外したセッションと比べていないので切り分けていない。Deny のタブで確かめたのは `mcp__*` と Write で、Edit・Bash・WebFetch の行は記録にない。`--strict-mcp-config` は試しておらず、足すと設計書9.3の引数を変えることになる。道具は呼べないので、説明文が文脈に入ることの害は小さいと判断した。読み直しの指摘6件のうち、開発のセッションで照らしたのは2件で、記者はまだ確かめていない | `scripts/review-memo`、`tests/test_review_memo.py`、`test_plan.md` の RV-1、README の「メモの読み直し」、実装仕様13章 | 利用者（利用者が貼った回答。案は Claude Code） |
 | D-076 | 2026-11-07 | 法人番号の検査用数字（U8。設計書7.4の条件1）を、法人番号の指定等に関する省令（平成26年財務省令第70号）第2条の算式で検査する：13桁のうち先頭1桁が検査用数字、残りの12桁が基礎番号。検査用数字＝9−（Σ_{n=1}^{12} Pn×Qn を9で除した余り）。Pn は基礎番号の最下位の桁を1桁目としたときの n 桁目の数字、Qn は n が奇数のとき1、偶数のとき2。値は1〜9（余りが0なら9） | 国税庁法人番号公表サイトの3つの資料を 2026-11-07 に取得し、文字を取り出して読んだ。①「〔参考〕法人番号の指定等に関する省令（平成26年財務省令第70号）」（https://www.houjin-bangou.nta.go.jp/sp/setsumei/images/bangouhou_syorei.pdf 。SHA-256 0ddf27113d9c2d030fa91c1df009aa04a3d23039bc86b5041e2558bbcc78086b）の第2条「令第三十五条第一項に規定する財務省令で定める算式は、次に掲げる算式とする」と、算式の符号（Pn・Qn）。②「法人番号の構成」（https://www.houjin-bangou.nta.go.jp/documents/houjinbangounokousei.pdf 。SHA-256 f4f8a52e05ed4afb7f18bb0a301bf56918b9c3c6461cb3b95964718a833c1079）の【算式】「９−（Σ Ｐn×Ｑn を９で除した余り）」と、法人番号（13桁）が12桁の基礎番号と1桁の検査用数字からなること（政令35①）、検査用数字が13桁目（先頭）であること。③「チェックデジットの計算」（https://www.houjin-bangou.nta.go.jp/documents/checkdigit.pdf 。SHA-256 f792b5ff121dd152204058dfa31d976326a33ac6219a5f3aa1bb483567e7a5a7）の例：会社法人等番号「700110005901」で、最下位から偶数桁の和13、奇数桁の和11、13×2＋11＝37、37÷9 の余り1、9−1＝8、法人番号「8700110005901」。この例は手計算でも同じ値になった。①②の算式の記号は PDF の文字の取り出しで一部崩れたが、③の例の手順（偶数桁を2倍して足し、9で割った余りを9から引く）と一致する。公表サイトのよくある質問（https://www.houjin-bangou.nta.go.jp/shitsumon/shosai.html?selQaId=00007）も、検査用数字を「基礎番号を基に財務省令で定める算式を用いて算出される１から９までの整数」とする | 設計書7.4・11.2の U8、`src/kizashi/normalize.py`（P1-b） | Claude Code（公表資料で確かめた。利用者が確認） |
 | D-078 | 2026-11-07 | P1-c：PRTR の分野アダプタの骨組みを、`docs/adapter_prtr.md` のとおり作る（`datasets/prtr/` の `dataset.yaml`、`tables.sql`、検出SQL `screens/s1_air_release_change.sql`、合成のテスト用データ `fixtures/` と生成スクリプト `tests/fixtures/make_prtr_fixtures.py`、テスト PR-1）。最初の範囲（`first_scope` の都道府県と管理番号）は空のままにし、検出SQLは引数で受け取る。CLI の分野には登録しない（`kizashi run prtr` は `E_USAGE`）。取得からメモまでは通していないので、README には「分野を追加できる設計」と書き、「2分野で実証済み」とは書かない | NITE の公表ページ・ファイル構成の説明・令和5・6年度の ZIP（本紙・別紙・他業種・一括）と、環境省の報道発表を 2026-11-07 に取得して確かめた（出所とハッシュは `docs/adapter_prtr.md`）。確かめたこと：見出しの行がない（TITLE のファイルも ZIP にない）、令和5・6年度で同じ整理番号は1つもない、法人番号・都道府県・市区町村の組だけでは約4,000組に事業所が2つ以上ある、本紙の届出物質数と別紙の行の数が全件で一致、排出年度はファイルの年度と同じ、改正後の対象物質の把握は令和5年度から。利用者は、アダプタ仕様の確認に「この内容で進める」、最初の範囲に「空のままにする」と答えた | `docs/adapter_prtr.md`、`datasets/prtr/`、`tests/test_prtr_skeleton.py`、`test_plan.md` の PR-1、README、実装仕様13章 | 利用者（アダプタ仕様の確認と最初の範囲）／Claude Code（骨組みの作り） |
+| D-079 | 2026-11-07 | P1-d：サンドボックスは調査の設定（`investigate.settings.json`）に入れない（無効のまま進める）。共通設定 `.claude/settings.json` の `Edit(/data/**)` も外さない | 「P1-d のサンドボックスの試験の記録」：この端末でサンドボックスは有効になり、`kizashi inspect` は動いたが、`kizashi run` は共通設定の `Edit(/data/**)` の拒否で台帳を書けなかった（設計書9.5の推論のとおり）。`sandbox.filesystem.allowWrite` では上書きできなかった。設計書9.5は、有効にするなら CLI が書く `data/` の拒否ルールを外し、原本の改変はハッシュの照合（V2）で見つけるとするが、共通の拒否ルールを緩めることになる。外す試験は開発のセッションでは拒否され、利用者は共通設定を変えずに終えることを選んだ。取得（プロキシ経由の通信）は試せていない。限界（設計書11.3の X6）として、権限の拒否ルールは普段の書き方のコマンドに効くが、フルパスでの呼び出しや `sh -c` の中には効かないことが残る。README の限界に書いた | README の限界、実装仕様13章、設計書9.5・11.2の U14 | 利用者 |
