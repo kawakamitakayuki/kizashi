@@ -67,7 +67,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     fetch --recheck でも URL を照らす）。fetch・fetch --recheck の結果が変わる。
 # 22：D-073（公表一覧の fetch --recheck で、たどり直すリンクの候補のすべてを、リンクの数の検査より先に氏名で照らす）。
 #     fetch --recheck の結果が変わる。
-RULES_VERSION = "22"
+# 23：D-074（初回の run で、公表ページに同じ論理資料のリンクが2つ以上あるときの取得の失敗の理由に、候補の URL を
+#     書かず、資料ID・論理資料のキー・候補の数だけを書く）。run の結果（取得の失敗の記録）が変わる。
+RULES_VERSION = "23"
 
 
 def code_version() -> str:
