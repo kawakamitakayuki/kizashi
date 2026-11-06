@@ -185,6 +185,70 @@ def test_inspect_lead_shows_matches_and_coefficients(repo: Path, filled: dict) -
     assert (data["state"], data["rounds"]) == ("investigating", 0)
 
 
+def test_inspect_lead_shows_residual_and_reflected_conditions(repo: Path, filled: dict) -> None:
+    """4.3 候補ID（D-045③）：判定ごとに、説明を反映した値（recalc_calc_id）、残る差（residual_calc_id）、説明に
+    よって足した・変えた条件（reflected_conditions）を出す。登録した値がそのまま読める。書いていない判定では空。"""
+    run_id, lid = filled["run_id"], filled["lead"]
+    count = rec(
+        repo,
+        run_id,
+        {
+            "kind": "calc",
+            "lead_id": lid,
+            "op": "count",
+            "table": "procurement_contracts",
+            "filter": [
+                {"col": "fiscal_year", "op": "=", "value": 2025},
+                {"col": "group_key", "op": "=", "value": "翻訳業務"},
+                {"col": "unit_price", "op": "=", "value": 0},
+            ],
+            "label": "令和7年度の単価契約でない行の件数",
+            "unit": "件",
+        },
+    )["id"]
+    reflected = [{"col": "unit_price", "op": "=", "value": 0}]
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "explanation",
+            "lead_id": lid,
+            "type": "T3",
+            "judgment": "support",
+            "scope": "part",
+            "recalc_calc_id": count,
+            "residual_calc_id": count,
+            "reflected_conditions": reflected,
+            "evidence": [],
+            "searched": "仕様書を探した。",
+        },
+    )
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "explanation",
+            "lead_id": lid,
+            "type": "T1",
+            "judgment": "unknown",
+            "evidence": [],
+            "searched": "公表元の告知を探した。",
+        },
+    )
+    data = show(repo, lid, run_id)
+    by_type = {e["type"]: e for e in data["explanations"]}
+    assert (
+        by_type["T3"]["recalc_calc_id"],
+        by_type["T3"]["residual_calc_id"],
+        by_type["T3"]["reflected_conditions"],
+    ) == (count, count, reflected)
+    assert (
+        by_type["T1"]["recalc_calc_id"],
+        by_type["T1"]["residual_calc_id"],
+        by_type["T1"]["reflected_conditions"],
+    ) == (None, None, None)
+
+
 def test_inspect_source_row_calc_claim_match(repo: Path, filled: dict) -> None:
     """4.3 資料ID・row_ref（take のキーと見出し、正規化した値、照合の結果）・計算ID・主張ID・対応ID。"""
     run_id = filled["run_id"]

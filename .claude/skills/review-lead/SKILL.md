@@ -48,8 +48,8 @@ argument-hint: "[lead_id] [run_id]"
    再計算し、判定に根拠と、説明を反映した値（recalc_calc_id）と残る差（residual_calc_id）を書く。
    - 金額の候補：説明を反映した値は、比べる年度・系列と同じ集計にしない。残る差は、それと比較対象
      （候補の calc_from か calc_to）の diff だけ。
-   - 数量に表れない変化（方式・理由）：説明を反映した条件で、比べる年度の1つの候補の行を数えた count を、
-     説明を反映した値と残る差の両方にする。説明によって足した条件を reflected_conditions に書く
+   - 数量に表れない変化（方式・理由）：比べる年度の1つの候補の行のうち、説明を当てても変化を示したまま残る行を
+     数えた count を、説明を反映した値と残る差の両方にする。説明によって足した条件を reflected_conditions に書く
      （fiscal_year・record_id・group_key・method_family は足した条件にできない）。候補の行にその条件だけを
      当てた行が、数えた行と一致しなければならない。
    定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問（purposes に reason_breakdown）を登録する。
