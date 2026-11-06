@@ -377,12 +377,14 @@ def _register_t6(
         "INSERT INTO explanations (lead_id, type, judgment, evidence_json, searched, context,"
         " updated_at) VALUES (?, ?, ?, ?, ?, 'cli', ?) ON CONFLICT (lead_id, type) DO UPDATE SET"
         " judgment = excluded.judgment, evidence_json = excluded.evidence_json,"
-        " searched = excluded.searched, recalc_calc_id = NULL, residual_calc_id = NULL, scope = NULL,"
+        " searched = excluded.searched, recalc_calc_id = NULL, residual_calc_id = NULL,"
+        " reflected_conditions_json = NULL, scope = NULL,"
         " no_quant_reason = NULL, context = 'cli', updated_at = excluded.updated_at"
         " WHERE explanations.judgment IS NOT excluded.judgment"
         " OR explanations.evidence_json IS NOT excluded.evidence_json"
         " OR explanations.searched IS NOT excluded.searched OR explanations.context IS NOT 'cli'"
         " OR explanations.recalc_calc_id IS NOT NULL OR explanations.residual_calc_id IS NOT NULL"
+        " OR explanations.reflected_conditions_json IS NOT NULL"
         " OR explanations.scope IS NOT NULL OR explanations.no_quant_reason IS NOT NULL",
         (
             lead_id,
@@ -899,17 +901,31 @@ def _comp(conn: sqlite3.Connection, calc_id: str | None) -> dict | None:
     return _one(conn, "SELECT * FROM computations WHERE calc_id = ?", (calc_id,))
 
 
-def _normalized_filter(request: dict) -> str:
-    items = []
-    for f in request.get("filter") or []:
-        if isinstance(f, dict):
-            value = f.get("value")
-            items.append(
-                canonical_json(
-                    {**f, "value": sorted(value, key=str) if isinstance(value, list) else value}
-                )
+# 候補を選び直すだけの列（説明によって足した条件にならない。D-043②）
+IDENTITY_COLUMNS = frozenset({"fiscal_year", "record_id", "group_key"})
+
+
+def normalized_condition(item: object) -> str | None:
+    """条件1つの単純な同値の表現をそろえた形（in の値を並べて重複を除き、値が1つの in を = にする）。"""
+    if not isinstance(item, dict):
+        return None
+    op, value = item.get("op"), item.get("value")
+    if op == "in" and isinstance(value, list):
+        values = sorted(set(map(canonical_json, value)))
+        if len(values) == 1:
+            return canonical_json(
+                {"col": item.get("col"), "op": "=", "value": json.loads(values[0])}
             )
-    return canonical_json(sorted(items))
+        return canonical_json(
+            {"col": item.get("col"), "op": "in", "value": [json.loads(v) for v in values]}
+        )
+    return canonical_json({k: item[k] for k in ("col", "op", "value") if k in item})
+
+
+def normalized_conditions(filters: object) -> set[str]:
+    """条件の集まり（重複した条件は1つ）。"""
+    found = {normalized_condition(f) for f in (filters if isinstance(filters, list) else [])}
+    return {f for f in found if f is not None}
 
 
 def same_aggregation(conn: sqlite3.Connection, a_id: str, b_id: str) -> bool:
@@ -970,10 +986,8 @@ def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
         if any(recalc_id == o or same_aggregation(conn, recalc_id, o) for o in originals):
             return False
         return residual_comparison(conn, lead, exp) is not None
-    # 金額以外の候補：条件をそろえた後に残る行の件数
-    if recalc_id in originals or (
-        recalc_id != residual_id and any(same_aggregation(conn, recalc_id, o) for o in originals)
-    ):
+    # 金額以外の候補：条件をそろえた後に残る行の件数を、説明を反映した値と残る差の両方にする（D-043①）
+    if recalc_id != residual_id:
         return False
     residual = _comp(conn, residual_id)
     if residual is None or residual["kind"] != "base":
@@ -990,12 +1004,29 @@ def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
         return False
     base_request = json.loads(base["request_json"])
     rows = set(json.loads(residual["row_refs_json"] or "[]"))
-    return (
+    if not (
         request.get("table") == base_request.get("table")
         and residual["unit"] == base["unit"]
-        and _normalized_filter(request) != _normalized_filter(base_request)
         and rows <= set(json.loads(base["row_refs_json"] or "[]"))
-    )
+    ):
+        return False
+    # 説明によって足した・変えた条件（D-043②）：残る件数の条件にあり、候補の計算の条件になく、選び直すだけの列でない
+    reflected = json.loads(exp.get("reflected_conditions_json") or "null")
+    if not isinstance(reflected, list) or not reflected:
+        return False
+    mine = normalized_conditions(request.get("filter"))
+    theirs = normalized_conditions(base_request.get("filter"))
+    for item in reflected:
+        norm = normalized_condition(item)
+        if (
+            norm is None
+            or not isinstance(item, dict)
+            or item.get("col") in IDENTITY_COLUMNS
+            or norm not in mine
+            or norm in theirs
+        ):
+            return False
+    return True
 
 
 def _v8_explanation_status(

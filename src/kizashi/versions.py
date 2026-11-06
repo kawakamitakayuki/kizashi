@@ -39,7 +39,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 11：D-042（該当する行のない依存する CSV も原本の検査とハッシュに入れる、年度は整数だけ、残る差の規則、Skill と
 #     ルールのファイルを開始時に記録する、版の違う台帳への record を拒否する）。run・check・render・record の
 #     結果が変わる。
-RULES_VERSION = "11"
+# 12：D-043（金額以外の候補の残る差を説明を反映した値と同じ件数に限り、説明によって足した条件を記録して照らす、
+#     条件の単純な同値の表現をそろえる、git のパスを NUL 区切りで読む）。check・render・record・run の結果が変わる。
+RULES_VERSION = "12"
 
 
 def code_version() -> str:
@@ -153,12 +155,17 @@ def rule_files_record(root: Path, commit: str | None) -> dict:
     record: dict = {"files": files, "commit": commit, "matches_commit": None}
     if not commit or commit == "unknown":
         return record
-    listed = _git(root, "ls-tree", "-r", "--name-only", commit, "--", "CLAUDE.md", ".claude/skills")
+    # -z：NUL 区切りで、日本語などのパスを引用・エスケープしない形で読む（D-043③）
+    listed = _git(
+        root, "ls-tree", "-r", "-z", "--name-only", commit, "--", "CLAUDE.md", ".claude/skills"
+    )
     if listed is None or listed.returncode != 0:
         return record
-    in_commit = sorted(
-        r for r in listed.stdout.decode("utf-8", errors="replace").splitlines() if _is_rule_file(r)
-    )
+    names = listed.stdout.split(b"\0")
+    try:
+        in_commit = sorted(r for r in (n.decode("utf-8") for n in names if n) if _is_rule_file(r))
+    except UnicodeDecodeError:
+        return record
     changed = []
     for rel in sorted(set(in_commit) & set(files)):
         shown = _git(root, "show", f"{commit}:{rel}")

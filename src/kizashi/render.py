@@ -466,6 +466,16 @@ class _Memo:
             if exp.get("residual_calc_id"):
                 lines.append(f"  - 残る差：{self.calc_text(exp['residual_calc_id'])}")
                 lines += self.residual_detail(exp)
+            reflected = json.loads(exp.get("reflected_conditions_json") or "null")
+            if reflected:
+                conditions = "、".join(
+                    f"{c.get('col')} {c.get('op')} {c.get('value')}"
+                    if "value" in c
+                    else f"{c.get('col')} {c.get('op')}"
+                    for c in reflected
+                    if isinstance(c, dict)
+                )
+                lines.append(f"  - 説明によって足した・変えた条件：{conditions}")
             if exp.get("no_quant_reason"):
                 lines.append(f"  - 定量化できない理由：{self.expand(exp['no_quant_reason'])}")
         if lead.get("adjustment_json"):

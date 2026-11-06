@@ -70,7 +70,15 @@ KINDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "explanation": (
         frozenset({"lead_id", "type", "judgment", "evidence", "searched"}),
-        frozenset({"scope", "recalc_calc_id", "residual_calc_id", "no_quant_reason"}),
+        frozenset(
+            {
+                "scope",
+                "recalc_calc_id",
+                "residual_calc_id",
+                "reflected_conditions",
+                "no_quant_reason",
+            }
+        ),
     ),
     "question": (
         frozenset({"lead_id", "to", "question", "documents", "decision_impact", "purposes"}),
@@ -562,6 +570,17 @@ def _do_explanation(ctx: Ctx) -> Result:
     residual = ctx.data.get("residual_calc_id")
     if residual is not None:
         _calc(ctx, residual, "residual_calc_id")
+    reflected = ctx.data.get("reflected_conditions")
+    if reflected is not None:
+        if not isinstance(reflected, list) or not reflected:
+            raise _schema(
+                'reflected_conditions は、説明によって足した・変えた条件（{"col", "op", "value"}）の空でない配列で書く。'
+            )
+        # 基礎集計の条件と同じ検査（使える列・演算・整数の年度。D-042②）
+        calc.build_query(
+            ctx.adapter,
+            {"op": "count", "table": ctx.adapter.module.RECORD_TABLE, "filter": reflected},
+        )
     no_quant = ctx.opt_text("no_quant_reason")
     needs_scope = judgment == "support" and etype in ("T1", "T3", "T4")
     if needs_scope and (scope is None or (recalc is None and no_quant is None)):
@@ -576,11 +595,12 @@ def _do_explanation(ctx: Ctx) -> Result:
     before = None if prev is None else dict(prev)
     ctx.conn.execute(
         "INSERT INTO explanations (lead_id, type, judgment, evidence_json, searched, recalc_calc_id,"
-        " residual_calc_id, scope, no_quant_reason, context, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'main_session', ?)"
+        " residual_calc_id, reflected_conditions_json, scope, no_quant_reason, context, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'main_session', ?)"
         " ON CONFLICT (lead_id, type) DO UPDATE SET judgment = excluded.judgment,"
         " evidence_json = excluded.evidence_json, searched = excluded.searched,"
         " recalc_calc_id = excluded.recalc_calc_id, residual_calc_id = excluded.residual_calc_id,"
+        " reflected_conditions_json = excluded.reflected_conditions_json,"
         " scope = excluded.scope,"
         " no_quant_reason = excluded.no_quant_reason, context = excluded.context,"
         " updated_at = excluded.updated_at",
@@ -592,6 +612,7 @@ def _do_explanation(ctx: Ctx) -> Result:
             searched,
             recalc,
             residual,
+            None if reflected is None else canonical_json(reflected),
             scope,
             no_quant,
             ledger.now_iso(),
