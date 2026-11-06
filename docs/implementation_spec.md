@@ -126,6 +126,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 
 - **照合するもの**：`dataset_yaml_sha256`、`sql_sha256`、`rules_version`、`parser_version`。`check` と `render` は毎回いまの値と照らし、違えば `E_RULE_VERSION` で止まり、新しい実行を求める（設計書4.2）。
 - **記録だけのもの**：`code_version` と `git_commit`。開発中のコミットのたびに既存の実行が使えなくなるのを避けるためである。
+- **Skill とルールのファイル**（記録だけ。D-042④）：`run` の開始時に、`CLAUDE.md` と `.claude/skills/` の Markdown の一覧と SHA-256 を `rule_files`（`{"files": {"<パス>": "<SHA-256>"}, "commit": "<git_commit>", "matches_commit": true / false / null, "added": [...], "deleted": [...], "changed": [...]}`）に書く。`added`・`deleted`・`changed` は、記録したコミットのファイルの一覧と内容に比べた追加・削除・変更（ファイルの一覧も照らす）。確かめられなければ `matches_commit` を null にする。開始時の記録は上書きしない。
 - `rules_version`（`versions.py` の定数）と `parser_version`（`dataset.yaml`）は、正規化・照合・検証の結果を変えるコードの変更をしたときに、人が手で上げる。上げ忘れを防ぐため、テストの期待値を変えたときは上げる、と共通ルールに書く。
 - Claude Codeの版は、`scripts/investigate` が環境変数 `KIZASHI_CLAUDE_VERSION` に入れ、`run` が記録する。モデル名は `investigate` のSkillが `run_config` に書かせる（6.2）。
 
@@ -293,6 +294,7 @@ kizashi record <run_id> inbox/<名前>.json
 - V7の数値と氏名の検査（9章）を、Claudeが書く文字列に対して行う。不合格なら登録しない（巡回数は使わない）。強い語は警告。
 - 1つのトランザクションで登録し、成功したら提案を `accepted/<連番>-<kind>.json` に写して消す。失敗したら提案を残し、直す箇所を返す。
 - `events` に `record` を記録する。
+- 最初に規則の版を照らし（3.5）、違えば `E_RULE_VERSION`（終了コード3）で拒否する（版の違う台帳に登録しても `check`・`render` ができないため。古い台帳の表の形の違いを SQL の例外にしない。D-042⑤）。
 
 ### 4.6 `check`
 
@@ -525,7 +527,7 @@ CREATE TABLE events (
 | `kind` | 必須の項目 | 処理 |
 | --- | --- | --- |
 | `run_config` | `domain`、`compare_years`（連続した2年度。例 `[2024, 2025]`）、`series_years`（系列として読む年度。`compare_years` を含む。例 `[2023, 2024, 2025]`）、`question`、`model`。任意で `scope`（母集団の絞り込み。記者の指示があるときだけ。6.3。D-013） | `run` が読む。`record` では受け付けない。Claude Codeの版は `KIZASHI_CLAUDE_VERSION` から記録する（3.5） |
-| `calc` | `op`（`sum` / `count`）、`table`、`column`（sumのとき）、`filter`（`[{"col","op","value"}]`。`op` は `=`、`!=`、`in`、`is_null`、`not_null`）、`label`、`unit`。任意で `lead_id`（探索で見つけた候補を登録する前の計算では省く） | 7.1。計算IDを返す |
+| `calc` | `op`（`sum` / `count`）、`table`、`column`（sumのとき）、`filter`（`[{"col","op","value"}]`。`op` は `=`、`!=`、`in`、`is_null`、`not_null`。`fiscal_year` の値は整数（`in` は整数の配列）だけで、`"2024"` のような文字列は `E_SCHEMA`。D-042②）、`label`、`unit`。任意で `lead_id`（探索で見つけた候補を登録する前の計算では省く） | 7.1。計算IDを返す |
 | `derive` | `op`（`diff`・`ratio`・`rate`・`sum`・`product`）、`args`（計算IDの配列）、`label`、`unit`。任意で `lead_id` | 7.3 |
 | `doc_value` | `lead_id`、`source_id`、`position`、`quote`、`value`（十進数の文字列）、`label`、`unit` | 7.2 |
 | `lead` | `query_file`（`accepted/` に写した探索SQLの名前）、`lead_key`、`change_category`、`period_from`、`period_to`、`calc_from`・`calc_to`（比べる2年度の基礎集計の計算ID）、`calc_ids`（ほかに関係する計算。空でよい）、`comparison`（母集団、1行の意味、期間、単位、主体の対応、算式）、`note` | 探索で見つけた候補を `screen_id='explore'` で登録し、`calc_from`・`calc_to`・`calc_ids` の計算の `lead_id` を埋める。`calc_from`・`calc_to` が基礎集計でない、または条件（`filter`）に `fiscal_year` = `period_from`・`period_to` をそれぞれ含まなければ `E_SCHEMA`。比べた組の数（探索）を1増やす |
@@ -678,7 +680,7 @@ CREATE TABLE events (
 | V8 | `V8_COEFFICIENT_PENDING` | 比較成立なのに、係数の提案が `proposed` か `accepted` のまま残っている（6.4） |
 | V8 | `V8_CHANGE_NOT_NEGATED` | 比較成立なのに、T6a・T6b（アダプタが対象外とした場合を除く）が否定されていない。T2（受注先の変化の区分ではT5も）が否定されていない、かつ `adjusted` で補正前後の値がない |
 | V8 | `V8_ARTIFACT_NO_FACTOR` | 見かけの変化なのに、T2・T5・T6a・T6bのどれも根拠付きで支持されていない |
-| V8 | `V8_EXPLANATION_STATUS` | T1・T3・T4のどれかが支持なのに説明の状況が `none`。`full`・`part` なのに、支持の T1・T3・T4（`scope` が `full`・`part`）のどれにも、説明を反映した値（`recalc_calc_id`。候補の比べる2年度と系列の計算そのものは不可）と残る差（`residual_calc_id`：`recalc_calc_id` を引数に含む派生計算、または条件をそろえた後に残る行を数えた基礎集計の件数）がない。`unknown` なのに目的が `reason_breakdown` の質問がない（D-041⑩） |
+| V8 | `V8_EXPLANATION_STATUS` | T1・T3・T4のどれかが支持なのに説明の状況が `none`。`full`・`part` なのに、支持の T1・T3・T4（`scope` が `full`・`part`）のどれも、この表の後の「説明を反映した値と残る差」を満たさない。`unknown` なのに目的が `reason_breakdown` の質問がない（D-041⑩・D-042③） |
 | V8 | `V8_NO_WITHDRAW_RESULT` | 比較成立なのに取り下げ条件の結果がない |
 | V8 | `V8_HOLD_REASON` | 保留なのに `hold_reason` がない、または目的が `missing_documents`（不足資料の照会）の質問がない（照会先は質問の `to`、情報公開請求の候補は `foia`。D-041⑩） |
 | V8 | `V8_T6C_QUESTION` | 比較成立なのに、目的が `verify_record`（元の記載の確認）の質問がない（質問の中身の十分さは記者が確かめる。D-041⑩） |
@@ -689,11 +691,17 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 - T6b：すべてが原本照合で `matched` で、変化の区分ごとの照合項目（アダプタ仕様7.4）がすべて `match` なら「否定」。照合項目から除くのは、分野の規則でその行に当たらない項目（その年度・方式の `take` に `pdf_fields` の列がない項目。競争入札の行の `reason_raw` など）だけとし、当たる項目の照合の結果がなければ「未確認」とする（D-041④）。1つでも `mismatch` があれば「支持」（見かけの変化の検討へ）。`mismatch` がなく `unverifiable`・`not_found`・`ambiguous` があれば「未確認」（保留の理由 `source_check`）。分野アダプタが原本照合を対象外とした場合は「対象外」。
 - CLIの判定の行（`context='cli'`）は、判定・根拠・`searched` が前と同じなら `updated_at` を変えない（内容の同じ再検査で検証記録のハッシュを変えないため。検査の日時は `events` に残る。D-041⑬）。
 
-**依存する資料**（V1。D-041⑤）：候補が依存する資料（CSV）は、メモに出る基礎集計ごとに、年度と方式から決める。年度は条件の `fiscal_year`（`=`・`in`）、なければ実行の `series_years` のすべて。方式は、`run` の検出の計算（`request_json` に `screen_id` がある）なら `dataset.yaml` の `screens.<名前>.requires`、`record` の計算なら条件の `method_family`（`=`・`in`）、どちらでも方式を限ると機械で確かめられなければ分野の方式のすべて（内閣府では競争入札と随意契約）。取得できなかった資料（`partial`）は `V1_RUN_FAILED`、品質検査の結果がなければ `V1_QUALITY_NOT_RUN`、採用の行が0なら `V1_INPUT_EMPTY`。取得できた行の資料から方式を推し量らない。
+**依存する資料**（V1。D-041⑤。D-042①②）：候補が依存する資料（CSV）は、メモに出る基礎集計ごとに、年度と方式から決める。年度は条件の `fiscal_year`（`=`・`in`）、なければ実行の `series_years` のすべて。方式は、`run` の検出の計算（`request_json` に `screen_id` がある）なら `dataset.yaml` の `screens.<名前>.requires`、`record` の計算なら条件の `method_family`（`=`・`in`）、どちらでも方式を限ると機械で確かめられなければ分野の方式のすべて（内閣府では競争入札と随意契約）。取得できなかった資料（`partial`）は `V1_RUN_FAILED`、品質検査の結果がなければ `V1_QUALITY_NOT_RUN`、採用の行が0なら `V1_INPUT_EMPTY`。取得できた行の資料から方式を推し量らない。条件の年度が整数でなく解釈できなければ、年度を限らないものとして `series_years` のすべてを求める（「依存する資料なし」にしない。`record` は文字列の年度を `E_SCHEMA` にする）。
+
+**説明を反映した値と残る差**（`V8_EXPLANATION_STATUS`。D-042③）：
+- 金額の候補（候補の `metric` が `<列>_sum`、または `calc_from` が合計）：残る差は、説明を反映した値（`recalc_calc_id`）と比較対象（`calc_from` か `calc_to`）の `diff` の派生計算だけとする（`diff(説明を反映した値, 比較対象)` か `diff(比較対象, 説明を反映した値)`。メモに比較対象と引き算の向きを出す）。説明を反映した値・比較対象・残る差の単位は同じ。掛け算などを残る差としては受け付けない。件数を残る差にしない。
+- 説明を反映した値は、候補の比べる2年度・系列の計算と同じ集計であってはならない。同じ集計かは、値ではなく、基礎集計なら表・演算・列・対象行（`row_refs`）、派生計算なら演算と引数で判定する（別のIDで作り直した同じ集計を拒否する）。
+- 金額以外の候補（方式・理由の変化など）：残る差は、条件をそろえた後に残る行を数えた基礎集計の件数でもよい。その計算は、候補の比べる年度のどちらか1つの `fiscal_year` を条件に持ち、表と単位が候補の計算と同じで、条件（`filter`）がその年度の候補の計算と違い（説明を反映した条件が記録されている）、対象行がその年度の候補の行の部分集合であること（無関係な業務・年度の行を数えない）。件数が減ることは求めない。説明を反映した値は、この件数そのものでよい。
+- どちらでも、その判定（支持の T1・T3・T4）に根拠（`evidence`）があること（説明を反映した条件の根拠）。
 
 **メモに出る計算**（V2・V3・11章で共有。D-041③⑧）：候補が持つ計算、`calc_from`・`calc_to`・系列、主張の `calc_ids`、補正の前後、判定の再計算と残る差、派生計算が参照する計算（入れ子）と、メモが `{calc:ID}` を展開する欄のすべての参照。展開する欄は、主張の本文、判定の `searched`・`no_quant_reason`、仮説・取り下げ条件・候補の注記・再開の条件、質問のすべての文字列、比較の条件の6項目、補正の方法、係数の提案の文字列、対応の理由で、`render` は同じ一覧を展開する。取り下げた計算への参照は `V2_STALE_OR_WITHDRAWN`。
 
-**検証が依存する資料**（V2・11章・メモの資料の一覧で共有。D-041⑥）：メモに出る基礎集計の行の資料（率の分母だけに使う行も含む。候補の行から除くことと、依存から除くことは別）、T6a・T6bの根拠の照合の計算が読んだCSVとPDF（`request_json` の `source`・`csv_source`・`pdf_source`）、主張・判定・対応の根拠と文書値の資料。
+**検証が依存する資料**（V2・11章・メモの資料の一覧で共有。D-041⑥・D-042①）：V1の依存する資料のCSV（該当する行が0の資料も含む。「その資料には該当する行がなかった」という判断もその資料に依存するため）、メモに出る基礎集計の行の資料（率の分母だけに使う行も含む。候補の行から除くことと、依存から除くことは別）、T6a・T6bの根拠の照合の計算が読んだCSVとPDF（`request_json` の `source`・`csv_source`・`pdf_source`）、主張・判定・対応の根拠と文書値の資料。
 
 ## 10. メモと実行の概要の書式
 
@@ -724,7 +732,7 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 - 「CSVとPDFの一致は元の記載の正しさを示さない」を5節に定型文で入れる。
 - 母集団の絞り込み（6.3）があれば、1節に記者の指示と条件を出す。係数の提案（6.4）は4節と7節の先頭に出す。
 - 3節の末尾に「資料の一覧」を置き、検証が依存する資料（9章）のすべてについて、資料ID、URL、取得日時、保存場所（`data/raw/<sha256>.<拡張子>`）、SHA-256を出す。引用と行の表示は資料IDでこの一覧を引く（D-041⑭）。
-- 8節の版：Skill とルールのファイル（`CLAUDE.md`、`.claude/skills/` の Markdown）の版は、記録した git のコミットで代える。このとき、`render` の時点のファイルがそのコミットの内容と同じかを確かめて出す（違う、または確かめられなければそう書く。D-041⑭）。
+- 8節の版：Skill とルールのファイル（`CLAUDE.md`、`.claude/skills/` の Markdown）は、開始時の記録（3.5の `rule_files`。コミットとの一致を含む）と、`render` の時点の一覧・ハッシュを分けて出し、開始時からの追加・削除・変更を書く。開始時の記録のない実行は「未記録」とし、`render` の時点の値で補わない（D-041⑭・D-042④）。
 - 7節の各行：ファイル名、手元の原本の場所（`data/raw/<sha256>.csv`）、「NO」の値、表計算ソフトで開いたときの行番号（見出し4行＋論理レコード番号。セル内の改行がある行より後はずれうるため「目安」と書く）、PDFのページ、確かめる項目と値。照合できなかった行と項目を先頭に置く。
 
 ### 10.2 失効と規則の版

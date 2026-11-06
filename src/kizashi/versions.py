@@ -36,7 +36,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 10：D-041（照合の PDF を原本の検査と検証記録のハッシュに入れる、依存する資料を条件と分野の規則から決める、
 #     メモが展開する欄のすべての {calc:ID} を検査する、内容の同じ再検査でハッシュを変えない、質問の目的と残る差、
 #     T6b の当たる項目）。check・render・record の結果が変わる。
-RULES_VERSION = "10"
+# 11：D-042（該当する行のない依存する CSV も原本の検査とハッシュに入れる、年度は整数だけ、残る差の規則、Skill と
+#     ルールのファイルを開始時に記録する、版の違う台帳への record を拒否する）。run・check・render・record の
+#     結果が変わる。
+RULES_VERSION = "11"
 
 
 def code_version() -> str:
@@ -91,6 +94,8 @@ def rule_versions(root: Path, domain: str) -> dict:
         "code_version": code_version(),
         "git_commit": git_commit(root),
     }
+    # Skill とルールのファイル（記録だけ。照らすのはメモでの表示。D-042④）
+    versions["rule_files"] = rule_files_record(root, versions["git_commit"])
     claude_version = os.environ.get("KIZASHI_CLAUDE_VERSION")
     if claude_version:
         # scripts/investigate が渡す Claude Code の版（3.5）。記録だけで、照合しない。
@@ -121,25 +126,50 @@ def rule_files(root: Path) -> list[Path]:
     return files
 
 
-def rule_files_state(root: Path, commit: str | None) -> tuple[str, list[tuple[str, str]]]:
-    """Skill とルールのファイルの SHA-256 と、それらが記録したコミットの内容と同じか（メモの8節。D-041⑭）。"""
-    files = [(p.relative_to(root).as_posix(), sha256_file(p)) for p in rule_files(root)]
+def _is_rule_file(rel: str) -> bool:
+    return rel == "CLAUDE.md" or (rel.startswith(".claude/skills/") and rel.endswith(".md"))
+
+
+def rule_file_hashes(root: Path) -> dict[str, str]:
+    """いまの Skill とルールのファイル（パス → SHA-256）。"""
+    return {p.relative_to(root).as_posix(): sha256_file(p) for p in rule_files(root)}
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def rule_files_record(root: Path, commit: str | None) -> dict:
+    """Skill とルールのファイルの一覧と SHA-256 と、記録したコミットとの照合（3.5 の rule_files。D-042④）。
+
+    コミットとの照合は、内容だけでなくファイルの一覧（追加・削除）も照らす。確かめられなければ matches_commit は
+    None。"""
+    files = rule_file_hashes(root)
+    record: dict = {"files": files, "commit": commit, "matches_commit": None}
     if not commit or commit == "unknown":
-        return "確かめられない（実行にコミットの記録がない）", files
-    different: list[str] = []
-    for rel, sha in files:
-        try:
-            proc = subprocess.run(
-                ["git", "show", f"{commit}:{rel}"],
-                cwd=root,
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return "確かめられない（git で読めない）", files
-        if proc.returncode != 0 or sha256_bytes(proc.stdout) != sha:
-            different.append(rel)
-    if different:
-        return f"違う（コミット {commit} の内容と違うファイル：{'・'.join(different)}）", files
-    return f"同じ（コミット {commit} の内容と同じ）", files
+        return record
+    listed = _git(root, "ls-tree", "-r", "--name-only", commit, "--", "CLAUDE.md", ".claude/skills")
+    if listed is None or listed.returncode != 0:
+        return record
+    in_commit = sorted(
+        r for r in listed.stdout.decode("utf-8", errors="replace").splitlines() if _is_rule_file(r)
+    )
+    changed = []
+    for rel in sorted(set(in_commit) & set(files)):
+        shown = _git(root, "show", f"{commit}:{rel}")
+        if shown is None or shown.returncode != 0:
+            return record
+        if sha256_bytes(shown.stdout) != files[rel]:
+            changed.append(rel)
+    record.update(
+        added=sorted(set(files) - set(in_commit)),
+        deleted=sorted(set(in_commit) - set(files)),
+        changed=changed,
+    )
+    record["matches_commit"] = not (record["added"] or record["deleted"] or changed)
+    return record

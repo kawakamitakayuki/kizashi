@@ -372,7 +372,7 @@ class _Memo:
             "引用・行・照合の根拠の資料IDは、この一覧で引く（検証が依存する資料のすべて）。"
         )
         lines.append("")
-        for source_id in hashing.dependency_sources(self.conn, self.lead["lead_id"]):
+        for source_id in hashing.dependency_sources(self.conn, self.lead["lead_id"], self.adapter):
             lines.append(self.source_line(source_id))
         lines.append("")
         return lines
@@ -465,6 +465,7 @@ class _Memo:
                 lines.append(f"  - 説明を反映した再計算：{self.calc_text(exp['recalc_calc_id'])}")
             if exp.get("residual_calc_id"):
                 lines.append(f"  - 残る差：{self.calc_text(exp['residual_calc_id'])}")
+                lines += self.residual_detail(exp)
             if exp.get("no_quant_reason"):
                 lines.append(f"  - 定量化できない理由：{self.expand(exp['no_quant_reason'])}")
         if lead.get("adjustment_json"):
@@ -487,6 +488,25 @@ class _Memo:
             "",
         ]
         return lines
+
+    def residual_detail(self, exp: dict) -> list[str]:
+        """残る差の比較対象と引き算の向き（金額の候補）、または対象の年度と行（金額以外の候補）。D-042③。"""
+        residual = self.calc(exp["residual_calc_id"]) or {}
+        if residual.get("kind") == "derived":
+            args = json.loads(residual["request_json"]).get("args") or []
+            other = check.residual_comparison(self.conn, self.lead, exp)
+            if len(args) == 2:
+                return [
+                    (
+                        f"    - 引き算の向き：{args[0]} から {args[1]} を引いた値（{residual['formula']}）。"
+                        f"比較対象：{other or '（規則に合う比較対象がない）'}。単位：{residual['unit']}"
+                    )
+                ]
+            return []
+        if residual.get("kind") == "base":
+            rows = "・".join(json.loads(residual["row_refs_json"] or "[]")) or "なし"
+            return [f"    - 条件をそろえた後に残る行：{rows}（単位：{residual['unit']}）"]
+        return []
 
     def section5(self) -> list[str]:
         lead = self.lead
@@ -616,9 +636,7 @@ class _Memo:
                 f"row_refs のハッシュ {comp['row_refs_sha256'] or 'なし'}"
             )
         lines.append("- 原本のハッシュ：3節の資料の一覧のとおり（検証が依存する資料のすべて）")
-        state, files = versions.rule_files_state(self.root, versions_json_commit(self.run))
-        lines.append(f"- Skill とルールのファイル（render の時点）：{state}")
-        lines += [f"  - {rel}：{sha}" for rel, sha in files]
+        lines += self.rule_files_lines(recorded)
         lines += [
             (
                 f"- 版：コード {recorded.get('code_version')}（コミット {recorded.get('git_commit')}。Skill と"
@@ -629,6 +647,50 @@ class _Memo:
             f"- 検証記録のハッシュ：{digest}",
             "",
         ]
+        return lines
+
+    def rule_files_lines(self, recorded: dict) -> list[str]:
+        """Skill とルールのファイル：run の開始時の記録と render の時点の値を分けて出す（D-042④）。開始時の記録の
+        ない実行は「未記録」とし、render の時点の値で補わない。"""
+        start = recorded.get("rule_files")
+        now = versions.rule_file_hashes(self.root)
+        lines = []
+        if not isinstance(start, dict) or not isinstance(start.get("files"), dict):
+            lines.append("- Skill とルールのファイル（run の開始時の記録）：未記録")
+        else:
+            match = start.get("matches_commit")
+            if match is None:
+                state = "コミットと同じかは確かめられなかった"
+            elif match:
+                state = f"コミット {start.get('commit')} の内容と同じ"
+            else:
+                parts = [
+                    f"{name} {'・'.join(start.get(key) or [])}"
+                    for key, name in (("added", "追加"), ("deleted", "削除"), ("changed", "変更"))
+                    if start.get(key)
+                ]
+                state = f"コミット {start.get('commit')} の内容と違う（{'、'.join(parts)}）"
+            lines.append(f"- Skill とルールのファイル（run の開始時の記録）：{state}")
+            lines += [f"  - {rel}：{sha}" for rel, sha in sorted(start["files"].items())]
+        lines.append("- Skill とルールのファイル（render の時点）：")
+        lines += [f"  - {rel}：{sha}" for rel, sha in sorted(now.items())] or ["  - なし"]
+        if isinstance(start, dict) and isinstance(start.get("files"), dict):
+            before = start["files"]
+            diff = [
+                (name, sorted(paths))
+                for name, paths in (
+                    ("追加", set(now) - set(before)),
+                    ("削除", set(before) - set(now)),
+                    ("変更", {k for k in set(now) & set(before) if now[k] != before[k]}),
+                )
+                if paths
+            ]
+            lines.append(
+                "  - 開始時から変わった："
+                + "、".join(f"{name} {'・'.join(paths)}" for name, paths in diff)
+                if diff
+                else "  - 開始時の記録と同じ"
+            )
         return lines
 
     def text(self, memo_no: int, digest: str) -> str:
@@ -649,10 +711,6 @@ class _Memo:
             *self.section8(memo_no, digest),
         ]
         return "\n".join(lines).rstrip("\n") + "\n"
-
-
-def versions_json_commit(run: dict) -> str | None:
-    return json.loads(run.get("rule_versions_json") or "{}").get("git_commit")
 
 
 def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
@@ -688,7 +746,7 @@ def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
                     after={"state": lead["proposed_outcome"]},
                     reason="render",
                 )
-            digest = hashing.check_hash(conn, lead_id)
+            digest = hashing.check_hash(conn, lead_id, adapter)
             memo_no = int(lead["memo_no"]) + 1
             memos.mkdir(parents=True, exist_ok=True)
             paths.ensure_in_data(root, memos)
