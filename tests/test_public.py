@@ -259,6 +259,36 @@ def test_pb1_clean_repository_passes(git_repo: Path, synthetic_run: str, capsys)
     assert code == 0 and json.loads(capsys.readouterr().out)["data"]["passed"] is True
 
 
+def test_pb1_pass_message_states_unchecked_contents(git_repo: Path, synthetic_run: str) -> None:
+    """PB-1（D-070）：合格のメッセージは、氏名などを検査しなかった中身（UTF-8 として読めないか 5MB を超える）の
+    数を示す。ひな形の状態ではそういう中身はない（0件）。CP932 の架空のファイル（担当官の氏名「架空　太郎」を含む）を
+    公開の例に足すと、仕様どおり氏名は検査されずに合格し（12.2 の限界）、その1件をメッセージに書く。"""
+    clean = publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    assert clean["targets"]["hash_only"] == 0
+    assert "氏名などを検査できなかった中身はない" in clean["message"]
+    write(git_repo, "examples/legacy.csv", "担当官,架空　太郎\n".encode("cp932"))
+    write(git_repo, "examples/publish.manifest", "examples/example.md\nexamples/legacy.csv\n")
+    commit(git_repo, "CP932 の例")
+    result = publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    assert result["passed"] is True and result["targets"]["hash_only"] == 1
+    assert "検査しておらず" in result["message"] and "1件" in result["message"]
+    assert "検査を通したコミットそのもの" in result["message"]
+
+
+def test_pb1_check_the_local_commit_to_publish(git_repo: Path, synthetic_run: str) -> None:
+    """PB-1（D-069）：公開の手順は「公開用のコミットを手元で作り（push しない）、そのコミットで検査し、通ったその
+    コミットを公開する」。新しい例を一覧に足してステージしただけでは、最新のコミットの一覧と合わず
+    P_MANIFEST_MISMATCH。手元でコミットすると合格する。"""
+    write(git_repo, "examples/second.md", CLEAN)
+    write(git_repo, "examples/publish.manifest", "examples/example.md\nexamples/second.md\n")
+    git(git_repo, "add", "-A")
+    failures = publish_failures(git_repo, synthetic_run)
+    assert {f["code"] for f in failures} == {publish.MANIFEST_MISMATCH}
+    git(git_repo, "commit", "-q", "-m", "公開用のコミット")
+    result = publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    assert result["passed"] is True and result["files"] == 3
+
+
 def test_pb1_denylist_is_required(git_repo: Path, synthetic_run: str, monkeypatch) -> None:
     """PB-1：KIZASHI_DENYLIST がないか読めなければ E_DENYLIST_MISSING（終了コード3）で、合格にしない。"""
     monkeypatch.delenv("KIZASHI_DENYLIST")

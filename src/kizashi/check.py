@@ -989,6 +989,8 @@ def _v4(
         for e in json.loads(exp["evidence_json"]):
             targets.append((f"{lead['lead_id']}・{exp['type']}", e, {}))
     for match in matches:
+        if match["status"] == "withdrawn":  # 取り下げた対応の根拠は照らさない（D-072）
+            continue
         for e in json.loads(match["evidence_json"]):
             targets.append((match["match_id"], e, {}))
     for calc_id in hashing.memo_calc_ids(conn, lead["lead_id"]):

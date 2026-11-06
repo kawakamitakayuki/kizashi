@@ -289,3 +289,82 @@ def test_qt1_corrupt_page_text_is_a_typed_failure(repo: Path, synthetic_run: str
     with pytest.raises(KizashiError) as info:
         record.record(repo, synthetic_run, "inbox/again.json")
     assert info.value.code == "E_QUOTE_NOT_FOUND" and info.value.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# D-067 inbox のファイル名、D-068 リンクの URL の既知の氏名
+# ---------------------------------------------------------------------------
+
+
+def test_qu1_query_with_non_ascii_file_name_saves_nothing(repo: Path, synthetic_run: str) -> None:
+    """QU-1・CK-4（D-067）：氏名を含む（ASCII でない）名前の探索SQLは、実行も保存もせず E_INBOX_PATH。queries/・
+    accepted/・events・返却に名前が残らない。"""
+    from kizashi import query
+
+    (repo / "inbox" / "架空太郎.sql").write_text("SELECT 1 AS n", encoding="utf-8")
+    with pytest.raises(KizashiError) as info:
+        query.run_query(repo, synthetic_run, "inbox/架空太郎.sql")
+    assert info.value.code == "E_INBOX_PATH" and "架空太郎" not in info.value.message
+    run_dir = repo / "data" / "runs" / synthetic_run
+    assert not any("架空太郎" in p.name for p in run_dir.rglob("*"))
+    conn = ledger_of(repo, synthetic_run)
+    assert not any("架空太郎" in line for line in conn.iterdump())
+    conn.close()
+
+
+def test_ft4_links_with_known_names_in_url_are_not_saved(repo: Path, synthetic_run: str) -> None:
+    """FT-4（D-068）：リンクの URL（% の符号を戻した形）に実行の担当官の氏名があるリンクは、links.json と取得の
+    結果に残さず、除いた数（dropped_links）だけを返す。ほかのリンクは残る。原本は書き換えない。"""
+    import json
+    from urllib.parse import quote, unquote
+
+    named = "https://www.cao.go.jp/test/spec.html?person=" + quote("架空太郎")
+    plain = "https://www.cao.go.jp/test/plain.html"
+    body = f'<a href="{named}">架空 太郎の資料</a><a href="{plain}">仕様書</a>'
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            content=f"<!doctype html><html><body>{body}</body></html>".encode(),
+        )
+    )
+    result = fetcher.fetch_evidence(repo, synthetic_run, URL, "evidence", transport=transport)
+    assert [link["url"] for link in result["links"]] == [plain]
+    assert result["dropped_links"] == 1
+    stored = (
+        repo / "data" / "runs" / synthetic_run / "evidence" / result["source_id"] / "links.json"
+    ).read_text(encoding="utf-8")
+    assert "架空太郎" not in unquote(stored) and "架空太郎" not in unquote(
+        json.dumps(result, ensure_ascii=False)
+    )
+    (raw,) = raw_dir(repo).glob(f"{result['sha256']}.*")
+    assert quote("架空太郎").encode() in raw.read_bytes()  # 原本は書き換えない
+
+
+def test_ft4_fetch_url_with_known_name_is_refused_before_request(
+    repo: Path, synthetic_run: str
+) -> None:
+    """FT-4（D-068）：kizashi fetch に、% の符号を戻すと実行の担当官の氏名を含む URL を渡すと、通信と保存の前に
+    E_V7 で拒否する（資料を登録しない。不合格の文に URL と氏名を書かない）。"""
+    from urllib.parse import quote
+
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, content=b"<html><body>x</body></html>")
+
+    conn = ledger_of(repo, synthetic_run)
+    (before,) = conn.execute("SELECT COUNT(*) FROM sources").fetchone()
+    conn.close()
+    url = "https://www.cao.go.jp/test/spec.html?person=" + quote("架空　太郎")
+    with pytest.raises(KizashiError) as info:
+        fetcher.fetch_evidence(
+            repo, synthetic_run, url, "evidence", transport=httpx.MockTransport(handler)
+        )
+    assert info.value.code == "E_V7" and requests == []
+    assert "太郎" not in info.value.message and quote("太郎") not in info.value.message
+    conn = ledger_of(repo, synthetic_run)
+    (after,) = conn.execute("SELECT COUNT(*) FROM sources").fetchone()
+    conn.close()
+    assert after == before

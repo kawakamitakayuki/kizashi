@@ -269,8 +269,13 @@ def dependency_sources(conn: sqlite3.Connection, lead_id: str, adapter: Adapter)
                 sources.add(request.get("source_id"))
             elif comp["kind"] == "reconcile":
                 sources |= {request.get(k) for k in ("source", "csv_source", "pdf_source")}
+    # 取り下げた主張と対応の根拠は、検証が依存する資料に入れない（取り下げの履歴は台帳に残る。D-072）
+    excluded = {
+        "claims": " AND state <> 'withdrawn'",
+        "procurement_matches": " AND status <> 'withdrawn'",
+    }
     for table in ("claims", "explanations", "procurement_matches"):
-        where = " AND state <> 'withdrawn'" if table == "claims" else ""
+        where = excluded.get(table, "")
         for row in dict_rows(
             conn, f"SELECT evidence_json FROM {table} WHERE lead_id = ?{where}", (lead_id,)
         ):
