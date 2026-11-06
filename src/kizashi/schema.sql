@@ -165,7 +165,7 @@ CREATE TABLE procurement_contracts (
   contract_date TEXT,
   counterparty_raw TEXT,
   corp_numbers_json TEXT NOT NULL DEFAULT '[]',
-  corp_number_state TEXT NOT NULL CHECK (corp_number_state IN ('digits13','exponent','missing','multiple','invalid')),
+  corp_number_state TEXT NOT NULL CHECK (corp_number_state IN ('digits13','exponent','missing','multiple','invalid','valid_from_pdf')),
   method_raw TEXT,
   method_detail_json TEXT,
   unit_price INTEGER NOT NULL CHECK (unit_price IN (0,1)),

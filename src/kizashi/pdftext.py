@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kizashi.adapters import FileSpec
-from kizashi.normalize import key_text, nfkc
+from kizashi.normalize import (
+    corp_check_digit_ok,
+    exponent_matches,
+    key_text,
+    nfkc,
+    parse_corp_number,
+)
 
 # 7.1 の数値
 THIN = 2.0  # 罫線とみなす四角形の短い辺（pt 未満）
@@ -389,6 +395,37 @@ def match_field(field_key: str, values: Mapping[str, object], cell: str) -> str:
     if field_key in ("title_raw", "counterparty_raw", "method_raw", "reason_raw"):
         return match_exact(_str(values.get(field_key)), cell)
     raise ValueError(f"知らない照合の項目：{field_key}")
+
+
+# 法人番号の補完で、件名と金額が CSV と PDF で一致したことを確かめる照合の項目（設計書7.4の条件3）
+COMPLETION_FIELDS = ("title_raw", "amount_yen")
+
+
+def corp_completion(
+    raw: str | None, cell: str, fields: Mapping[str, str]
+) -> tuple[dict, str | None]:
+    """CSV の法人番号が指数表記の行で、PDF の法人番号の欄の13桁を採用するか（P1-b。設計書7.4、D-077）。
+
+    PDF の欄が13桁ちょうど1つ（4.6 の digits13 と同じ判定）で、①検査用数字が合う（D-076）、②CSV の指数表記に
+    残る有効桁と合う、③件名と金額の照合（fields）がどちらも match、のすべてを満たすときだけ採用する。
+    戻り値は（照合の記録に書く結果, 採用した13桁）。満たさない条件を failed に順に書く（pdf_cell・check_digit・
+    significant_digits・title_amount。欄の13桁が1つでなければ①②は見ない）。どちらかを正解にはしない。
+    """
+    failed: list[str] = []
+    state, numbers = parse_corp_number(cell)
+    number = numbers[0] if state == "digits13" else None
+    if number is None:
+        failed.append("pdf_cell")
+    else:
+        if not corp_check_digit_ok(number):
+            failed.append("check_digit")
+        if not exponent_matches(number, raw):
+            failed.append("significant_digits")
+    if any(fields.get(f) != MATCH for f in COMPLETION_FIELDS):
+        failed.append("title_amount")
+    if failed:
+        return {"state": "unconfirmed", "failed": failed}, None
+    return {"state": "valid_from_pdf"}, number
 
 
 def _str(value: object) -> str | None:
