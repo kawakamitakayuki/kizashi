@@ -72,6 +72,8 @@
 | D-065 | 7234a71の再レビュー（2026-11-06）：D-058の仮の見分け方への補足。根拠の引用列と集計の条件で機械的に見分け、本文の意味を見ない方針は妥当。ただし、メモに出る文書値（`doc_value`）の `request_json.position.column` は調べていない。合成CSVの `S001:000002` の13桁の法人番号を、同じ列を引く文書値として翻訳業務の候補に足すと、翻訳業務の行の法人番号は指数表記なのに、追加照合が動かず T6b は `refute` の比較成立メモになった。案：文書値の根拠の引用列（`counterparty_raw`・`corp_number_raw`）も同じ識別条件に含める。本文の意味を機械で読む機能を足す案ではない | 決定（2026-11-06。決定の表の D-065） |
 | D-066 | 7234a71の再レビュー（2026-11-06）：引用したページ別テキストがUTF-8として壊れていると、V4の不合格を返さず、CLIが `E_INTERNAL`（終了コード5）になる。合成HTMLの正しい引用を登録後、`pages/1.txt` を不正なUTF-8の1バイトに変えて再現した。`quotes.verify_quote` の `read_text` の `UnicodeDecodeError` が、再抽出の照合より先にそのまま出るため。誤ったメモは作らないが、D-061で定めたページ別テキストの破損の不合格として返せていない。案：読み取り・復号の失敗も型付きのV4の不合格にし、再抽出側の保存テキストの読み取りも同じ扱いにする | 決定（2026-11-06。決定の表の D-066） |
 
+| D-067 | Final Review（2026-11-06）：探索SQLのファイル名に担当官の氏名が含まれる場合の保存。合成データの担当官名を含む `inbox/架空太郎.sql` に `SELECT 1 AS n` を書いて `query` を実行すると、SQL本文と結果の氏名検査を通り、ファイル名が `events.after_json`・`queries/` の結果とファイル名・`accepted/` に保存され、返却にも含まれた。共通ルールの「氏名を保存しない」に反する。実装仕様4.4はSQL本文・結果の氏名検査を定めるが、ファイル名の扱いを明記していない。ファイル名の検査・拒否とエラー時に元の名前を表示しない扱いを含め、仕様と修正範囲を決める必要がある。合成データによる再現テスト：`/tmp/kizashi_review_1106/test_query_filename.py`（QU-1・CK-4、1件不合格） | 未決 |
+
 ### D-001 の試験の記録
 
 1回目（2026-11-05）。Claude Code v2.1.318。`scripts/investigate` で起動した（`--permission-mode dontAsk --setting-sources project --tools "Bash,Read,Grep,Glob,Skill,WebSearch,Write" --settings investigate.settings.json`）。利用者が貼ったセッションの記録から書いた。記録には一部欠けた箇所がある。
@@ -448,6 +450,16 @@ D-017 の再試験（2026-11-05 14:40ごろ）。Claude Code v2.1.318。ec74c78 
 - 証跡は `/tmp/kizashi_f355869_review/` の `baseline.log`・`baseline.xml`、`previous_probes.log`・`previous_probes.xml`、`coefficient_states.log`・`coefficient_states.xml`。前回の13件は `/tmp/kizashi_7234a71_review/test_previous_review.py` と `test_boundaries.py`、追加6件は `/tmp/kizashi_f355869_review/test_coefficient_states.py`。独立試験は `PYTHONPATH=tests:src .venv/bin/pytest` で各ファイルを指定して実行した。
 - 製品コード・既存テスト・規則の版は変更せず、この再レビュー記録だけを追記した。実際のdata/rawとreferences/は変更していない。コミット・pushは行っていない。
 - これは今回の実装修正の再レビューの合格であり、記者の原本確認・評価や公開物の承認を行った記録ではない。版19での実データの新しい実行、Claude Code実機の権限再試験、disclosure.allowの記入、L0405の原本確認、評価、AC-4の残り、実際の補助資料4点による公開検査は行っていない。既存のD-004・D-007・D-008・D-009も未決のまま。
+
+
+### 版19での実データの新しい実行の記録
+
+2026-11-06 21:15。コミット ab7e7f7（`rules_version` 19）。開発のセッションで、P0-7 の実行と同じ設定（`accepted/0001-run_config.json` の写し）で `kizashi run cao-procurement --config inbox/run-config-v19.json` を行った（公表元から取得。約47秒）。実行ID `20261106-211517-zyi4`。`scripts/investigate` を使っていないので、調査用の設定ではなく、Claude Code の版は未記録。
+
+- 状態は completed。取得した公表一覧12本（令和5〜7年度の競争入札・随意契約の CSV と PDF）の SHA-256 と URL は、P0-7 の実行と同じだった（公表元の差し替えはなかった）。`dataset.yaml` と検出SQL のハッシュも同じ。
+- 正規化の行数（S001 802、S003 669、S005 858、S007 422、S009 881、S011 391。すべて採用）、品質検査の結果（不合格なし。D-059 の様式の確かめを含む）、取り込みの照合と原本照合、検出SQLごとの比べた組の数、検出の候補423件（候補ID・区分・単位・比較できない理由まで）、`run` が作った計算は、P0-7 の実行と同じだった。
+- 版19の検証を実データで確かめるため、この実行の写し（作業用のフォルダー。実際の `data/` には書いていない）に、P0-7 の L0405 の提案（`accepted/` の16件）を登録し直した。索引ページと追加資料（S013〜S020）は、P0-7 で取得した原本を同じ URL で返した（通信なし。SHA-256 は P0-7 と同じ。ページ別テキストで伏せた既知の氏名は0件）。L0405 は受注先を扱わない（T6b の照合項目は件名・契約日・方式・理由の4つ）。`check` は合格（V1〜V8。警告なし。実際の PDF でも、抽出し直したページ別テキストが保存したものと一致した）。v1 は有効、主張 C0002 を取り下げると失効、`check` は合格（巡回数2）、v2 を書けて有効。これは操作の試験で、記者の確認ではない。
+- 実際の `data/` には、新しい実行の `run` の記録だけがある（メモはない）。P0-7 の実行のメモ（v1・v2）は変わっていない。
 
 ## 決定
 
