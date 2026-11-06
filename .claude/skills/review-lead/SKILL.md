@@ -52,8 +52,8 @@ argument-hint: "[lead_id] [run_id]"
      count を、説明を反映した値と残る差の両方にする。reflected_conditions にはその残りを選ぶ条件を書く
      （fiscal_year・record_id・group_key・method_family は使えない）。候補の行にその条件だけを当てた行が、
      数えた行と一致しなければならない。条件の列が空の候補の行（競争入札の行の reason_category など）を
-     =・!=・in・not_null で残りから外すと、check が判定ごとに V8_EXPLANATION_STATUS で拒否する。空の行を残すなら
-     is_null。定量化できなければ残りの件数を使わず、scope を unknown にして no_quant_reason と理由・内訳の質問で扱う。
+     =・!=・in・not_null で残りから外すと、check が判定ごとに V8_EXPLANATION_STATUS で拒否する（除けるのは、
+     reflected_conditions に宣言した説明用の条件で空でない値によって外れる行だけ）。空の行を残すなら is_null。定量化できなければ残りの件数を使わず、scope を unknown にして no_quant_reason と理由・内訳の質問で扱う。
      0件でも「全部」と決めつけず、残りを選ぶ条件が根拠の説明する範囲と合うかを確かめ、記者に伝える。
    定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問（purposes に reason_breakdown）を登録する。
 7. 結論の案を kind: conclusion で登録する。どの結論でも、T1〜T5・T6c の判定を登録しておく。

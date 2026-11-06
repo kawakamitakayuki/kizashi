@@ -45,7 +45,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     しない）。check・render の結果が変わる。
 # 14：D-048（残りの件数を出す判定ごとに、残りを選ぶ条件の列が空の候補の行を =・!=・in・not_null で外していれば
 #     不合格にする。別の説明の合格で免除しない）。check・render の結果が変わる。
-RULES_VERSION = "14"
+# 15：D-049（空の値で外れた行の検査を免除する別の条件を、その判定の reflected_conditions に宣言した説明用の条件に
+#     限る）。check・render の結果が変わる。
+RULES_VERSION = "15"
 
 
 def code_version() -> str:

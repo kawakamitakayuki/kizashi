@@ -874,14 +874,19 @@ NULL_EXCLUDING_OPS = ("=", "!=", "in", "not_null")
 
 
 def null_excluded_rows(
-    conn: sqlite3.Connection, adapter: Adapter, lead: dict, residual: dict
+    conn: sqlite3.Connection,
+    adapter: Adapter,
+    lead: dict,
+    residual: dict,
+    reflected: object,
 ) -> list[tuple[str, str, str]]:
-    """残りの件数（基礎集計）が、列が空の値だけを理由に候補の行を残りから外していれば、(row_ref, 列, 演算) を返す。
+    """残りの件数（基礎集計）が、列が空の値で候補の行を残りから外していれば、(row_ref, 列, 演算) を返す。
 
     検査元は、残りの件数が参照する年度（条件の fiscal_year。限っていなければ比べる2年度）の候補の行
-    （calc_from・calc_to の row_refs）。そのうち残りに入らなかった行で、=・!=・in・not_null の条件の列が空で、
-    ほかの条件（列が空でない条件）はすべて満たすものを、空の値で外れた行とする。空でない別の条件で外れる行は含めない
-    （D-048）。
+    （calc_from・calc_to の row_refs）。そのうち残りに入らなかった行で、=・!=・in・not_null の条件の列が空のものを、
+    空の値で外れた行とする（D-048）。ただし、その判定の reflected_conditions に宣言し、説明用として認める条件
+    （候補を選び直すだけの列でないもの）で、空でない値によって外れる行は含めない。宣言していない条件や、
+    method_family などの選び直すだけの列の条件では免除しない（D-049）。
     """
     request = json.loads(residual["request_json"])
     table = request.get("table")
@@ -904,7 +909,16 @@ def null_excluded_rows(
     if not rows:
         return []
     ordered = sorted(rows)
-    columns = sorted({filters[i]["col"] for i in sensitive})
+    declared = normalized_conditions(reflected)
+    # 免除の根拠にできる条件：宣言した説明用の条件（D-049）
+    exempting = [
+        i
+        for i, f in enumerate(filters)
+        if f.get("col") in allowed
+        and f.get("col") not in IDENTITY_COLUMNS
+        and normalized_condition(f) in declared
+    ]
+    columns = sorted({filters[i]["col"] for i in (*sensitive, *exempting)})
     marks = ", ".join("?" for _ in ordered)
     # 表と列は分野の許可リスト（CALC_TABLES）にあるものだけなので、SQL に埋め込んでよい
     empty = {
@@ -914,24 +928,27 @@ def null_excluded_rows(
             ordered,
         )
     }
-    satisfied = []  # 条件ごとに、それを満たす行（SQL の意味で。record_status = 'adopted' は calc が加える）
-    for f in filters:
+    satisfied = {}  # 免除の根拠にできる条件ごとに、それを満たす行（SQL の意味で。adopted は calc が加える）
+    for i in exempting:
         result = calc.base_aggregate(
             conn,
             adapter,
             {
                 "op": "count",
                 "table": table,
-                "filter": [f, {"col": "record_id", "op": "in", "value": ordered}],
+                "filter": [filters[i], {"col": "record_id", "op": "in", "value": ordered}],
             },
             allow_empty_in=True,
         )
-        satisfied.append(set(result.row_refs))
+        satisfied[i] = set(result.row_refs)
     found = []
     for row in ordered:
-        by_null = [i for i in sensitive if filters[i]["col"] in empty.get(row, ())]
-        others = [i for i in range(len(filters)) if i not in by_null]
-        if by_null and all(row in satisfied[i] for i in others):
+        nulls = empty.get(row, set())
+        by_null = [i for i in sensitive if filters[i]["col"] in nulls]
+        exempted = any(
+            filters[i]["col"] not in nulls and row not in satisfied[i] for i in exempting
+        )
+        if by_null and not exempted:
             found += [(row, filters[i]["col"], filters[i]["op"]) for i in by_null]
     return found
 
@@ -945,7 +962,8 @@ def _v8_null_exclusion(
         residual = _comp(conn, residual_id)
         if residual is None or residual["kind"] != "base":
             continue
-        found = null_excluded_rows(conn, adapter, lead, residual)
+        reflected = json.loads(exp.get("reflected_conditions_json") or "null")
+        found = null_excluded_rows(conn, adapter, lead, residual, reflected)
         if not found:
             continue
         rows = sorted({r for r, _, _ in found})
@@ -954,7 +972,8 @@ def _v8_null_exclusion(
         v.fail(
             "V8_EXPLANATION_STATUS",
             f"判定 {etype} の残る差（{residual_id}）で、候補の行のうち列 {columns} が空の行（{'・'.join(rows)}）が、"
-            f"条件（{ops}）で残りから外れている。空の値は、根拠で説明できる行として除けない。その列で残りを選ばないか"
+            f"条件（{ops}）で残りから外れている。空の値は、根拠で説明できる行として除けない（reflected_conditions に"
+            "宣言した説明用の条件で、空でない値によって外れる行だけを除ける。D-049）。その列で残りを選ばないか"
             "（空の行を残すなら is_null）、定量化できなければ残りの件数を使わず、scope を unknown にして no_quant_reason と"
             "理由・内訳を尋ねる取材質問（purposes に reason_breakdown）で扱う（D-048）。",
             [lead["lead_id"], residual_id, *rows],
