@@ -680,6 +680,10 @@ def _do_coefficient(ctx: Ctx) -> Result:
 def _do_conclusion(ctx: Ctx) -> Result:
     lead = _lead(ctx)
     outcome = ctx.choice("outcome", OUTCOMES)
+    if outcome != "hold":
+        limit = check.round_limit(ctx.conn, lead)
+        if lead["rounds"] >= limit:
+            raise check.rounds_exceeded(lead["lead_id"], lead["rounds"], limit, STAGE)
     comparison_state = ctx.choice("comparison_state", COMPARISON_STATES)
     explanation_status = ctx.opt_choice("explanation_status", EXPLANATION_STATUSES)
     hold_reason = ctx.opt_choice("hold_reason", HOLD_REASONS)
@@ -888,22 +892,25 @@ def _v7(ctx: Ctx, target_id: str) -> list[dict]:
     words_only = {k: v for k, v in ctx.warn_texts.items() if v}
     if not texts and not names_only:
         return []
-    names = check.name_variants(ctx.adapter.module.name_list(ctx.conn, ctx.root, ctx.adapter))
+    module = ctx.adapter.module
+    names = check.name_variants(module.name_list(ctx.conn, ctx.root, ctx.adapter))
+    # 取り込まない列の値（担当官の所在地と相手方の住所。D-032）も、氏名と同じ欄に当てる
+    excluded = check.excluded_matcher(module.excluded_values(ctx.conn, ctx.root, ctx.adapter))
     errors, warnings = check.v7_findings(
-        texts, names=names, quotes=ctx.quotes, names_only=names_only, words_only=words_only
+        texts,
+        names=names,
+        quotes=ctx.quotes,
+        names_only=names_only,
+        words_only=words_only,
+        excluded=excluded,
     )
     if errors:
-        parts = []
-        for e in errors:
-            if e["code"] == "V7_PERSONAL_NAME":
-                parts.append(f"{e['code']}：{e['field']} の {e['at'][0] + 1}〜{e['at'][1]} 文字目")
-            else:
-                parts.append(f"{e['code']}：{e['field']} に「{e['hit']}」")
+        parts = [check.v7_hit_text(e) for e in errors]
         raise _err(
             "E_V7",
             "Claude が書く欄の検査（V7）に通らない：" + "、".join(parts),
-            next_action="金額・件数・比率は {calc:ID} で参照し、数字を書かない。氏名を書かない"
-            "（引用や条件の値も同じ。氏名を含まない範囲を引用する）。",
+            next_action="金額・件数・比率は {calc:ID} で参照し、数字を書かない。氏名と、担当官の所在地・"
+            "相手方の住所を書かない（引用や条件の値も同じ。それらを含まない範囲を引用する）。",
             affected=(target_id,),
         )
     return [

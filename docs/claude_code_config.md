@@ -208,7 +208,8 @@ argument-hint: "[分野] | [run_id]"
 ## 4. 点検と修正
 - /review-lead <lead_id> <run_id> を使い、反証の手順と結論の案（kind: conclusion）を整える。
 - kizashi check <lead_id> --run <run_id> を実行する。不合格なら、error の failures（不合格のすべて）を読んで直す。
-  合格するまで言い換える反復はしない。直せなければ保留にする。
+  合格するまで言い換える反復はしない。直せなければ保留にする。warnings（強い語）は表現を見直す。
+- E_ROUNDS_EXCEEDED（修正2巡の上限）が返ったら、結論を強めず保留の結論の案（hold_reason: limit）を登録して render する。
 
 ## 5. 書き出し
 - kizashi render <lead_id> --run <run_id> で候補のメモを、kizashi render <run_id> で実行の概要を書く。
@@ -445,7 +446,8 @@ argument-hint: "[lead_id] [run_id]"
    - T2・T5に限り、補正できるなら補正前後の値を計算する。補正しても変化が残れば
      comparison_state を adjusted とし、adjustment（method、before・after の計算ID）を付けて比較成立に進む。
    - 補正すると変化が消える、または比べられないと確定したら、見かけの変化。
-   - 比べられるかを確定できなければ、保留（hold_reason: comparison）。
+   - 比べられるかを確定できなければ、保留（hold_reason: comparison）。comparison_state を unresolved にするなら、
+     両年度を比べる主張は取り下げ、各年度の値は別々の主張にする（V5_UNRESOLVED_COMPARISON）。
    - 同種業務の対応が confirmed でない、または比べる行の一部しか覆っていなければ、比較成立にしない（V8_MATCH_UNCONFIRMED）。
    - 規1（税込か税抜か、単位、範囲）の違いを補正するのに資料にない係数が要るなら、計算せずに kind: coefficient で
      提案し、記者に伝える。提案が proposed・accepted のまま残れば比較成立にしない（V8_COEFFICIENT_PENDING）。

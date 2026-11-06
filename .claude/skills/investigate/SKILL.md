@@ -74,7 +74,8 @@ argument-hint: "[分野] | [run_id]"
 ## 4. 点検と修正
 - /review-lead <lead_id> <run_id> を使い、反証の手順と結論の案（kind: conclusion）を整える。
 - kizashi check <lead_id> --run <run_id> を実行する。不合格なら、error の failures（不合格のすべて）を読んで直す。
-  合格するまで言い換える反復はしない。直せなければ保留にする。
+  合格するまで言い換える反復はしない。直せなければ保留にする。warnings（強い語）は表現を見直す。
+- E_ROUNDS_EXCEEDED（修正2巡の上限）が返ったら、結論を強めず保留の結論の案（hold_reason: limit）を登録して render する。
 
 ## 5. 書き出し
 - kizashi render <lead_id> --run <run_id> で候補のメモを、kizashi render <run_id> で実行の概要を書く。
