@@ -51,9 +51,10 @@ argument-hint: "[lead_id] [run_id]"
    - 数量に表れない変化（方式・理由）：比べる年度の1つの候補の行から、根拠で説明できる行を除いた残りを数えた
      count を、説明を反映した値と残る差の両方にする。reflected_conditions にはその残りを選ぶ条件を書く
      （fiscal_year・record_id・group_key・method_family は使えない）。候補の行にその条件だけを当てた行が、
-     数えた行と一致しなければならない。条件の列が空の行は残りから外れるので、候補の行に空の行がある列
-     （競争入札の行の reason_category など）では残りを選ばない。0件でも「全部」と決めつけず、残りを選ぶ条件が
-     根拠の説明する範囲と合うかを確かめ、記者に伝える。
+     数えた行と一致しなければならない。条件の列が空の候補の行（競争入札の行の reason_category など）を
+     =・!=・in・not_null で残りから外すと、check が判定ごとに V8_EXPLANATION_STATUS で拒否する。空の行を残すなら
+     is_null。定量化できなければ残りの件数を使わず、scope を unknown にして no_quant_reason と理由・内訳の質問で扱う。
+     0件でも「全部」と決めつけず、残りを選ぶ条件が根拠の説明する範囲と合うかを確かめ、記者に伝える。
    定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問（purposes に reason_breakdown）を登録する。
 7. 結論の案を kind: conclusion で登録する。どの結論でも、T1〜T5・T6c の判定を登録しておく。
    - 比較成立：T6a・T6bが否定され、T2（受注先の変化ではT5も）が否定か adjusted。

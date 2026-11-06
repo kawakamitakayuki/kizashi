@@ -861,8 +861,104 @@ def _v8(
                 "情報公開請求の候補は foia）がない。",
                 [lead_id],
             )
+    # 残りの件数を出す判定ごとに、空（NULL）の行を残りから外していないかを確かめる。結論の種類と、別の説明の合格に
+    # かかわらず行う（D-048）
+    _v8_null_exclusion(conn, adapter, lead, judged, v)
     if missing:
         v.fail("V8_REQUIRED_MISSING", "結論の必須の中身がない：" + "、".join(missing), [lead_id])
+
+
+# 列が空（NULL）の行に当たらない演算（SQL の意味で、空の値はこれらの条件を満たさない）。is_null は空の行を残す
+# 使い方なので含めない（D-048）
+NULL_EXCLUDING_OPS = ("=", "!=", "in", "not_null")
+
+
+def null_excluded_rows(
+    conn: sqlite3.Connection, adapter: Adapter, lead: dict, residual: dict
+) -> list[tuple[str, str, str]]:
+    """残りの件数（基礎集計）が、列が空の値だけを理由に候補の行を残りから外していれば、(row_ref, 列, 演算) を返す。
+
+    検査元は、残りの件数が参照する年度（条件の fiscal_year。限っていなければ比べる2年度）の候補の行
+    （calc_from・calc_to の row_refs）。そのうち残りに入らなかった行で、=・!=・in・not_null の条件の列が空で、
+    ほかの条件（列が空でない条件）はすべて満たすものを、空の値で外れた行とする。空でない別の条件で外れる行は含めない
+    （D-048）。
+    """
+    request = json.loads(residual["request_json"])
+    table = request.get("table")
+    filters = [f for f in request.get("filter") or [] if isinstance(f, dict)]
+    allowed = getattr(adapter.module, "CALC_TABLES", {}).get(table, {}).get("filter", ())
+    sensitive = [
+        i
+        for i, f in enumerate(filters)
+        if f.get("op") in NULL_EXCLUDING_OPS and f.get("col") in allowed
+    ]
+    if not sensitive:
+        return []
+    periods = {int(lead["period_from"]): lead["calc_from"], int(lead["period_to"]): lead["calc_to"]}
+    limited, years = hashing.filter_values(filters, "fiscal_year")
+    sources = [periods[y] for y in years if y in periods] if limited else list(periods.values())
+    rows: set[str] = set()
+    for calc_id in sources:
+        rows |= set(json.loads((_comp(conn, calc_id) or {}).get("row_refs_json") or "[]"))
+    rows -= set(json.loads(residual["row_refs_json"] or "[]"))
+    if not rows:
+        return []
+    ordered = sorted(rows)
+    columns = sorted({filters[i]["col"] for i in sensitive})
+    marks = ", ".join("?" for _ in ordered)
+    # 表と列は分野の許可リスト（CALC_TABLES）にあるものだけなので、SQL に埋め込んでよい
+    empty = {
+        r[0]: {col for col, value in zip(columns, r[1:], strict=True) if value is None}
+        for r in conn.execute(
+            f"SELECT record_id, {', '.join(columns)} FROM {table} WHERE record_id IN ({marks})",
+            ordered,
+        )
+    }
+    satisfied = []  # 条件ごとに、それを満たす行（SQL の意味で。record_status = 'adopted' は calc が加える）
+    for f in filters:
+        result = calc.base_aggregate(
+            conn,
+            adapter,
+            {
+                "op": "count",
+                "table": table,
+                "filter": [f, {"col": "record_id", "op": "in", "value": ordered}],
+            },
+            allow_empty_in=True,
+        )
+        satisfied.append(set(result.row_refs))
+    found = []
+    for row in ordered:
+        by_null = [i for i in sensitive if filters[i]["col"] in empty.get(row, ())]
+        others = [i for i in range(len(filters)) if i not in by_null]
+        if by_null and all(row in satisfied[i] for i in others):
+            found += [(row, filters[i]["col"], filters[i]["op"]) for i in by_null]
+    return found
+
+
+def _v8_null_exclusion(
+    conn: sqlite3.Connection, adapter: Adapter, lead: dict, judged: dict, v: Verification
+) -> None:
+    """メモの4節に残りの件数（基礎集計の残る差）を出す判定ごとに、空の値で外れた候補の行がないかを確かめる（D-048）。"""
+    for etype, exp in sorted(judged.items()):
+        residual_id = exp.get("residual_calc_id")
+        residual = _comp(conn, residual_id)
+        if residual is None or residual["kind"] != "base":
+            continue
+        found = null_excluded_rows(conn, adapter, lead, residual)
+        if not found:
+            continue
+        rows = sorted({r for r, _, _ in found})
+        columns = "・".join(sorted({c for _, c, _ in found}))
+        ops = "・".join(sorted({o for _, _, o in found}))
+        v.fail(
+            "V8_EXPLANATION_STATUS",
+            f"判定 {etype} の残る差（{residual_id}）で、候補の行のうち列 {columns} が空の行（{'・'.join(rows)}）が、"
+            f"条件（{ops}）で残りから外れている。空の値は、根拠で説明できる行として除けない。その列で残りを選ばないか"
+            "（空の行を残すなら is_null）、定量化できなければ残りの件数を使わず、scope を unknown にして no_quant_reason と"
+            "理由・内訳を尋ねる取材質問（purposes に reason_breakdown）で扱う（D-048）。",
+            [lead["lead_id"], residual_id, *rows],
+        )
 
 
 def _v8_matches(conn: sqlite3.Connection, lead: dict, matches: list[dict], v: Verification) -> None:

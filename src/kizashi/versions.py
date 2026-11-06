@@ -43,7 +43,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     条件の単純な同値の表現をそろえる、git のパスを NUL 区切りで読む）。check・render・record・run の結果が変わる。
 # 13：D-044（候補の行に宣言した条件だけを当てた行と残る件数の行の一致を求める、method_family を説明の条件に
 #     しない）。check・render の結果が変わる。
-RULES_VERSION = "13"
+# 14：D-048（残りの件数を出す判定ごとに、残りを選ぶ条件の列が空の候補の行を =・!=・in・not_null で外していれば
+#     不合格にする。別の説明の合格で免除しない）。check・render の結果が変わる。
+RULES_VERSION = "14"
 
 
 def code_version() -> str:

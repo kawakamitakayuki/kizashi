@@ -1655,3 +1655,164 @@ def test_d044_method_family_is_not_an_explanation_condition(
     )
     rec(repo, synthetic_run, _support(lead["lead"], residual, [zuikei], evidence))
     assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
+
+
+# ---------------------------------------------------------------------------
+# D-048 の回帰（先に失敗するテストとして書いた）
+# ---------------------------------------------------------------------------
+
+# S2「システム保守業務」の令和6年度の候補の行（競争入札。reason_category が空）と、令和7年度の候補の行（随意契約。
+# 契約の性質又は目的が競争を許さない場合）。tests/fixtures/make_cao_fixtures.py から手で確かめた
+NULL_ROW, S2_ROW_2025 = "S001:000003", "S007:000002"
+S2_GROUP = "システム保守業務"
+
+
+def _s2_count(repo: Path, run_id: str, year: int, conditions: list[dict]) -> str:
+    return rec(
+        repo,
+        run_id,
+        {
+            "kind": "calc",
+            "op": "count",
+            "table": "procurement_contracts",
+            "filter": [
+                {"col": "fiscal_year", "op": "=", "value": year},
+                {"col": "group_key", "op": "=", "value": S2_GROUP},
+                *conditions,
+            ],
+            "label": "候補の行から根拠で説明できる行を除いた残りの件数",
+            "unit": "件",
+        },
+    )["id"]
+
+
+def _null_failure(repo: Path, run_id: str, lead_id: str) -> dict:
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, run_id, lead_id)
+    assert codes(info) == ["V8_EXPLANATION_STATUS"], codes(info)
+    return info.value.failures[0]
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        {"col": "reason_category", "op": "!=", "value": "planning_competition"},
+        {"col": "reason_category", "op": "=", "value": "planning_competition"},
+        {"col": "reason_category", "op": "in", "value": ["planning_competition", "open_call"]},
+        {"col": "reason_category", "op": "not_null"},
+    ],
+    ids=["ne", "eq", "in", "not_null"],
+)
+def test_d048_null_rows_cannot_be_excluded(repo: Path, synthetic_run: str, condition: dict) -> None:
+    """V8（D-048）：残りを選ぶ条件の列が空（NULL）の候補の行は、=・!=・in・not_null のどれでも残りから外れる
+    （S2 の令和6年度の候補の行 S001:000003 は競争入札で reason_category が空なので、残りは0件）。形の検査
+    （D-043・D-044）は通るが、空の値を説明できる行として除けないので V8_EXPLANATION_STATUS。不合格の文に判定・列・
+    行を書き、render はメモを書かない。"""
+    from kizashi import render
+
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    residual = _s2_count(repo, synthetic_run, 2024, [condition])
+    conn = ledger_of(repo, synthetic_run)
+    assert (
+        conn.execute("SELECT value FROM computations WHERE calc_id = ?", (residual,)).fetchone()[0]
+        == "0"
+    )
+    conn.close()
+    rec(repo, synthetic_run, _support(lid, residual, [condition], evidence))
+    failure = _null_failure(repo, synthetic_run, lid)
+    assert "T1" in failure["message"] and "reason_category" in failure["message"]
+    assert NULL_ROW in failure["message"] and condition["op"] in failure["message"]
+    assert {lid, residual, NULL_ROW} <= set(failure["affected_ids"])
+    with pytest.raises(KizashiError):
+        render.render_lead(repo, synthetic_run, lid)
+    assert not list((repo / "data" / "runs" / synthetic_run / "memos").glob(f"{lid}.*"))
+
+
+def test_d048_is_null_keeps_null_rows(repo: Path, synthetic_run: str) -> None:
+    """V8（D-048）：is_null で空の行を残りに残す使い方は拒否しない（残りは S001:000003 の1件。根拠との対応は記者が
+    確かめる）。合格し、メモの4節に残りの行が出る。"""
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    keep = {"col": "reason_category", "op": "is_null"}
+    residual = _s2_count(repo, synthetic_run, 2024, [keep])
+    rec(repo, synthetic_run, _support(lid, residual, [keep], evidence))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    assert f"説明できる行を除いた残りの行：{NULL_ROW}（単位：件）" in _render_text(
+        repo, synthetic_run, lid
+    )
+
+
+def test_d048_each_explanation_is_checked_independently(repo: Path, synthetic_run: str) -> None:
+    """V8（D-048）：空の行の検査は、メモに残りの件数を出す判定ごとに行い、別の説明の合格で免除しない。令和7年度の
+    残り（S007:000002。空でない）を使う T1 だけなら合格するが、令和6年度の空の行を外した T3 を足すと不合格で、
+    不合格の文は T3 を指す。"""
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    good = _s2_count(repo, synthetic_run, 2025, [NOT_PLANNING])
+    rec(repo, synthetic_run, _support(lid, good, [NOT_PLANNING], evidence))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    bad = _s2_count(repo, synthetic_run, 2024, [NOT_PLANNING])
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lid,
+            "T3",
+            "support",
+            scope="part",
+            recalc_calc_id=bad,
+            residual_calc_id=bad,
+            reflected_conditions=[NOT_PLANNING],
+            evidence=[evidence],
+            searched="仕様書を確かめた。",
+        ),
+    )
+    failure = _null_failure(repo, synthetic_run, lid)
+    assert "判定 T3" in failure["message"] and "判定 T1" not in failure["message"]
+    assert bad in failure["affected_ids"] and good not in failure["affected_ids"]
+
+
+def test_d048_applies_to_every_memo_with_a_residual(repo: Path, synthetic_run: str) -> None:
+    """V8（D-048）：比較成立に限らず、メモの4節に残りの件数を出す判定なら検査する（保留の案で、未確認の T1 に空の行を
+    外した残りの件数を付けても不合格）。"""
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    bad = _s2_count(repo, synthetic_run, 2024, [NOT_PLANNING])
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lid, "T1", "unknown", recalc_calc_id=bad, residual_calc_id=bad,
+            reflected_conditions=[NOT_PLANNING],
+        ),
+    )  # fmt: skip
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lid,
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    assert NULL_ROW in _null_failure(repo, synthetic_run, lid)["message"]
+
+
+def test_d048_row_excluded_by_another_condition_is_not_flagged(
+    repo: Path, synthetic_run: str
+) -> None:
+    """V8（D-048）：列が空の行でも、空でない別の条件で外れる行は、空の値で外れた行としない（S001:000003 は
+    unit_price = 0 なので、unit_price = 1 の条件で外れる）。形の検査も通り、合格する。"""
+    lead = s2_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    conditions = [NOT_PLANNING, {"col": "unit_price", "op": "=", "value": 1}]
+    residual = _s2_count(repo, synthetic_run, 2024, conditions)
+    rec(repo, synthetic_run, _support(lid, residual, conditions, evidence))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
