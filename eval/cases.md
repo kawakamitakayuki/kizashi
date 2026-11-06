@@ -3,7 +3,7 @@
 - 状態：未実施（ひな形。評価は利用者が行う）
 - 件数：6件（比較成立2、見かけの変化2、保留2）。件数が少ないため、調整用と確認用に分けない。
 - 期待した結論は、KIZASHI の読み込み処理・計算処理の出力から作らず、原本（CSV・PDF・公表資料）から別の手順で作る（設計書7.7の「正解値の作り方」）。
-- 見かけの変化には、実データの法人番号の桁落ち（CSV の `7.0111E+12` の形）、様式の変更、年度途中を使う。テスト用のコピーに仕込んだケースは、その旨を「データ」の欄に書く。
+- 見かけの変化には、実データの法人番号の桁落ち（CSV の `7.0111E+12` の形）、様式の変更、年度途中を使う。版24（D-077）から、指数表記の法人番号は、同じ年度の PDF の13桁が3条件を満たせば補完される（`valid_from_pdf`。令和5〜7年度の 3,427 行のうち 3,419 行）。桁落ちのまま残るのは条件を満たさない行（同じデータで8行）だけなので、桁落ちの例はその行から選ぶか、テスト用のコピーに仕込む。テスト用のコピーに仕込んだケースは、その旨を「データ」の欄に書く。
 - ルールを調整した場合は、調整前の結果も消さずに残す（下の「調整の記録」）。
 - 件数が少ないので、精度の数字は宣伝しない。正解の集合がない実データで、網羅的な再現率を主張しない。
 
@@ -12,13 +12,13 @@
 選ぶ前に、選ぶ基準と順を「選んだ手順」の欄に書く。結論を見てから入れ替えない。入れ替えたときは、理由を「調整の記録」に書く。
 
 1. `kizashi inspect <run_id>`（`--page <n>` で続き）で、候補の一覧を読む。区分（`change_category`）ごとに差の絶対値の大きい順で、比較できない理由（`incomparable_reasons`）、同じ区分のほかの件数（`peer_count`）、状態（`state`）が出る。`counts` に品質検査と検出の件数がある。
-2. 品質レポート（`inspect <run_id>` の `quality_report` のパス）で、見かけの変化の手がかりを探す：法人番号の状態ごとの件数（Q07。`exponent` が桁落ち）、年度途中のファイル（Q16。`partial_year`）、見出し・列の数（Q02・Q03。様式の変更）。
+2. 品質レポート（`inspect <run_id>` の `quality_report` のパス）で、見かけの変化の手がかりを探す：法人番号の状態ごとの件数（Q07。`exponent` が桁落ち。Q07 は補完の前の件数なので、補完の結果は `inspect <run_id>` の照合の要約の `corp_completion` で見る。未確定の行と満たさない条件は、手順5の探索SQL `SELECT c.calc_id, r.key AS row_ref, json_extract(r.value, '$.corp_completion.failed') AS failed FROM computations c, json_each(c.result_json, '$.rows') r WHERE c.kind = 'reconcile' AND json_extract(r.value, '$.corp_completion.state') = 'unconfirmed'` で読む。2026-11-07 に版24の実行で試し、8行が出た）、年度途中のファイル（Q16。`partial_year`）、見出し・列の数（Q02・Q03。様式の変更）。
 3. 候補の中身は `kizashi inspect <lead_id> --run <run_id>` で読む：比較の条件、比較できない理由、判定（T6a・T6b を含む）、主張、結論の案、メモの番号と失効の有無。
 4. 行は `kizashi inspect <row_ref> --run <run_id>`（例：`S007:000041`）で読む：元のセルの値、正規化した値、照合の結果。原本照合が `mismatch`・`unverifiable` の行は、保留（原本照合ができない）の手がかりになる。
 5. 一覧にない条件で行を探すときだけ、`inbox/` に読み取り専用の SQL を書き、`kizashi query <run_id> inbox/<名前>.sql` で読む（50行まで。結果はメモの数値に使えない）。例：`SELECT record_id FROM procurement_contracts WHERE corp_number_state = 'exponent' LIMIT 50`。
 6. 選んだ候補を調査のセッション（`scripts/investigate`、`/investigate <run_id>`）で調べ、メモを書く。
 
-既存の実行のメモ：P0-7 の実行 `20261106-132648-3zdx` の候補 L0405 に、比較成立のメモ `memos/L0405.v2.md` がある（版15。表示を直した版で、版16以降の検査は通していない。記者による原本の確認は未了。docs/decisions.md の D-055）。評価に使うかは利用者が決める。
+既存の実行のメモ：P0-7 の実行 `20261106-132648-3zdx` の候補 L0405 に、比較成立のメモ `memos/L0405.v2.md` がある（版15。記者による原本の確認は未了。docs/decisions.md の D-055）。版24 では、この実行の `check` と `render` は `E_RULE_VERSION` で止まるので、評価とデモには、版24以降に調査のセッション（`scripts/investigate`）で始めた新しい実行のメモを使う。L0405 の読み直し（`scripts/review-memo`）の指摘6件は、docs/decisions.md の「P1-a の読み直しの試験の記録」にある。開発のセッションで作った実行 `20261107-073433-mudh`（版24）は、調査用の設定で始めていないので（メモに「調査用の設定で実行：いいえ」と出る）、評価とデモに使わない。
 
 ## ケース
 
