@@ -981,6 +981,10 @@ def _redownload_dataset(
     html = index.path.read_bytes().decode("utf-8", errors="replace")
     logical_key = source["logical_key"]
     urls = dataset_links(adapter, index.final_url, html).get(logical_key, [])
+    if screen_url is not None:
+        # リンクの数の検査は候補の URL を不合格の文に書くので、その前に候補のすべてを照らす（D-073）
+        for candidate in urls:
+            screen_url(candidate)
     if len(urls) != 1:
         why = (
             "この論理資料のリンクがない"
@@ -993,8 +997,6 @@ def _redownload_dataset(
     if spec is None:
         raise _invalid(f"dataset.yaml にない論理資料：{logical_key}")
     validate = (lambda data: adapter.module.validate_csv(data, spec)) if fmt == "csv" else None
-    if screen_url is not None:
-        screen_url(urls[0])
     download = fetch_to_raw(
         root,
         client,

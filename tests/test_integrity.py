@@ -439,3 +439,41 @@ def test_ft4_recheck_of_named_url_is_refused_before_request(
     (newer,) = conn.execute("SELECT COUNT(*) FROM sources WHERE supersedes = 'S099'").fetchone()
     conn.close()
     assert newer == 0
+
+
+@pytest.mark.parametrize("mode", ["single", "duplicate", "redirect"])
+def test_ft4_dataset_recheck_screens_every_candidate_link(
+    repo: Path, synthetic_run: str, site, mode: str
+) -> None:
+    """FT-4・HS-3（D-073）：公表一覧の fetch --recheck では、公表ページからたどり直す同じ論理資料のリンクの候補を、
+    リンクの数の検査（候補の URL を不合格の文に書く）より先に、すべて氏名で照らす。氏名を含むリンクが1つだけの
+    とき、ほかのリンクと並んでいるとき、リダイレクト先が氏名を含むときのどれも E_V7 で止め、不合格の文に氏名を
+    書かず、氏名を含む行き先に通信せず、新しい版を登録しない。"""
+    from urllib.parse import quote, unquote
+
+    from conftest import PAGE
+    from conftest import URL as FIXTURE_URL
+
+    named = FIXTURE_URL["k24_csv"].replace("20250711-2", quote("架空太郎"))
+    link = FIXTURE_URL["k24_csv"] if mode == "redirect" else named
+    body = f'<html><body><a href="{link}">合成資料</a>'
+    if mode == "duplicate":
+        body += f'<a href="{FIXTURE_URL["k24_csv"]}">別の合成資料</a>'
+    body += "</body></html>"
+    site.routes[PAGE] = httpx.Response(
+        200, headers={"content-type": "text/html; charset=utf-8"}, content=body.encode()
+    )
+    if mode == "redirect":
+        site.routes[link] = httpx.Response(
+            302, headers={"Location": "https://unapproved.example.invalid/" + quote("架空太郎")}
+        )
+    site.requests.clear()
+    with pytest.raises(KizashiError) as info:
+        fetcher.recheck_source(repo, synthetic_run, "S001", transport=site.transport)
+    assert info.value.code == "E_V7"
+    assert "架空太郎" not in unquote(info.value.message + info.value.next_action)
+    assert named not in site.requests
+    conn = ledger_of(repo, synthetic_run)
+    (newer,) = conn.execute("SELECT COUNT(*) FROM sources WHERE supersedes = 'S001'").fetchone()
+    conn.close()
+    assert newer == 0
