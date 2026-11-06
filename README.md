@@ -53,7 +53,7 @@ uv run pytest -q        # 合成データのテスト（通信なし）
 scripts/investigate
 ```
 
-`scripts/investigate` は、`uv sync --frozen` の後、Claude Code を次の設定で起動する：許可したものだけが動くモード（`--permission-mode dontAsk`）、プロジェクトの設定だけを読む（`--setting-sources project`）、使えるツールを Bash・Read・Grep・Glob・Skill・WebSearch・Write に絞る、調査用の設定 `investigate.settings.json` を足す。このセッションの許可の一覧にあるのは、`inbox/` 直下の `.json` と `.sql` への書き込みと、Bash の `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）、Skill、WebSearch である。Skill も Claude に「Bash では kizashi だけを使う」と指示している。ただし、指示と、実行が機械的に拒否されることは別で、拒否を実機で確かめたのは次の範囲である（Claude Code v2.1.318・v2.1.319。`docs/decisions.md` の D-001・D-017・D-071）：`inbox/` の下のフォルダーや `.json`・`.sql` 以外への書き込み、`src/`・`docs/`・`README.md` などへの書き込み、`python3`・`curl`・`jq`、書き込みのできる Bash のコマンド（`docs/` への `cp` と `src/` への `touch` は D-071 の前の試験で拒否を確かめた。そのときのモードは記録にない。D-071 で拒否の一覧に足した後は `mkdir` を dontAsk と accept edits の両方で確かめた。accept edits でほかのコマンドは試していない）、WebFetch・サブエージェント（道具がない）。`tail` などの読み取りだけのコマンドが拒否されるかは確かめていない（Read で読める範囲と同じ）。MCP と `git push` は設定で拒否しているが、実機では試していない。操作が拒否されたら、Claude は何をしようとして拒否されたかを記者に伝える（権限を広げる方法は案内しない）。
+`scripts/investigate` は、`uv sync --frozen` の後、Claude Code を次の設定で起動する：許可したものだけが動くモード（`--permission-mode dontAsk`）、プロジェクトの設定だけを読む（`--setting-sources project`）、使えるツールを Bash・Read・Grep・Glob・Skill・WebSearch・Write に絞る、調査用の設定 `investigate.settings.json` を足す。このセッションの許可の一覧にあるのは、`inbox/` 直下の `.json` と `.sql` への書き込みと、Bash の `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）、Skill、WebSearch である。Skill は Claude に「Bash では kizashi だけを使い、ファイルを読むときは Read・Grep・Glob を使う」と指示している（運用の指示。D-071）。ただし、指示と、実行が機械的に拒否されることは別で、拒否を実機で確かめたのは次の範囲である（Claude Code v2.1.318・v2.1.319。`docs/decisions.md` の D-001・D-017・D-071）：`inbox/` の下のフォルダーや `.json`・`.sql` 以外への書き込み、`src/`・`docs/`・`README.md` などへの書き込み、`python3`・`curl`・`jq`、書き込みのできる Bash のコマンド（`docs/` への `cp` と `src/` への `touch` は D-071 の前の試験で拒否を確かめた。そのときのモードは記録にない。D-071 で拒否の一覧に足した後は `mkdir` を dontAsk と accept edits の両方で確かめた。accept edits でほかのコマンドは試していない）、WebFetch・サブエージェント（道具がない）。`tail` などの読み取りだけのコマンドが拒否されるかは確かめていない（Read で読める範囲と同じ）。MCP と `git push` は設定で拒否しているが、実機では試していない。操作が拒否されたら、Claude は何をしようとして拒否されたかを記者に伝える（権限を広げる方法は案内しない）。
 
 起動したら、次のどちらかで始める。
 
@@ -108,7 +108,7 @@ scripts/investigate
 
 | 再現 | このリポジトリでの手順 | 範囲と制約 |
 | --- | --- | --- |
-| 保存した入力からの再計算 | 同じ実行で `kizashi check <候補ID> --run <run_id>` を行うと、メモの基礎集計を台帳で計算し直し（V3a）、原本を別経路の読み込み処理で数え直し（V3b）、派生計算をやり直し（V3c）、依存する資料の原本の SHA-256 を照らす（V2）。第三者は、合成データのテスト（`uv run pytest`）で、計算の手順を手で求めた期待値と照らせる | 原データ（`data/`）は公開しない（D-007 は未決）。そのため第三者は「計算の手順は追試できるが、同じ実データの取得は保証できない」。保存した原本から実行を作り直す操作（取得の代わりに `data/raw` を読む）は P0 にない（`run` は公表元から取得する）。原データの誤りは別の問題 |
+| 保存した入力からの再計算 | 同じ実行で `kizashi check <候補ID> --run <run_id>` を行うと、メモの基礎集計を台帳で計算し直し（V3a）、原本を別経路の読み込み処理で数え直し（V3b）、派生計算をやり直し（V3c）、依存する資料の原本の SHA-256 を照らす（V2）。第三者は、合成データのテスト（`uv run pytest`）で、計算の手順を手で求めた期待値と照らせる | 原データ（`data/`）は公開しない。テストにも実データの抜粋を入れず、合成データだけを使う（D-007）。そのため第三者は「計算の手順は追試できるが、同じ実データの取得は保証できない」。保存した原本から実行を作り直す操作（取得の代わりに `data/raw` を読む）は P0 にない（`run` は公表元から取得する）。原データの誤りは別の問題 |
 | 公開元からの再取得 | 同じ実行設定（`data/runs/<run_id>/accepted/` の最初の `run_config`）で `kizashi run` を行い、メモ3節の資料の一覧の SHA-256 と比べる。実行の中で1つの資料を取り直すときは `kizashi fetch <run_id> --recheck <資料ID>` | 内閣府のファイルは毎月差し替わるため、同じ版を再取得できないことがある。差は新しい版として記録し、古い版に依存する候補のメモは失効と表示される。公表一覧の新しい版は、その実行では正規化しないので、新しい実行で調べ直す |
 | 台帳からのメモの書き出し | 同じ台帳で `kizashi render <候補ID> --run <run_id>` を行う | 同じ台帳とテンプレートから、同じ本文と引用の対応が出る（検証記録のハッシュも同じ）。メモの番号、書き出しの時点の Skill のハッシュなどの付帯情報は違う。規則の版が違えば `E_RULE_VERSION` |
 | Claude による調査の再実行 | 同じ問いで `scripts/investigate` から調べ直す。メモ8節と台帳に、モデル、Claude Code の版、Skill とルールのファイルのハッシュ、登録した提案（`accepted/`）、判断の履歴（`events`）が残る | 探索の経路や文章の一致は保証しない |
@@ -163,7 +163,7 @@ scripts/investigate
 
 ## ライセンス
 
-未決（D-008）。コードは MIT を候補としている（設計書9.12、U11）。知識ファイル3点の表記は利用者が決める。コードのライセンスを、原データや知識ファイルにまとめて適用しない。
+未決（D-008）。コードは MIT を候補とし、著作権者（個人か所属組織か）を確かめてから `LICENSE` を置く（設計書9.12、U11）。知識ファイル3点の表記は利用者が決める。コードのライセンスを、原データや知識ファイルにまとめて適用しない。
 
 ## フォルダー
 
