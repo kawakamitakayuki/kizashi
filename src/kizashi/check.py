@@ -464,9 +464,9 @@ def _cites_columns(items: object, columns: set[str]) -> bool:
 
 
 def counterparty_cited(conn: sqlite3.Connection, adapter: Adapter, lead_id: str) -> bool:
-    """受注先を扱う主張があるか（アダプタ仕様7.4。D-058）。メモに出る記載の根拠（主張・判定・対応・係数の
-    手がかり）の位置の列が受注先の列（reconcile.fields_counterparty の take のキー）か、メモに出る基礎集計の条件に
-    受注先の列（分野アダプタの COUNTERPARTY_FILTER_COLUMNS）がある場合。主張の文の意味は見ない（機械で見分けられる
+    """受注先を扱う主張があるか（アダプタ仕様7.4。D-058・D-065）。メモに出る記載の根拠（主張・判定・対応・係数の
+    手がかり・文書値）の位置の列が受注先の列（reconcile.fields_counterparty の take のキー）か、メモに出る基礎集計の
+    条件に受注先の列（分野アダプタの COUNTERPARTY_FILTER_COLUMNS）がある場合。主張の文の意味は見ない（機械で見分けられる
     範囲。文で受注先を述べる主張は review-lead と記者が確かめる）。"""
     cfg = adapter.config.get("reconcile") or {}
     pdf_fields = cfg.get("pdf_fields") or {}
@@ -491,9 +491,14 @@ def counterparty_cited(conn: sqlite3.Connection, adapter: Adapter, lead_id: str)
         row = conn.execute(
             "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
         ).fetchone()
-        if row is None or row[0] != "base":
+        if row is None:
             continue
-        used = {f.get("col") for f in json.loads(row[1]).get("filter") or [] if isinstance(f, dict)}
+        request = json.loads(row[1])
+        if row[0] == "doc_value" and _cites_columns([request], columns):
+            return True  # 文書値の位置が受注先の列を引く（D-065）
+        if row[0] != "base":
+            continue
+        used = {f.get("col") for f in request.get("filter") or [] if isinstance(f, dict)}
         if used & filters:
             return True
     return False
@@ -992,6 +997,14 @@ def _v4(
         )
         if comp is not None and comp["kind"] == "doc_value":
             targets.append((calc_id, {**json.loads(comp["request_json"]), "role": "support"}, {}))
+    # 係数の提案の手がかりのうち、取得した資料の根拠（メモの4節・7節に出る。状態にかかわらず。D-064）。
+    # 知識ファイルの手がかり（file のあるもの）は record で照らしている（references/ は書き換えない）
+    for coef in json.loads(lead["coefficients_json"] or "[]"):
+        if not isinstance(coef, dict):
+            continue
+        for item in coef.get("basis") or []:
+            if isinstance(item, dict) and "file" not in item:
+                targets.append((f"{lead['lead_id']}・係数 {coef.get('key')}", item, {}))
     for owner, evidence, kw in targets:
         try:
             quotes.verify_quote(conn, root, run_id, adapter, evidence, **kw)
@@ -1007,6 +1020,15 @@ def _v4(
         and "page" in e["position"]
     }
     _v4_page_texts(conn, root, run_id, adapter, sorted(page_sources), v)
+
+
+def _stored_page(path: Path, matcher: TermMatcher) -> str | None:
+    """保存したページ別テキストを、いまの氏名の一覧で伏せて読む。UTF-8 として読めなければ None（抽出し直した
+    テキストと違うものとして扱う。D-066）。"""
+    try:
+        return mask_names(path.read_text(encoding="utf-8"), matcher)[0]
+    except UnicodeDecodeError:
+        return None
 
 
 def _v4_page_texts(
@@ -1064,7 +1086,7 @@ def _v4_page_texts(
         differing = [
             n
             for n, want in zip(names, expected, strict=True)
-            if mask_names((page_dir / f"{n}.txt").read_text(encoding="utf-8"), matcher)[0] != want
+            if _stored_page(page_dir / f"{n}.txt", matcher) != want
         ]
         if differing:
             v.fail(

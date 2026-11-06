@@ -310,7 +310,16 @@ def verify_quote(
                 next_action=f"kizashi inspect {source_id} --run {run_id} でページ数を確かめる。",
                 affected=(source_id,),
             )
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # 壊れたページ別テキストを想定外のエラーにしない（check では V4_PAGE_TEXT_MISMATCH も返す。D-066）
+            raise _err(
+                "E_QUOTE_NOT_FOUND",
+                f"資料 {source_id} の {page} ページのテキストを UTF-8 として読めない（壊れている）。",
+                next_action="原本から取得し直す（kizashi fetch <run_id> --recheck <source_id>）か、別の資料を根拠にする。",
+                affected=(source_id,),
+            ) from None
         _match(_PARAGRAPH_RE.split(text), quote, f"{source_id} の {page} ページ", (source_id,))
 
     if claim_type == "record" and fiscal_year is not None and kind == "dataset":

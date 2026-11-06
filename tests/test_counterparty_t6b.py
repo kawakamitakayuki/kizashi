@@ -151,3 +151,29 @@ def test_ck2_counterparty_in_calc_filter(repo: Path, synthetic_run: str) -> None
         check.run_check(repo, synthetic_run, lead["lead"])
     assert "V8_CHANGE_NOT_NEGATED" in codes_of(info)
     assert t6b_judgment(repo, synthetic_run, lead["lead"]) == "unknown"
+
+
+def test_ck2_counterparty_in_doc_value_position(repo: Path, synthetic_run: str) -> None:
+    """CK-2・PD-2（D-065）：メモに出る文書値の位置が受注先の列（法人番号）を引くときも、受注先を扱うとして受注者名と
+    法人番号を照らす。S001:000002 の法人番号は13桁の「0000000000001」だが、照らすのは候補の行（翻訳業務の2行。
+    法人番号は指数表記で照合不能）なので T6b は未確認、比較成立の render は V8_CHANGE_NOT_NEGATED。"""
+    lead = prepare(repo, synthetic_run)
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "doc_value",
+            "lead_id": lead["lead"],
+            "source_id": "S001",
+            "position": {"row_ref": "S001:000002", "column": "corp_number_raw"},
+            "quote": "0000000000001",
+            "value": "0000000000001",
+            "label": "架空の法人番号の表記",
+            "unit": "番号",
+        },
+    )
+    for call in (render.render_lead, check.run_check):  # render は判定を残さず、check は残す
+        with pytest.raises(KizashiError) as info:
+            call(repo, synthetic_run, lead["lead"])
+        assert "V8_CHANGE_NOT_NEGATED" in codes_of(info)
+    assert t6b_judgment(repo, synthetic_run, lead["lead"]) == "unknown"
