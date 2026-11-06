@@ -840,7 +840,7 @@ def _v8(
                 "比較成立なのに否定されていない型がある：" + "、".join(not_negated),
                 [lead_id],
             )
-        _v8_explanation_status(conn, lead, judged, questions, v)
+        _v8_explanation_status(conn, adapter, lead, judged, questions, v)
     elif outcome == "artifact":
         factors = [t for t in ("T2", "T5", "T6a", "T6b") if j(t) == "support" and has_evidence(t)]
         if not factors:
@@ -901,8 +901,8 @@ def _comp(conn: sqlite3.Connection, calc_id: str | None) -> dict | None:
     return _one(conn, "SELECT * FROM computations WHERE calc_id = ?", (calc_id,))
 
 
-# 候補を選び直すだけの列（説明によって足した条件にならない。D-043②）
-IDENTITY_COLUMNS = frozenset({"fiscal_year", "record_id", "group_key"})
+# 候補を選び直すだけの列（説明によって足した条件にならない。集計の条件には使える。D-043②・D-044②）
+IDENTITY_COLUMNS = frozenset({"fiscal_year", "record_id", "group_key", "method_family"})
 
 
 def normalized_condition(item: object) -> str | None:
@@ -976,7 +976,7 @@ def residual_comparison(conn: sqlite3.Connection, lead: dict, exp: dict) -> str 
     return other if len(units) == 1 and None not in units and "" not in units else None
 
 
-def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
+def _residual_ok(conn: sqlite3.Connection, adapter: Adapter, lead: dict, exp: dict) -> bool:
     """説明を反映した値と残る差が、実装仕様9章の「説明を反映した値と残る差」を満たすか（D-042③）。"""
     recalc_id, residual_id = exp.get("recalc_calc_id"), exp.get("residual_calc_id")
     if not recalc_id or not residual_id or not json.loads(exp.get("evidence_json") or "[]"):
@@ -1026,11 +1026,38 @@ def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
             or norm in theirs
         ):
             return False
-    return True
+    # その年度の候補の行に宣言した条件だけを当てた行の集まりが、残る件数の行と一致すること（宣言していない条件で
+    # 行を除いた件数を通さない。D-044①）
+    try:
+        applied = calc.base_aggregate(
+            conn,
+            adapter,
+            {
+                "op": "count",
+                "table": base_request.get("table"),
+                "filter": [
+                    *reflected,
+                    {
+                        "col": "record_id",
+                        "op": "in",
+                        "value": sorted(json.loads(base["row_refs_json"] or "[]")),
+                    },
+                ],
+            },
+            allow_empty_in=True,
+        )
+    except KizashiError:
+        return False
+    return set(applied.row_refs) == rows
 
 
 def _v8_explanation_status(
-    conn: sqlite3.Connection, lead: dict, judged: dict, questions: list, v: Verification
+    conn: sqlite3.Connection,
+    adapter: Adapter,
+    lead: dict,
+    judged: dict,
+    questions: list,
+    v: Verification,
 ) -> None:
     status = lead["explanation_status"]
     supported = [
@@ -1043,7 +1070,9 @@ def _v8_explanation_status(
             [lead["lead_id"]],
         )
     scoped = [t for t in supported if judged[t]["scope"] in ("full", "part")]
-    if status in ("full", "part") and not any(_residual_ok(conn, lead, judged[t]) for t in scoped):
+    if status in ("full", "part") and not any(
+        _residual_ok(conn, adapter, lead, judged[t]) for t in scoped
+    ):
         v.fail(
             "V8_EXPLANATION_STATUS",
             "説明の状況が「全部」「一部」なのに、支持の T1・T3・T4（根拠付き）に、説明を反映した値（recalc_calc_id。"

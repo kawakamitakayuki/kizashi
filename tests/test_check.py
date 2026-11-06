@@ -1209,12 +1209,11 @@ def test_d042_amount_residual_must_be_diff_with_comparison(repo: Path, synthetic
         assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"], (recalc, residual)
 
 
-def s3_lead(repo: Path, run_id: str) -> dict:
-    """S3 の候補「調査研究委託」（令和6年度 S003:000001 → 令和7年度 S007:000001。理由の分類の変化）に、比較成立の
-    必須の中身をそろえる（対応はこの候補の行で登録する）。"""
+def screen_lead(repo: Path, run_id: str, screen: str, key: str, left: str, right: str) -> dict:
+    """検出の候補に、比較成立（説明の状況：一部）の必須の中身をそろえる（対応はこの候補の行で登録する）。"""
     conn = ledger_of(repo, run_id)
     row = conn.execute(
-        "SELECT * FROM leads WHERE screen_id = 's3_reason_change' AND lead_key = '調査研究委託'"
+        "SELECT * FROM leads WHERE screen_id = ? AND lead_key = ?", (screen, key)
     ).fetchone()
     conn.close()
     lead = prepare(repo, run_id, lead=row, match="none", conclusion=False)
@@ -1224,8 +1223,8 @@ def s3_lead(repo: Path, run_id: str) -> dict:
         {
             "kind": "match",
             "lead_id": lead["lead"],
-            "left": ["S003:000001"],
-            "right": ["S007:000001"],
+            "left": [left],
+            "right": [right],
             "relation": "1:1",
             "reason": "件名と業務の内容が同じ。",
             "evidence": [],
@@ -1244,6 +1243,20 @@ def s3_lead(repo: Path, run_id: str) -> dict:
         },
     )
     return lead
+
+
+def s3_lead(repo: Path, run_id: str) -> dict:
+    """S3 の候補「調査研究委託」（令和6年度 S003:000001 → 令和7年度 S007:000001。理由の分類の変化）。"""
+    return screen_lead(
+        repo, run_id, "s3_reason_change", "調査研究委託", "S003:000001", "S007:000001"
+    )
+
+
+def s2_lead(repo: Path, run_id: str) -> dict:
+    """S2 の候補「システム保守業務」（令和6年度は競争入札 S001:000003 → 令和7年度は随意契約 S007:000002）。"""
+    return screen_lead(
+        repo, run_id, "s2_method_change", "システム保守業務", "S001:000003", "S007:000002"
+    )
 
 
 def zuikei_count(repo: Path, run_id: str, year: int, group: str, **extra) -> str:
@@ -1446,3 +1459,75 @@ def test_d042_record_on_other_rule_version_is_typed(repo: Path, synthetic_run: s
     assert conn.execute("SELECT rule_versions_json FROM runs").fetchone()[0] == before
     assert conn.execute("SELECT COUNT(*) FROM computations").fetchone()[0] == n_calcs
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# D-044 の回帰（先に失敗するテストとして書いた）
+# ---------------------------------------------------------------------------
+
+
+def _support(lid: str, residual: str, reflected: list, evidence: dict) -> dict:
+    return explanation(
+        lid, "T1", "support", scope="part", recalc_calc_id=residual, residual_calc_id=residual,
+        reflected_conditions=reflected, evidence=[evidence], searched="公表元の告知を確かめた。",
+    )  # fmt: skip
+
+
+def test_d044_undeclared_condition_cannot_reduce_rows(repo: Path, synthetic_run: str) -> None:
+    """V8（D-044①）：宣言した条件（reason_category = planning_competition。令和7年度の候補の行 S007:000001 が残る）
+    のまま、残る件数の集計にだけ unit_price = 1 を足して0件にすると不合格（候補の行に宣言した条件だけを当てた行
+    の集まりと、残る件数の行が一致しない）。"""
+    lead = s3_lead(repo, synthetic_run)
+    evidence = rule_change_evidence(repo, synthetic_run)
+    fy = {"col": "fiscal_year", "op": "=", "value": 2025}
+    group = {"col": "group_key", "op": "=", "value": "調査研究委託"}
+    hidden = count_2025(
+        repo, synthetic_run, [fy, group, PLANNING, {"col": "unit_price", "op": "=", "value": 1}]
+    )
+    rec(repo, synthetic_run, _support(lead["lead"], hidden, [PLANNING], evidence))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
+
+
+def test_d044_declared_condition_may_leave_zero_rows(repo: Path, synthetic_run: str) -> None:
+    """V8（D-044①）：宣言した条件で正当に0件になる場合（令和7年度の候補の行の理由の分類は企画競争なので、
+    reason_category = open_call では0件）は合格する。件数が変わらない場合（planning_competition で1件のまま）は
+    test_d042_count_residual_for_non_amount_lead で合格を確かめている。"""
+    lead = s3_lead(repo, synthetic_run)
+    evidence = rule_change_evidence(repo, synthetic_run)
+    open_call = {"col": "reason_category", "op": "=", "value": "open_call"}
+    zero = count_2025(
+        repo,
+        synthetic_run,
+        [
+            {"col": "fiscal_year", "op": "=", "value": 2025},
+            {"col": "group_key", "op": "=", "value": "調査研究委託"},
+            open_call,
+        ],
+    )
+    rec(repo, synthetic_run, _support(lead["lead"], zero, [open_call], evidence))
+    assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+
+
+@pytest.mark.parametrize("screen", ["s2", "s3"])
+def test_d044_method_family_is_not_an_explanation_condition(
+    repo: Path, synthetic_run: str, screen: str
+) -> None:
+    """V8（D-044②）：S2・S3 で、方式（method_family = zuikei）だけを説明によって足した条件にすると不合格
+    （方式は候補を選び直すだけの列。集計の条件には使える）。"""
+    if screen == "s3":
+        lead, key = s3_lead(repo, synthetic_run), "調査研究委託"
+    else:
+        lead, key = s2_lead(repo, synthetic_run), "システム保守業務"
+    evidence = rule_change_evidence(repo, synthetic_run)
+    zuikei = {"col": "method_family", "op": "=", "value": "zuikei"}
+    residual = count_2025(
+        repo,
+        synthetic_run,
+        [
+            {"col": "fiscal_year", "op": "=", "value": 2025},
+            {"col": "group_key", "op": "=", "value": key},
+            zuikei,
+        ],
+    )
+    rec(repo, synthetic_run, _support(lead["lead"], residual, [zuikei], evidence))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
