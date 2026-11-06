@@ -213,6 +213,42 @@ class TermMatcher:
         return result
 
 
+NAME_MASK = "（氏名）"  # 追加資料のページ別テキストで、担当官の氏名の代わりに書く文字列（D-062）
+
+
+def officer_name_matcher(
+    conn: sqlite3.Connection, root: Path, adapter: Adapter, stage: str
+) -> TermMatcher:
+    """実行の担当官の氏名（V7 と同じ、姓名をつないだ3通り）を探す。氏名の一覧を作る原本の CSV が data/raw に
+    なければ、伏せられないまま書かないよう E_V7 で止める（D-062）。様式が違えば E_FORMAT_CHANGED（D-059）。"""
+    missing = _unreadable_csv(conn, root)
+    if missing:
+        raise KizashiError(
+            "E_V7",
+            stage,
+            f"氏名の一覧を作る原本（{'・'.join(missing)}）が data/raw にないため、ページ別テキストの氏名を"
+            "伏せられない。",
+            affected_ids=missing,
+            next_action="原本の CSV がそろった状態で取得し直す。",
+        )
+    names = name_variants(adapter.module.name_list(conn, root, adapter))
+    return TermMatcher([(n, "name") for n in names], wildcard=False)
+
+
+def mask_names(text: str, matcher: TermMatcher) -> tuple[str, int]:
+    """文の中の氏名を NAME_MASK に替える。(替えた文, 替えた数)。"""
+    out: list[str] = []
+    last = 0
+    count = 0
+    for start, end, _ in matcher.spans(text):
+        out.append(text[last:start])
+        out.append(NAME_MASK)
+        last = end
+        count += 1
+    out.append(text[last:])
+    return "".join(out), count
+
+
 def excluded_matcher(values: Iterable[str]) -> TermMatcher:
     """取り込まない列の値（D-032）を照らす TermMatcher（`?` は D-022 の規則）。"""
     return TermMatcher(((v, "excluded_value") for v in values), wildcard=True)
@@ -418,14 +454,69 @@ def _t6a(conn: sqlite3.Connection, rows: list[str]) -> tuple[str, list[str], str
     return "refute", used, "候補の行のすべてが、取り込みの照合（別経路の読み込み）で一致した。"
 
 
+def _cites_columns(items: object, columns: set[str]) -> bool:
+    return isinstance(items, list) and any(
+        isinstance(e, dict)
+        and isinstance(e.get("position"), dict)
+        and e["position"].get("column") in columns
+        for e in items
+    )
+
+
+def counterparty_cited(conn: sqlite3.Connection, adapter: Adapter, lead_id: str) -> bool:
+    """受注先を扱う主張があるか（アダプタ仕様7.4。D-058）。メモに出る記載の根拠（主張・判定・対応・係数の
+    手がかり）の位置の列が受注先の列（reconcile.fields_counterparty の take のキー）か、メモに出る基礎集計の条件に
+    受注先の列（分野アダプタの COUNTERPARTY_FILTER_COLUMNS）がある場合。主張の文の意味は見ない（機械で見分けられる
+    範囲。文で受注先を述べる主張は review-lead と記者が確かめる）。"""
+    cfg = adapter.config.get("reconcile") or {}
+    pdf_fields = cfg.get("pdf_fields") or {}
+    columns = {pdf_fields.get(f, f) for f in cfg.get("fields_counterparty") or []}
+    filters = set(getattr(adapter.module, "COUNTERPARTY_FILTER_COLUMNS", ()))
+    sources = (
+        "SELECT evidence_json FROM claims WHERE lead_id = ? AND state <> 'withdrawn'",
+        "SELECT evidence_json FROM explanations WHERE lead_id = ? AND context <> 'cli'",
+        "SELECT evidence_json FROM procurement_matches WHERE lead_id = ? AND status <> 'withdrawn'",
+    )
+    for sql in sources:
+        for (evidence,) in conn.execute(sql, (lead_id,)):
+            if _cites_columns(json.loads(evidence or "[]"), columns):
+                return True
+    (coefficients,) = conn.execute(
+        "SELECT coefficients_json FROM leads WHERE lead_id = ?", (lead_id,)
+    ).fetchone()
+    for coef in json.loads(coefficients or "[]"):
+        if isinstance(coef, dict) and _cites_columns(coef.get("basis"), columns):
+            return True
+    for calc_id in hashing.memo_calc_ids(conn, lead_id):
+        row = conn.execute(
+            "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
+        ).fetchone()
+        if row is None or row[0] != "base":
+            continue
+        used = {f.get("col") for f in json.loads(row[1]).get("filter") or [] if isinstance(f, dict)}
+        if used & filters:
+            return True
+    return False
+
+
+def t6b_fields(conn: sqlite3.Connection, adapter: Adapter, lead: Mapping) -> list[str]:
+    """T6b とメモの7節で照らす項目：区分の照合項目に、受注先を扱う主張があれば受注者名と法人番号を加える
+    （アダプタ仕様7.4。D-058）。"""
+    cfg = adapter.config.get("reconcile") or {}
+    fields = list((cfg.get("fields_by_category") or {}).get(lead["change_category"]) or [])
+    if counterparty_cited(conn, adapter, lead["lead_id"]):
+        fields += [f for f in cfg.get("fields_counterparty") or [] if f not in fields]
+    return fields
+
+
 def _t6b(
-    conn: sqlite3.Connection, adapter: Adapter, rows: list[str], category: str
+    conn: sqlite3.Connection, adapter: Adapter, rows: list[str], fields: list[str]
 ) -> tuple[str, list[str], str, list[str]]:
-    """T6b（公表形式間・原本との食い違い）。戻り値の最後は照合できなかった行（確認リストの先頭に出す）。"""
+    """T6b（公表形式間・原本との食い違い）。戻り値の最後は照合できなかった行（確認リストの先頭に出す）。
+    fields は t6b_fields の照合項目。"""
     cfg = adapter.config.get("reconcile") or {}
     if cfg.get("source_check") != "pdf":
         return "na", [], "分野アダプタが原本照合を対象外とした（ほかの形式がない）。", []
-    fields = list((cfg.get("fields_by_category") or {}).get(category) or [])
     found: dict[str, dict] = {}
     used: list[str] = []
     for calc_id, result in _reconcile_results(conn, "source"):
@@ -746,6 +837,16 @@ def _v3(
                         f"派生計算 {calc_id} を計算し直すと一致しない（{again.formula}）。",
                         [calc_id],
                     )
+        elif comp["kind"] == "doc_value":
+            # 文書値の値を、依頼に残した引用の中の数値と照らし直す（引用が資料にあるかは V4。D-060）
+            try:
+                calc.check_doc_value(str(request.get("quote") or ""), comp["value"])
+            except KizashiError as exc:
+                v.fail(
+                    "V3D_DOC_VALUE_MISMATCH",
+                    f"文書値 {calc_id} の値が、引用の中の数値と合わない：{exc.message}",
+                    [calc_id],
+                )
 
 
 def _v3a(
@@ -897,6 +998,81 @@ def _v4(
         except KizashiError as exc:
             code = _QUOTE_CODES.get(exc.code, "V2_REF_MISSING")
             v.fail(code, f"{owner} の根拠：{exc.message}", [owner, *exc.affected_ids])
+    page_sources = {
+        e["source_id"]
+        for _, e, _ in targets
+        if isinstance(e, dict)
+        and isinstance(e.get("source_id"), str)
+        and isinstance(e.get("position"), dict)
+        and "page" in e["position"]
+    }
+    _v4_page_texts(conn, root, run_id, adapter, sorted(page_sources), v)
+
+
+def _v4_page_texts(
+    conn: sqlite3.Connection,
+    root: Path,
+    run_id: str,
+    adapter: Adapter,
+    source_ids: list[str],
+    v: Verification,
+) -> None:
+    """引用したページ別テキストを、原本（SHA-256 が台帳と同じもの）から抽出し直したテキストと比べる（D-061）。
+    どちらも、いまの担当官の氏名の一覧で伏せてから比べる（取得の後に一覧が増えても、氏名の違いだけで不合格に
+    しない。D-062）。原本がない・違う場合は V2_HASH_MISMATCH に任せる。氏名の一覧を作れなければ V7 が不合格に
+    するので、ここでは比べない。"""
+    from kizashi import fetcher  # 取得の処理は check を使うので、ここで読み込む
+
+    if not source_ids:
+        return
+    try:
+        matcher = officer_name_matcher(conn, root, adapter, CHECK_STAGE)
+    except KizashiError:
+        return
+    for source_id in source_ids:
+        source = _one(conn, "SELECT * FROM sources WHERE source_id = ?", (source_id,))
+        if source is None or source["kind"] == "dataset":
+            continue
+        path = raw_path(root, source)
+        if path is None or hashing.sha256_file(path) != source["sha256"]:
+            continue
+        fmt = "pdf" if path.suffix.lower() == ".pdf" else "html"
+        try:
+            pages, _, _ = fetcher.extract_page_texts(
+                path, fmt, source["final_url"] or source["url"]
+            )
+        except Exception as exc:  # noqa: BLE001  PDF のライブラリの例外をまとめて扱う
+            v.fail(
+                "V4_PAGE_TEXT_MISMATCH",
+                f"資料 {source_id} の原本からページ別テキストを抽出し直せない（{type(exc).__name__}）。",
+                [source_id],
+            )
+            continue
+        expected = [mask_names(p, matcher)[0] for p in pages]
+        page_dir = paths.run_dir(root, run_id) / "evidence" / source_id / "pages"
+        names = [str(n) for n in range(1, len(expected) + 1)]
+        files = sorted(page_dir.glob("*.txt")) if page_dir.is_dir() else []
+        stored_names = sorted((f.stem for f in files), key=lambda x: (len(x), x))
+        if stored_names != names:
+            v.fail(
+                "V4_PAGE_TEXT_MISMATCH",
+                f"資料 {source_id} のページ別テキストのページ数が、原本から抽出し直した数"
+                f"（{len(expected)}ページ）と違う。",
+                [source_id],
+            )
+            continue
+        differing = [
+            n
+            for n, want in zip(names, expected, strict=True)
+            if mask_names((page_dir / f"{n}.txt").read_text(encoding="utf-8"), matcher)[0] != want
+        ]
+        if differing:
+            v.fail(
+                "V4_PAGE_TEXT_MISMATCH",
+                f"資料 {source_id} のページ別テキスト（{'・'.join(differing)}ページ）が、原本から抽出し直した"
+                "テキストと違う。取得の後に書き換えたテキストは根拠にできない。",
+                [source_id],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1431,6 +1607,18 @@ def _v5(
                 "各年度の値は別々の記載として残し、比較は保留にする。",
                 [lead_id, *comparing],
             )
+    if lead["proposed_outcome"] == "change" and state not in (
+        "comparable",
+        "adjusted",
+        "unresolved",
+    ):
+        # 比較成立は「同じ条件でそろえた変化」（設計書2.1）。unresolved は V5_UNRESOLVED_COMPARISON（D-063）
+        v.fail(
+            "V5_CHANGE_NOT_COMPARABLE",
+            f"比較成立の結論の案なのに、比較の条件が「{state or '未記録'}」。比較成立は比較の条件が"
+            "そろっている（comparable）か補正した（adjusted）ときだけ。そろえられなければ保留にする。",
+            [lead_id],
+        )
     if state == "adjusted":
         adjustment = json.loads(lead["adjustment_json"] or "null")
         values_ok = isinstance(adjustment, dict) and bool(
@@ -1646,8 +1834,19 @@ def _v7(
         names: list[str] = []
         excluded: TermMatcher | None = None
     else:
-        names = name_variants(adapter.module.name_list(conn, root, adapter))
-        excluded = excluded_matcher(adapter.module.excluded_values(conn, root, adapter))
+        try:
+            names = name_variants(adapter.module.name_list(conn, root, adapter))
+            excluded = excluded_matcher(adapter.module.excluded_values(conn, root, adapter))
+        except KizashiError as exc:
+            if exc.code != "E_FORMAT_CHANGED":
+                raise
+            # 様式の違う原本から氏名の一覧を作れたとみなさない（飛ばして合格にしない。D-059）
+            v.fail(
+                "V7_PERSONAL_NAME",
+                f"氏名の一覧と取り込まない列の値を作る原本の様式が期待と違うため、氏名の検査ができない：{exc.message}",
+                [lead["lead_id"], *exc.affected_ids],
+            )
+            names, excluded = [], None
     errors, warnings = v7_findings(
         full,
         names=names,
@@ -1773,7 +1972,7 @@ def verify(
     rows = candidate_rows(conn, lead_id)
     v.candidate_rows = rows
     t6a, a_calcs, a_text = _t6a(conn, rows)
-    t6b, b_calcs, b_text, _ = _t6b(conn, adapter, rows, lead["change_category"])
+    t6b, b_calcs, b_text, _ = _t6b(conn, adapter, rows, t6b_fields(conn, adapter, lead))
     _register_t6(conn, lead_id, "T6a", t6a, a_calcs, a_text)
     _register_t6(conn, lead_id, "T6b", t6b, b_calcs, b_text)
     v.t6 = {"T6a": t6a, "T6b": t6b}

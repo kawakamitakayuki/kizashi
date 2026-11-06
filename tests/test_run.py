@@ -115,7 +115,7 @@ def test_run_completed_with_synthetic_data(
     # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した。
     # 9：P0-6 で check（V1〜V4・V8）と render（候補のメモ）を足した。10：D-041 の修正。11：D-042 の修正。
     # 12：D-043 の修正。13：D-044 の修正
-    assert (versions["rules_version"], versions["parser_version"]) == ("17", "cao-procurement/1")
+    assert (versions["rules_version"], versions["parser_version"]) == ("18", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -578,4 +578,47 @@ def test_run_config_with_personal_name_fails_before_normalize(
     for file in run_dir.glob("ledger.sqlite*"):
         data = file.read_bytes()
         for word in ("架空", "太郎", "テスト用のモデル名"):
+            assert word.encode("utf-8") not in data, (file.name, word)
+
+
+def swap_title_and_officer(site: Site) -> None:
+    """令和6・7年度の CSV 4本の、件名（1列目）と担当官（2列目）の列を、見出しと本文とも入れ替える（未知の様式）。"""
+    import csv
+    import io
+
+    for key in ("k24_csv", "z24_csv", "k25_csv", "z25_csv"):
+        rows = list(
+            csv.reader(io.StringIO(site.routes[URL[key]].content.decode("cp932"), newline=""))
+        )
+        for row in rows[2:]:  # 見出しの2行と本文（表題と作成日の2行は変えない）
+            if len(row) > 2:
+                row[1], row[2] = row[2], row[1]
+        out = io.StringIO(newline="")
+        csv.writer(out).writerows(rows)
+        site.routes[URL[key]] = httpx.Response(
+            200, headers={"content-type": "text/csv"}, content=out.getvalue().encode("cp932")
+        )
+
+
+def test_cf1_unknown_format_stops_before_saving_config(repo: Path, site: Site) -> None:
+    """CF-1・NR-9（D-059。D-040①）：様式が期待と違う（件名と担当官の列が入れ替わった）原本では、担当官の列から
+    氏名の一覧を作れないので、氏名の検査ができたとみなさない。氏名の検査と設定の全文の保存より先に
+    E_FORMAT_CHANGED で止め、台帳には検査の前の形（name_check: pending）だけを残す。設定の問いの架空の氏名
+    （架空　太郎）は台帳のファイルのどこにもない。"""
+    swap_title_and_officer(site)
+    config = write_config(repo, question="架空　太郎が担当した契約は、年度間で変わったか")
+    with pytest.raises(KizashiError) as info:
+        runner.start_run(repo, "cao-procurement", config, transport=site.transport)
+    assert info.value.code == "E_FORMAT_CHANGED"
+    run_id = info.value.affected_ids[0]
+    conn = ledger_of(repo, run_id)
+    stored = json.loads(conn.execute("SELECT config_json FROM runs").fetchone()[0])
+    stages = json.loads(conn.execute("SELECT stages_json FROM runs").fetchone()[0])
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'check'").fetchone()[0] == 0
+    conn.close()
+    assert stored["name_check"] == "pending" and "question" not in stored
+    assert stages["normalize"]["state"] == "failed"
+    for file in (repo / "data" / "runs" / run_id).glob("ledger.sqlite*"):
+        data = file.read_bytes()
+        for word in ("架空", "太郎"):
             assert word.encode("utf-8") not in data, (file.name, word)

@@ -583,12 +583,7 @@ class _Memo:
                 ),
                 "",
             ]
-        fields = list(
-            ((self.adapter.config.get("reconcile") or {}).get("fields_by_category") or {}).get(
-                lead["change_category"]
-            )
-            or []
-        )
+        fields = check.t6b_fields(self.conn, self.adapter, lead)  # check の T6b と同じ項目（D-058）
         pdf_fields = (self.adapter.config.get("reconcile") or {}).get("pdf_fields") or {}
         unverified, verified = [], []
         for ref in self.rows:

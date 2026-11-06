@@ -625,6 +625,7 @@ class EvidenceDownload:
     pages: list[str]
     links: list[dict[str, str]]
     encoding: str | None
+    masked_names: int = 0  # ページ別テキストとリンクの文で「（氏名）」に替えた数（D-062）
 
 
 def _download_evidence(
@@ -666,16 +667,13 @@ def _download_evidence(
             f"公表一覧の資料（{same[0]}）と同じ中身で、追加資料としては保存しない（D-021）。",
             next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
         )
-    links: list[dict[str, str]] = []
-    encoding = None
-    if fmt == "pdf":
-        try:
-            pages = pdftext.extract_pages(path)
-        except Exception as exc:  # noqa: BLE001  PDF のライブラリの例外をまとめて扱う
-            raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
-    else:
-        text, links, encoding = html_text(content, final_url)
-        pages = [text]
+    try:
+        pages, links, encoding = extract_page_texts(path, fmt, final_url)
+    except Exception as exc:  # PDF のライブラリの例外をまとめて扱う（HTML の例外はそのまま）
+        if fmt != "pdf":
+            raise
+        raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
+    pages, links, masked = mask_known_names(conn, root, adapter, pages, links)
     return EvidenceDownload(
         url=url,
         final_url=final_url,
@@ -686,7 +684,46 @@ def _download_evidence(
         pages=pages,
         links=links,
         encoding=encoding,
+        masked_names=masked,
     )
+
+
+def extract_page_texts(
+    path: Path, fmt: str, base_url: str
+) -> tuple[list[str], list[dict[str, str]], str | None]:
+    """原本（data/raw）からページ別テキストを取り出す：(ページの文の配列, リンクの一覧, 文字コード)。PDF はページ
+    ごと、HTML は1ページ。取得のときと、check で抽出し直して比べるとき（V4_PAGE_TEXT_MISMATCH。D-061）に使う。"""
+    if fmt == "pdf":
+        return pdftext.extract_pages(path), [], None
+    text, links, encoding = html_text(path.read_bytes(), base_url)
+    return [text], links, encoding
+
+
+def mask_known_names(
+    conn: sqlite3.Connection,
+    root: Path,
+    adapter: Adapter,
+    pages: list[str],
+    links: list[dict[str, str]],
+    stage: str = "fetch",
+) -> tuple[list[str], list[dict[str, str]], int]:
+    """ページ別テキストとリンクの文の、実行の担当官の氏名（V7 と同じ3通り）を「（氏名）」に替える（D-062）。
+    原本は書き換えない。未知の氏名は見つけられない（保証しない）。戻り値の最後は替えた数（氏名は返さない）。"""
+    from kizashi import check  # check は取得の処理を使うので、ここで読み込む
+
+    matcher = check.officer_name_matcher(conn, root, adapter, stage)
+    masked_pages: list[str] = []
+    total = 0
+    for page in pages:
+        text, n = check.mask_names(page, matcher)
+        masked_pages.append(text)
+        total += n
+    masked_links: list[dict[str, str]] = []
+    for link in links:
+        text, n = check.mask_names(link.get("text") or "", matcher)
+        masked_links.append({**link, "text": text})
+        total += n
+    return masked_pages, masked_links, total
 
 
 def _write_evidence(
@@ -824,6 +861,7 @@ def fetch_evidence(
         "media_type": dl.media_type,
         "page_count": len(dl.pages),
         "pages_dir": (written / "pages").relative_to(root).as_posix(),
+        "masked_names": dl.masked_names,
         "counted_as_evidence": kind == "evidence",
         "limits": _limits_view(budget),
     }

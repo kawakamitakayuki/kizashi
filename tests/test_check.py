@@ -557,7 +557,11 @@ def test_ck1_v3b_reaggregation_from_raw(repo: Path, synthetic_run: str) -> None:
     _rewrite_raw_csv(
         repo, synthetic_run, "S005", "契約金額".encode("cp932"), "契約の金額".encode("cp932")
     )
-    assert failing(repo, synthetic_run, lead["lead"]) == ["V3B_HEADER_UNRESOLVED"]
+    # 見出しが期待と違う原本からは、担当官の列の位置を決められないので氏名の一覧を作れたとみなさない（D-059）
+    assert failing(repo, synthetic_run, lead["lead"]) == [
+        "V3B_HEADER_UNRESOLVED",
+        "V7_PERSONAL_NAME",
+    ]
 
 
 def test_ck1_rule_version_is_exit_3(
