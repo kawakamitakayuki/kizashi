@@ -69,7 +69,7 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     fetch --recheck の結果が変わる。
 # 23：D-074（初回の run で、公表ページに同じ論理資料のリンクが2つ以上あるときの取得の失敗の理由に、候補の URL を
 #     書かず、資料ID・論理資料のキー・候補の数だけを書く）。run の結果（取得の失敗の記録）が変わる。
-RULES_VERSION = "24"
+RULES_VERSION = "25"
 
 
 def code_version() -> str:

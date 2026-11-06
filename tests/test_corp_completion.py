@@ -302,3 +302,43 @@ def test_cn1_regression_d080_run_continues(
         "valid_from_pdf": 0,
         "unconfirmed": 7,
     }
+
+
+# ---------------------------------------------------------------------------
+# 回帰（D-083）：指数の先頭の0は、長さと範囲を確かめる前に除く（342886c の版と同じ結果を保つ）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["1.00000E+012", "1.00000E+0012", "1.0E+" + "0" * 5000 + "12"],
+)
+def test_cn1_regression_d083_exponent_leading_zeros(raw: str) -> None:
+    """CN-1 回帰（D-083）：`E+012` は指数12。342886c の版と同じく合い、補完される。"""
+    assert normalize.exponent_matches("1000000000008", raw) is True
+    assert pdftext.corp_completion(raw, "1000000000008", MATCHED) == (
+        {"state": "valid_from_pdf"},
+        "1000000000008",
+    )
+
+
+def test_cn1_regression_d083_run_adopts_leading_zero_exponent(
+    repo: Path, site: Site, pdf_with_corp_numbers: None
+) -> None:
+    """CN-1 回帰（D-083）：CSV の NO 1 が `1.00000E+012` でも、3条件を満たせば valid_from_pdf になる。"""
+    from conftest import URL, fixture_bytes
+
+    data = fixture_bytes("kyoso_2024_mini.csv")
+    site.routes[URL["k24_csv"]] = httpx.Response(
+        200,
+        headers={"content-type": "text/csv"},
+        content=data.replace(b"1.00000E+12", b"1.00000E+012", 1),
+    )
+    result = run(repo, site)
+    conn = ledger_of(repo, result["run_id"])
+    state = conn.execute(
+        "SELECT corp_number_state, corp_numbers_json FROM procurement_contracts"
+        " WHERE record_id = 'S001:000001'"
+    ).fetchone()
+    conn.close()
+    assert tuple(state) == ("valid_from_pdf", '["1000000000008"]')
