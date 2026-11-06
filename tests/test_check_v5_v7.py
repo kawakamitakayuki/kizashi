@@ -161,6 +161,53 @@ def test_ck1_v5_unresolved_boundary_is_left_to_reporter(repo: Path, synthetic_ru
     assert "1つの年度の値だけを参照して文で比べる主張は見つけない" in checklist
 
 
+@pytest.mark.parametrize("state", ["not_applicable"])
+def test_ck1_v5_change_requires_comparable_or_adjusted(
+    repo: Path, synthetic_run: str, state: str
+) -> None:
+    """V5_CHANGE_NOT_COMPARABLE（D-063）：比較成立は「同じ条件でそろえた変化」（設計書2.1）なので、比較の条件は
+    comparable か adjusted に限る。対象外（not_applicable）の比較成立は check と render で不合格。確定できない
+    （unresolved）の比較成立は V5_UNRESOLVED_COMPARISON で、同じ不合格を重ねない。保留にすれば対象外でも通る。"""
+    from kizashi import render
+
+    lead = prepare(repo, synthetic_run, conclusion=False)
+    change = {
+        "kind": "conclusion",
+        "lead_id": lead["lead"],
+        "outcome": "change",
+        "comparison_state": state,
+        "explanation_status": "none",
+    }
+    rec(repo, synthetic_run, change)
+    for call in (check.run_check, render.render_lead):
+        with pytest.raises(KizashiError) as info:
+            call(repo, synthetic_run, lead["lead"])
+        assert codes(info) == ["V5_CHANGE_NOT_COMPARABLE"]
+    rec(repo, synthetic_run, {**change, "comparison_state": "unresolved"})
+    found = failing(repo, synthetic_run, lead["lead"])
+    assert "V5_UNRESOLVED_COMPARISON" in found and "V5_CHANGE_NOT_COMPARABLE" not in found
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": state,
+            "hold_reason": "comparison",
+        },
+    )
+    assert "V5_CHANGE_NOT_COMPARABLE" not in _codes_or_none(repo, synthetic_run, lead["lead"])
+
+
+def _codes_or_none(repo: Path, run_id: str, lead_id: str) -> list[str]:
+    try:
+        check.run_check(repo, run_id, lead_id)
+    except KizashiError as exc:
+        return [f["code"] for f in exc.failures]
+    return []
+
+
 def test_ck1_v5_adjusted_without_values(repo: Path, synthetic_run: str) -> None:
     """V5_ADJUSTED_NO_VALUES：adjusted なのに補正の方法と補正前後の値がない。"""
     lead = prepare(repo, synthetic_run)

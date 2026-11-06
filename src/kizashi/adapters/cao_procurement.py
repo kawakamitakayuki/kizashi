@@ -12,7 +12,7 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from kizashi import normalize as nz
@@ -61,6 +61,10 @@ CALC_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
 }
+
+# 受注先を扱う主張を見分ける、基礎集計の条件の列（アダプタ仕様7.4。D-058）。この列で行を選ぶ計算がメモに出れば、
+# T6b とメモの7節で受注者名と法人番号も照らす。
+COUNTERPARTY_FILTER_COLUMNS: tuple[str, ...] = ("corp_number_state",)
 
 # 検出（run の detect。実装仕様4.8）の自動の基礎集計で使う、合計する列の表示名と単位。検出SQLの metric が
 # `<列>_sum`（例 amount_yen_sum）なら、その列の合計と件数を年度ごとに登録し、差額と増減率を作る。
@@ -139,21 +143,41 @@ def officer_names(cell: str | None) -> list[tuple[str, ...]]:
     return names
 
 
-def name_list(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[tuple[str, ...]]:
-    """実行の取得済みの CSV の原本（担当官の列）から、氏名の一覧を作る。検査のたびに作り、保存しない
-    （実装仕様9章の V7_PERSONAL_NAME）。"""
+def _checked_csv_tables(
+    conn: sqlite3.Connection, root: Path, adapter: Adapter
+) -> Iterator[tuple[FileSpec, readers.CsvTable]]:
+    """氏名の一覧と取り込まない列の値を作る原本（実行の取得済みの CSV）を、様式を確かめてから読む（D-059）。
+
+    担当官の列や取り込まない列は列の番号で読むので、見出しの文字列・列の数が期待と違う原本では位置を決められない。
+    そのときは氏名の検査ができたとみなさず、E_FORMAT_CHANGED で止める（実行設定の全文を保存する前。D-040①）。
+    """
     rows = conn.execute(
-        "SELECT logical_key, sha256 FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
-        " AND logical_key LIKE '%|csv' ORDER BY source_id"
+        "SELECT source_id, logical_key, sha256 FROM sources WHERE kind = 'dataset'"
+        " AND status = 'fetched' AND logical_key LIKE '%|csv' ORDER BY source_id"
     ).fetchall()
-    names: set[tuple[str, ...]] = set()
-    for logical_key, sha in rows:
+    for source_id, logical_key, sha in rows:
         _, year, family, _ = logical_key.split("|")
         spec = adapter.file_spec(int(year), family)
-        index = None if spec is None else spec.index_of(OFFICER_KEY)
-        if spec is None or index is None:
+        if spec is None:
             continue
-        table = readers.read_rows(paths.raw_dir(root) / f"{sha}.csv", spec.encoding)
+        try:
+            table = readers.read_rows(paths.raw_dir(root) / f"{sha}.csv", spec.encoding)
+        except readers.DecodeError as exc:
+            raise _format_error(source_id, [str(exc)], logical_key) from exc
+        problems = format_problems(table, spec)
+        if problems:
+            raise _format_error(source_id, problems, logical_key)
+        yield spec, table
+
+
+def name_list(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[tuple[str, ...]]:
+    """実行の取得済みの CSV の原本（担当官の列）から、氏名の一覧を作る。検査のたびに作り、保存しない
+    （実装仕様9章の V7_PERSONAL_NAME）。様式が期待と違う原本があれば E_FORMAT_CHANGED（D-059）。"""
+    names: set[tuple[str, ...]] = set()
+    for spec, table in _checked_csv_tables(conn, root, adapter):
+        index = spec.index_of(OFFICER_KEY)
+        if index is None:
+            continue
         for _, cells in table.records:
             if index < len(cells):
                 names.update(officer_names(cells[index]))
@@ -182,21 +206,13 @@ def excluded_cell_values(index: int, cell: str | None) -> list[str]:
 
 def excluded_values(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[str]:
     """実行の取得済みの CSV の原本から、取り込まない列の値（担当官の所在地と相手方の住所だけ。D-032）の一覧を
-    作る。氏名の一覧と同じく、検査のたびに作り、保存しない（実装仕様9章の V7_PERSONAL_NAME、12.2）。"""
-    rows = conn.execute(
-        "SELECT logical_key, sha256 FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
-        " AND logical_key LIKE '%|csv' ORDER BY source_id"
-    ).fetchall()
+    作る。氏名の一覧と同じく、検査のたびに作り、保存しない（実装仕様9章の V7_PERSONAL_NAME、12.2）。様式が期待と
+    違う原本があれば E_FORMAT_CHANGED（D-059）。"""
     values: set[str] = set()
-    for logical_key, sha in rows:
-        _, year, family, _ = logical_key.split("|")
-        spec = adapter.file_spec(int(year), family)
-        if spec is None:
-            continue
+    for spec, table in _checked_csv_tables(conn, root, adapter):
         columns = [
             i for i in (OFFICER_LOCATION_INDEX, COUNTERPARTY_ADDRESS_INDEX) if i in spec.drop
         ]
-        table = readers.read_rows(paths.raw_dir(root) / f"{sha}.csv", spec.encoding)
         for _, cells in table.records:
             for index in columns:
                 if index < len(cells):

@@ -53,7 +53,11 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     V2_STALE_OR_WITHDRAWN にする。上限に達した候補の render は、最後に数えた check に合格した中身だけを書く。
 #     保留のメモを書いた候補だけに1巡を足す。補助資料の一覧は4点をそろえる。伏せ字の記号を allow の名前も含めて
 #     割り当てる）。check・render・record・fetch --recheck・check --publish の結果が変わる。
-RULES_VERSION = "17"
+# 18：Final Review の D-058〜D-063（受注先を扱う主張では T6b とメモの7節で受注者名・法人番号も照らす、氏名の一覧を
+#     作る前に原本の様式を確かめる、check でも文書値を引用の数値と照らす（V3D）、引用したページ別テキストを原本から
+#     抽出し直して比べる（V4_PAGE_TEXT_MISMATCH）、追加資料のページ別テキストの既知の氏名を伏せる、比較成立は
+#     comparable・adjusted に限る（V5_CHANGE_NOT_COMPARABLE））。check・render・run・fetch の結果が変わる。
+RULES_VERSION = "18"
 
 
 def code_version() -> str:

@@ -58,6 +58,7 @@ argument-hint: "[分野] | [run_id]"
 - 資料は kizashi fetch <run_id> <URL> で取得する（WebFetch は使えない）。
   リンクをたどるだけのページは --index、項目の定義や記入要領は --definition。
 - 取得した資料のページ別テキストは data/runs/<run_id>/evidence/<source_id>/pages/ にある。Grep と Read で読む。
+  実行の担当官の氏名は「（氏名）」に替えて保存されている（原本は替えない）。氏名を補って書かない。
   公表一覧のPDFにはページ別テキストがない。その記載は kizashi inspect <row_ref> --run <run_id> でCSVのレコードを読み、
   row_ref で引用する。
 - 6つの型（T1〜T5、T6a・T6b・T6c）を一つずつ当てる。T6a（取り込みの誤り）とT6b（公表形式間の食い違い）は
