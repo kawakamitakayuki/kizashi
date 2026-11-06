@@ -437,6 +437,18 @@ D-017 の再試験（2026-11-05 14:40ごろ）。Claude Code v2.1.318。ec74c78 
 
 2026-11-06。上の3件を直し、`rules_version` を19に上げた。回帰テストを `tests/test_integrity.py`（係数の手がかり、壊れたページ別テキスト）と `tests/test_counterparty_t6b.py`（文書値の位置）に足した。
 
+### f355869の再レビューの記録（D-058・D-064〜D-066）
+
+2026-11-06。利用者の依頼で `f355869`（規則の版19）の差分、回帰テスト、実装仕様8・9章、アダプタ仕様7.4、テスト計画、決定記録を照らし、前回の独立検証13件を再実行した。今回の修正範囲で追加の修正指摘はなく、D-064〜D-066の修正を再レビュー合格とする。
+
+- D-058の見分け方は、D-065の文書値を含む現在の仕様で確定扱いとしてよい。メモに出る主張・判定・対応・係数の手がかり・文書値の根拠の引用列と、基礎集計の条件で機械的に識別し、本文の意味の確認はreview-leadと記者が行う。T6bとメモ7節が同じ項目を使うことも確認した。
+- D-064は、取得資料を引く係数の手がかりが引用照合と再抽出の対象になった。追加の独立試験で、係数の3状態（proposed・accepted・declined）それぞれについて、正しい引用は使え、改変したページの引用はV4_PAGE_TEXT_MISMATCHになることを確認した（6件）。知識ファイルの手がかりを公的な根拠として扱う変更はない。
+- D-065は、法人番号の欄を引く文書値でも追加照合が動き、候補の行の法人番号が指数表記ならT6bが未確認になって比較成立の書き出しを拒否した。D-066は、UTF-8として壊れた引用ページをcheckでV4_PAGE_TEXT_MISMATCH・V4_QUOTE_NOT_FOUND、recordでE_QUOTE_NOT_FOUNDとして扱う。checkが両方のV4の不合格を返すことは、引用と抽出結果を別々に検査する仕様と整合する。
+- 検査結果：既定のpytestは821件成功・失敗0件（337.32秒）。前回の独立検証は13件すべて合格（19.37秒）、係数の状態の追加試験は6件すべて合格（10.41秒）。すべて通信なし・合成データ。ruff check、ruff format --check（64ファイル整形済み）、git diff --checkも合格。
+- 証跡は `/tmp/kizashi_f355869_review/` の `baseline.log`・`baseline.xml`、`previous_probes.log`・`previous_probes.xml`、`coefficient_states.log`・`coefficient_states.xml`。前回の13件は `/tmp/kizashi_7234a71_review/test_previous_review.py` と `test_boundaries.py`、追加6件は `/tmp/kizashi_f355869_review/test_coefficient_states.py`。独立試験は `PYTHONPATH=tests:src .venv/bin/pytest` で各ファイルを指定して実行した。
+- 製品コード・既存テスト・規則の版は変更せず、この再レビュー記録だけを追記した。実際のdata/rawとreferences/は変更していない。コミット・pushは行っていない。
+- これは今回の実装修正の再レビューの合格であり、記者の原本確認・評価や公開物の承認を行った記録ではない。版19での実データの新しい実行、Claude Code実機の権限再試験、disclosure.allowの記入、L0405の原本確認、評価、AC-4の残り、実際の補助資料4点による公開検査は行っていない。既存のD-004・D-007・D-008・D-009も未決のまま。
+
 ## 決定
 
 （初日の確認の結果は D-001 から追記する。資料の作成中に決めたことは D-010 から記録した）
