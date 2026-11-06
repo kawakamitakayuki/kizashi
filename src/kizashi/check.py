@@ -667,6 +667,25 @@ def _v2(
                 f"索引ページ（{source_id}）を根拠にしている。",
                 [source_id],
             )
+        newer = hashing.newer_versions(conn, source_id)
+        if newer:
+            latest = newer[-1]["source_id"]
+            if source["kind"] == "dataset":
+                todo = (
+                    "この実行の正規化と計算は古い版による（新しい版は正規化しない）。新しい版で調べ直すには、"
+                    "同じ設定で新しい実行を作る"
+                )
+            else:
+                todo = (
+                    f"新しい版 {latest} を読み直し、古い版を根拠にした判定・対応・係数は新しい版を根拠に登録し"
+                    "直し、主張は取り下げて登録し直す"
+                )
+            v.fail(
+                "V2_STALE_OR_WITHDRAWN",
+                f"検証が依存する資料 {source_id} に、中身の違う新しい版 {latest} がある"
+                f"（fetch --recheck）。{todo}。",
+                [source_id, *(n["source_id"] for n in newer)],
+            )
         path = raw_path(root, source)
         if path is None:
             v.fail("V2_HASH_MISMATCH", f"資料 {source_id} の原本が data/raw にない。", [source_id])
@@ -1655,14 +1674,13 @@ def _v7(
 
 
 def round_limit(conn: sqlite3.Connection, lead: dict) -> int:
-    """候補の巡回数の上限。保留にしたことのある候補（保留のメモを書いた、または保留の結論の案を登録した）を
-    調べ直す場合は、1巡を足す（実装仕様3.6）。"""
+    """候補の巡回数の上限。保留にした候補（保留のメモを書いて state が hold になった候補）を調べ直す場合は、
+    1巡を足す（実装仕様3.6、設計書4.3）。保留の結論の案を登録しただけでは足さない（D-056②）。"""
     held = (
         lead["state"] == "hold"
         or conn.execute(
-            "SELECT 1 FROM events WHERE kind = 'record' AND target_id = ?"
-            " AND json_extract(after_json, '$.kind') = 'conclusion'"
-            " AND json_extract(after_json, '$.outcome') = 'hold' LIMIT 1",
+            "SELECT 1 FROM events WHERE kind = 'state_change' AND target_id = ?"
+            " AND json_extract(after_json, '$.state') = 'hold' LIMIT 1",
             (lead["lead_id"],),
         ).fetchone()
         is not None
@@ -1670,14 +1688,57 @@ def round_limit(conn: sqlite3.Connection, lead: dict) -> int:
     return limits.MAX_ROUNDS + (1 if held else 0)
 
 
-def rounds_exceeded(lead_id: str, rounds: int, limit: int, stage: str) -> KizashiError:
+def rounds_exceeded(
+    lead_id: str, rounds: int, limit: int, stage: str, detail: str = ""
+) -> KizashiError:
     return KizashiError(
         "E_ROUNDS_EXCEEDED",
         stage,
-        f"候補 {lead_id} の修正の巡回数が上限（{limit}巡）に達している（{rounds}巡）。保留以外の結論の案は受け付けない。",
+        f"候補 {lead_id} の修正の巡回数が上限（{limit}巡）に達している（{rounds}巡）。{detail}"
+        "保留以外の結論の案は受け付けない。",
         affected_ids=[lead_id],
         next_action="結論を強めず、保留の結論の案（outcome: hold、hold_reason: limit）を登録して render する。",
     )
+
+
+def passed_contents_at_limit(conn: sqlite3.Connection, lead: dict) -> set[str]:
+    """上限に達した候補で、保留以外のメモに書いてよい中身（検証記録のハッシュ）：最後に数えた check に合格した
+    中身と、最後に書いたメモの中身（同じ中身を書き直すため）。最後に数えた check が不合格なら、その後に直した
+    中身は数えた check を通っていない（D-056②）。"""
+    allowed: set[str] = set()
+    row = conn.execute(
+        "SELECT result_json, check_hash FROM events WHERE kind = 'check' AND target_id = ?"
+        " AND json_extract(after_json, '$.counted') = 1 ORDER BY event_id DESC LIMIT 1",
+        (lead["lead_id"],),
+    ).fetchone()
+    if row is not None and json.loads(row[0] or "{}").get("passed") is True and row[1]:
+        allowed.add(row[1])
+    if lead["memo_hash"]:
+        allowed.add(lead["memo_hash"])
+    return allowed
+
+
+def enforce_rounds_at_render(
+    conn: sqlite3.Connection, adapter: Adapter, lead_id: str, stage: str
+) -> None:
+    """render の中の検査は数えないので、上限に達した候補では、数えた check を通った中身のときだけ保留以外の
+    メモを書く（上限の後に直して render で回避させない。設計書4.3。D-056②）。主張を checked にした後、状態を
+    結論の案にする前に呼ぶ（check が記録したハッシュと同じ時点の台帳で比べる）。"""
+    lead = _one(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
+    if lead is None or lead["proposed_outcome"] not in COUNTED_OUTCOMES:
+        return
+    limit = round_limit(conn, lead)
+    if lead["rounds"] < limit:
+        return
+    if hashing.check_hash(conn, lead_id, adapter) not in passed_contents_at_limit(conn, lead):
+        raise rounds_exceeded(
+            lead_id,
+            lead["rounds"],
+            limit,
+            stage,
+            "最後に数えた check に合格した中身と台帳が違う（上限に達した後に直した中身は、数えた check を"
+            "通っていない）。",
+        )
 
 
 # ---------------------------------------------------------------------------

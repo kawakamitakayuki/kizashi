@@ -15,7 +15,7 @@ import pytest
 from conftest import URL, Site, fixture_bytes, ledger_of, rec
 from kizashi import cli, fetcher, inspect_cmd, render
 from kizashi.errors import KizashiError
-from test_check import ROW_FROM, prepare
+from test_check import ROW_FROM, explanation, prepare
 
 EVIDENCE_URL = "https://www.cao.go.jp/test/translation-notice.html"
 NOTICE = "翻訳業務の仕様は前年度と同じとした。"
@@ -307,3 +307,91 @@ def test_hs3_dataset_recheck_follows_public_page(
     conn.close()
     assert memo_of(repo, synthetic_run, lead["lead"])["status"] == "失効"
     assert site.requests[-2:] == ["https://www.cao.go.jp/chotatsu/kohyo/kohyo.html", URL["k24_csv"]]
+
+
+CHANGED = "翻訳業務の仕様は前年度から変更した。"
+
+
+def judged_lead(repo: Path, run_id: str, site: Site) -> tuple[dict, str]:
+    """業務・数量の変化（T3）の判定だけが追加資料を根拠にした候補のメモ（主張は追加資料に依存しない）。"""
+    lead = prepare(repo, run_id)
+    site.routes[EVIDENCE_URL] = html(NOTICE)
+    source_id = fetcher.fetch_evidence(
+        repo, run_id, EVIDENCE_URL, "evidence", transport=site.transport
+    )["source_id"]
+    rec(repo, run_id, judgment_t3(lead["lead"], source_id, NOTICE))
+    render.render_lead(repo, run_id, lead["lead"])
+    return lead, source_id
+
+
+def judgment_t3(lead_id: str, source_id: str, quote: str) -> dict:
+    evidence = {"source_id": source_id, "position": {"page": 1}, "quote": quote, "role": "support"}
+    return explanation(lead_id, "T3", "refute", searched="", evidence=[evidence])
+
+
+def stale_source_failures(info: pytest.ExceptionInfo, source_id: str) -> list[dict]:
+    return [
+        f
+        for f in info.value.failures
+        if f["code"] == "V2_STALE_OR_WITHDRAWN" and source_id in f["affected_ids"]
+    ]
+
+
+def test_hs3_new_version_of_judgment_evidence_makes_memo_stale(
+    repo: Path, synthetic_run: str, site: Site
+) -> None:
+    """HS-3（D-056①）：判定だけが根拠にした追加資料の新しい版を取ると、主張は stale にならないが、検証が依存する
+    資料に新しい版があるので、メモは失効と表示され、check と render は V2_STALE_OR_WITHDRAWN で通らない。
+    recheck の結果に、検証が古い版に依存する候補を出す。新しい版を根拠に判定を登録し直すと check を通り、新しい
+    番号のメモができる。"""
+    from kizashi import check
+
+    lead, source_id = judged_lead(repo, synthetic_run, site)
+    lid = lead["lead"]
+    site.routes[EVIDENCE_URL] = html(CHANGED)
+    result = fetcher.recheck_source(repo, synthetic_run, source_id, transport=site.transport)
+    new_id = result["new_source_id"]
+    assert result["changed"] is True and result["stale_claims"] == []
+    assert result["affected_leads"] == [lid]
+    assert lid in result["message"]
+    view = memo_of(repo, synthetic_run, lid)
+    assert view["status"] == "失効" and view["check_hash"] != view["current_hash"]
+    for call in (check.run_check, render.render_lead):
+        with pytest.raises(KizashiError) as info:
+            call(repo, synthetic_run, lid)
+        [failure] = stale_source_failures(info, source_id)
+        assert new_id in failure["affected_ids"] and new_id in failure["message"]
+    memos = repo / "data" / "runs" / synthetic_run / "memos"
+    assert sorted(p.name for p in memos.iterdir()) == [f"{lid}.v1.md"]
+
+    rec(repo, synthetic_run, judgment_t3(lid, new_id, CHANGED))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    assert render.render_lead(repo, synthetic_run, lid)["memo_no"] == 2
+    assert memo_of(repo, synthetic_run, lid)["status"] == "有効"
+
+
+def test_hs3_new_version_of_zero_row_dependency_csv_makes_memo_stale(
+    repo: Path, synthetic_run: str, site: Site
+) -> None:
+    """HS-3（D-056①）：候補の行のない依存する CSV（令和6年度の随意契約 S003。翻訳業務の行は競争入札の S001・
+    S005 にだけある）の新しい版でも、メモは失効と表示され、check は通らない（この実行の計算は古い版による
+    ので、新しい実行で調べ直す）。主張は stale にならない。"""
+    from kizashi import check
+
+    lead = prepare(repo, synthetic_run)
+    lid = lead["lead"]
+    render.render_lead(repo, synthetic_run, lid)
+    site.routes[URL["z24_csv"]] = httpx.Response(
+        200,
+        headers={"content-type": "text/csv"},
+        content=fixture_bytes("zuikei_2024_mini.csv") + b"\r\n",
+    )
+    result = fetcher.recheck_source(repo, synthetic_run, "S003", transport=site.transport)
+    assert result["changed"] is True and result["stale_claims"] == []
+    assert result["affected_leads"] == [lid]
+    assert memo_of(repo, synthetic_run, lid)["status"] == "失効"
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lid)
+    [failure] = stale_source_failures(info, "S003")
+    assert result["new_source_id"] in failure["affected_ids"]
+    assert "新しい実行" in failure["message"]

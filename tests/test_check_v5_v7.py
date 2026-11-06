@@ -112,6 +112,55 @@ def test_ck1_v5_unresolved_comparison(repo: Path, synthetic_run: str) -> None:
     passes(repo, synthetic_run, lead["lead"])
 
 
+UNRESOLVED_HEADING = "### 比較の条件を確定できない（unresolved）候補の主張"
+
+
+def test_ck1_v5_unresolved_boundary_is_left_to_reporter(repo: Path, synthetic_run: str) -> None:
+    """V5_UNRESOLVED_COMPARISON の境界（D-056④）：「比較の主張」は年度間の比較を述べる主張で、CLI が機械で
+    見つけるのは、2つ以上の年度の計算を参照する主張と比較成立の結論の案だけ。1つの年度の値だけを参照して文で
+    比べる主張（「前年度より増え」）は check を通る（限界）。そのため unresolved の候補のメモの7節に、主張の文を
+    記者が確かめる項目を出す。比較の条件が確定した候補のメモには出さない。"""
+    from kizashi import render
+
+    lead = prepare(repo, synthetic_run)
+    comparable = render.render_lead(repo, synthetic_run, lead["lead"])
+    assert UNRESOLVED_HEADING not in (repo / comparable["memo"]).read_text(encoding="utf-8")
+    rec(
+        repo,
+        synthetic_run,
+        {"kind": "withdraw", "target": lead["observation"], "reason": "同種と確かめられない。"},
+    )
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "claim",
+            "lead_id": lead["lead"],
+            "type": "observation",
+            "text": f"契約金額は前年度より増え、{{calc:{lead['calc_to']}}}になった。",
+            "calc_ids": [lead["calc_to"]],
+            "evidence": [],
+        },
+    )
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "unresolved",
+            "hold_reason": "comparison",
+        },
+    )
+    passes(repo, synthetic_run, lead["lead"])  # 機械では見つけない
+    held = render.render_lead(repo, synthetic_run, lead["lead"])
+    text = (repo / held["memo"]).read_text(encoding="utf-8")
+    checklist = text.split("## 7 記者の確認リスト", 1)[1].split("## 8 ", 1)[0]
+    assert UNRESOLVED_HEADING in checklist
+    assert "1つの年度の値だけを参照して文で比べる主張は見つけない" in checklist
+
+
 def test_ck1_v5_adjusted_without_values(repo: Path, synthetic_run: str) -> None:
     """V5_ADJUSTED_NO_VALUES：adjusted なのに補正の方法と補正前後の値がない。"""
     lead = prepare(repo, synthetic_run)

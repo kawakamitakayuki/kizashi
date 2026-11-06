@@ -7,6 +7,9 @@
   比べ、違えば「失効」と表示する（4.3・10.2）。
 - 公表一覧の資料は、実行が取得した版（supersedes のないもの）を依存する資料とする。fetch --recheck で取った新しい
   版は、この実行の計算に使っていない。
+- 検証が依存する資料に新しい版（fetch --recheck で取った、中身の違う版）があれば、その版の ID と SHA-256 も
+  ハッシュに入れる。主張が古い版を根拠にしていなくても（判定・対応の根拠、該当する行のない依存する CSV）、
+  メモは失効と表示される（D-056①）。新しい版のない資料の値は前と同じなので、既存のメモのハッシュは変わらない。
 """
 
 from __future__ import annotations
@@ -278,6 +281,24 @@ def dependency_sources(conn: sqlite3.Connection, lead_id: str, adapter: Adapter)
     return sorted(s for s in sources if isinstance(s, str) and s)
 
 
+def newer_versions(conn: sqlite3.Connection, source_id: str) -> list[dict]:
+    """資料の新しい版（fetch --recheck で登録した版。supersedes をたどり、古い順）。recheck は中身が違うときだけ
+    新しい版を登録するので、1つでもあれば、この実行が使った版とは中身が違う。"""
+    found: list[dict] = []
+    seen = {source_id}
+    current = source_id
+    while True:
+        row = conn.execute(
+            "SELECT source_id, sha256 FROM sources WHERE supersedes = ? ORDER BY source_id LIMIT 1",
+            (current,),
+        ).fetchone()
+        if row is None or row[0] in seen:
+            return found
+        seen.add(row[0])
+        found.append({"source_id": row[0], "sha256": row[1]})
+        current = row[0]
+
+
 def check_hash(conn: sqlite3.Connection, lead_id: str, adapter: Adapter) -> str:
     """検証記録のハッシュ（11章）。render が読む行を集め、表の名前と ID の順に正規化JSONで連結した SHA-256。"""
     items: list[tuple[str, str, object]] = []
@@ -308,7 +329,11 @@ def check_hash(conn: sqlite3.Connection, lead_id: str, adapter: Adapter) -> str:
         row = conn.execute(
             "SELECT sha256 FROM sources WHERE source_id = ?", (source_id,)
         ).fetchone()
-        items.append(("sources", source_id, {"sha256": None if row is None else row[0]}))
+        version: dict = {"sha256": None if row is None else row[0]}
+        newer = newer_versions(conn, source_id)
+        if newer:  # 新しい版のない資料は前と同じ値にする（既存のメモを失効させない）
+            version["newer_versions"] = newer
+        items.append(("sources", source_id, version))
     (versions,) = conn.execute("SELECT rule_versions_json FROM runs").fetchone()
     items.append(("runs", "rule_versions", json.loads(versions)))
     joined = "".join(

@@ -43,6 +43,8 @@ argument-hint: "[lead_id] [run_id]"
    - 補正すると変化が消える、または比べられないと確定したら、見かけの変化。
    - 比べられるかを確定できなければ、保留（hold_reason: comparison）。comparison_state を unresolved にするなら、
      両年度を比べる主張は取り下げ、各年度の値は別々の主張にする（V5_UNRESOLVED_COMPARISON）。
+     check が見つけるのは2つ以上の年度の計算を参照する主張だけなので、1つの年度の値だけを参照して文で比べる主張
+     （「前年度より増え」など）も、ここで読んで取り下げるか、その年度の値の記載に直す。メモの7節で記者も確かめる。
    - 同種業務の対応が confirmed でない、または比べる行の一部しか覆っていなければ、比較成立にしない（V8_MATCH_UNCONFIRMED）。
    - 規1（税込か税抜か、単位、範囲）の違いを補正するのに資料にない係数が要るなら、計算せずに kind: coefficient で
      提案し、記者に伝える。提案が proposed・accepted のまま残れば比較成立にしない（V8_COEFFICIENT_PENDING）。

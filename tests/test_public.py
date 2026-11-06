@@ -147,10 +147,44 @@ def test_rd4_run_summary_public_copy(repo: Path, synthetic_run: str, capsys) -> 
 
 # ---------------------------------------------------------------------------
 # PB-1：check --publish（一時の Git リポジトリ）
+def test_rd4_labels_do_not_shift_when_names_are_allowed(repo: Path, synthetic_run: str) -> None:
+    """RD-4（D-056⑤）：記号は disclosure.allow の名前も含めて最初に現れた行の順に割り当て、公開を認めた名前は
+    伏せない。先に現れる名前（S001:000001 の株式会社テスト清掃）を認めても、ほかの受注者の記号は変わらない
+    （12行目の株式会社テスト翻訳は L のまま）。"""
+    from kizashi.adapters import load_adapter
+
+    conn = ledger_of(repo, synthetic_run)
+    adapter = load_adapter(repo, "cao-procurement")
+    terms, labels = render.redaction_terms(conn, adapter, set())
+    allowed_terms, allowed_labels = render.redaction_terms(conn, adapter, {"株式会社テスト清掃"})
+    conn.close()
+    assert labels["name:株式会社テスト清掃"] == "受注者A"
+    assert (
+        labels["name:株式会社テスト翻訳"] == allowed_labels["name:株式会社テスト翻訳"] == "受注者L"
+    )
+    assert ("株式会社テスト清掃", "name:株式会社テスト清掃") in terms
+    assert all(term != "株式会社テスト清掃" for term, _ in allowed_terms)
+    shared = set(labels) & set(allowed_labels)
+    assert all(labels[k] == allowed_labels[k] for k in shared)
+
+
 # ---------------------------------------------------------------------------
 
 AUX_NAME = "aux_reference_notes.md"  # 補助資料の架空のファイル名
 AUX_CONTENT = "架空の補助資料の本文。公開しない。\n".encode()
+# 補助資料4点（12.2）の一覧。1点目が上の AUX_NAME。ほかの3点も架空の名前と中身
+AUX_DOCS = [
+    (AUX_NAME, AUX_CONTENT),
+    ("aux_second.md", "架空の補助資料2。\n".encode()),
+    ("aux_third.xlsx", b"synthetic auxiliary 3"),
+    ("aux_fourth.pdf", b"synthetic auxiliary 4"),
+]
+
+
+def denylist_text(docs: list[tuple[str, bytes]]) -> str:
+    return "".join(f"{hashlib.sha256(content).hexdigest()}  {name}\n" for name, content in docs)
+
+
 CLEAN = "# 公開する例\n\n受注者Aの契約金額の合計が増えた（合成データの例）。\n"
 
 
@@ -176,7 +210,7 @@ def git_repo(
         monkeypatch.setenv(key, value)
     (tmp_path / "home").mkdir()
     deny = tmp_path / "publish_denylist.txt"
-    deny.write_text(f"{hashlib.sha256(AUX_CONTENT).hexdigest()}  {AUX_NAME}\n", encoding="utf-8")
+    deny.write_text(denylist_text(AUX_DOCS), encoding="utf-8")
     monkeypatch.setenv("KIZASHI_DENYLIST", str(deny))
     git(repo, "init", "-q")
     (repo / ".gitignore").write_text("data/\ninbox/\n", encoding="utf-8")
@@ -235,6 +269,32 @@ def test_pb1_denylist_is_required(git_repo: Path, synthetic_run: str, monkeypatc
     with pytest.raises(KizashiError) as info:
         publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
     assert info.value.code == "E_DENYLIST_MISSING"
+
+
+@pytest.mark.parametrize(
+    "docs",
+    [
+        AUX_DOCS[:1],  # 1点だけ
+        AUX_DOCS[:3],  # 3点
+        [*AUX_DOCS, ("aux_fifth.md", b"synthetic auxiliary 5")],  # 5点
+        [AUX_DOCS[0]] * 4,  # 同じ行を4回
+        [*AUX_DOCS[:3], ("aux_other_name.md", AUX_DOCS[0][1])],  # 名前は4つ、中身は3つ
+        [*AUX_DOCS[:3], (AUX_NAME.upper(), b"synthetic other")],  # 中身は4つ、名前は3つ
+    ],
+    ids=["one", "three", "five", "same-line", "same-hash", "same-name"],
+)
+def test_pb1_denylist_must_list_four_distinct_documents(
+    git_repo: Path, synthetic_run: str, tmp_path: Path, docs: list
+) -> None:
+    """PB-1（D-056③）：補助資料の一覧は、4点（12.2）のそれぞれのハッシュと名前を1行ずつ持つ。点数が4でない、
+    ハッシュか名前（NFC にし大文字と小文字を区別しない）が重なる一覧は E_DENYLIST_MISSING（終了コード3）で、
+    合格にしない。不合格の文に補助資料の名前を書かない。"""
+    (tmp_path / "publish_denylist.txt").write_text(denylist_text(docs), encoding="utf-8")
+    with pytest.raises(KizashiError) as info:
+        publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    assert info.value.code == "E_DENYLIST_MISSING" and info.value.exit_code == 3
+    assert "4点" in info.value.message
+    assert all(name.casefold() not in info.value.message.casefold() for name, _ in docs)
 
 
 def test_pb1_unlisted_file_and_aux_name(git_repo: Path, synthetic_run: str) -> None:
