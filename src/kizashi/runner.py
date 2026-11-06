@@ -462,12 +462,7 @@ def _fetch_datasets(
     transient: list[str],
 ) -> None:
     adapter = ctx.adapter
-    source_cfg = adapter.config["source"]
-    offset = int(source_cfg["fiscal_year_from_reiwa"])
-    links: dict[str, list[str]] = {}
-    for link in fetcher.discover_links(page_url, html, source_cfg["link_pattern"]):
-        key = adapter.logical_key(int(link["reiwa"]) + offset, link["family"], link["format"])
-        links.setdefault(key, []).append(link["url"])
+    links = fetcher.dataset_links(adapter, page_url, html)
 
     assert ctx.client is not None
     stop: KizashiError | None = None

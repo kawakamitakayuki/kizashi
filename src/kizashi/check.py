@@ -120,6 +120,95 @@ def strong_words(text: str, quotes: Iterable[str] = ()) -> list[str]:
     return [w for _, w in sorted(found)]
 
 
+WILDCARD_MIN_CHARS = (
+    3  # `?` 以外の文字がこれより少ない値は、`?` を任意の1文字として照らさない（D-022）
+)
+
+
+def wildcard_pattern(form: str) -> str | None:
+    """`?` を空白以外の任意の1文字（\\S）にした正規表現。`?` がないか、`?` 以外の文字が3文字未満なら None
+    （元の表記どおりにだけ照らす。実装仕様12.1・12.2。D-022）。"""
+    if "?" not in form or sum(1 for ch in form if ch != "?") < WILDCARD_MIN_CHARS:
+        return None
+    return "".join(r"\S" if ch == "?" else re.escape(ch) for ch in form)
+
+
+class TermMatcher:
+    """多くの語（氏名、取り込まない列の値、受注者名、法人番号）を文字列の中から探す。
+
+    語は元の表記と NFKC にした表記の両方で照らす。wildcard が真なら、ASCII の `?` を含む語は D-022 の規則
+    （空白以外の任意の1文字。`?` 以外が3文字未満なら元の表記どおり）で照らす。大きな文字列（公開の検査の blob）
+    でも速く探せるよう、語の先頭の文字で候補の位置を絞り、先頭の数文字で語を引く。
+    """
+
+    PREFIX = 4
+
+    def __init__(self, terms: Iterable[tuple[str, str]], *, wildcard: bool = True) -> None:
+        self._literals: dict[int, dict[str, list[tuple[str, str]]]] = {}
+        self._regexes: list[tuple[re.Pattern[str], str]] = []
+        firsts: set[str] = set()
+        for value, key in terms:
+            for form in dict.fromkeys([value, nfkc(value)]):
+                if not form.strip():
+                    continue
+                pattern = wildcard_pattern(form) if wildcard else None
+                if pattern is not None:
+                    self._regexes.append((re.compile(pattern), key))
+                    continue
+                size = min(len(form), self.PREFIX)
+                self._literals.setdefault(size, {}).setdefault(form[:size], []).append((form, key))
+                firsts.add(form[0])
+        self._first = (
+            re.compile("[" + "".join(re.escape(c) for c in sorted(firsts)) + "]")
+            if firsts
+            else None
+        )
+        self._sizes = sorted(self._literals)
+
+    def __bool__(self) -> bool:
+        return bool(self._literals or self._regexes)
+
+    def find(self, text: str) -> list[tuple[int, int, str]]:
+        """当たった (始め, 終わり, key) を、始めの順・長い順に返す（重なりを含む）。"""
+        hits: set[tuple[int, int, str]] = set()
+        if self._first is not None:
+            for match in self._first.finditer(text):
+                i = match.start()
+                for size in self._sizes:
+                    for form, key in self._literals[size].get(text[i : i + size], ()):
+                        if text.startswith(form, i):
+                            hits.add((i, i + len(form), key))
+        for pattern, key in self._regexes:
+            start = 0
+            while (match := pattern.search(text, start)) is not None:
+                hits.add((match.start(), match.end(), key))
+                start = match.start() + 1
+        return sorted(hits, key=lambda h: (h[0], h[0] - h[1], h[2]))
+
+    def find_folded(self, text: str) -> list[tuple[int, int, str]]:
+        """元の文字列と、1文字ずつ NFKC にした文字列（全角の数字・英字など）の両方で探し、元の文字列の位置で返す。"""
+        hits = set(self.find(text))
+        parts: list[str] = []
+        origin: list[int] = []
+        for i, ch in enumerate(text):
+            folded = nfkc(ch)
+            parts.append(folded)
+            origin.extend([i] * len(folded))
+        folded_text = "".join(parts)
+        if folded_text != text:
+            for start, end, key in self.find(folded_text):
+                hits.add((origin[start], origin[end - 1] + 1, key))
+        return sorted(hits, key=lambda h: (h[0], h[0] - h[1], h[2]))
+
+    def spans(self, text: str) -> list[tuple[int, int, str]]:
+        """重ならない当たり（元の文字列の位置。左から、同じ位置では長いものを採る）。"""
+        result: list[tuple[int, int, str]] = []
+        for hit in self.find_folded(text):
+            if not result or hit[0] >= result[-1][1]:
+                result.append(hit)
+        return result
+
+
 def string_leaves(value: object, path: str = "") -> Iterator[tuple[str, str]]:
     """提案の中の文字列の値を、入れ子（辞書・配列）も含めて (欄の道筋, 値) で返す（D-036）。
 
@@ -455,7 +544,8 @@ def _v1(conn: sqlite3.Connection, adapter: Adapter, lead: dict, v: Verification)
         key = adapter.logical_key(year, family, "csv")
         source = _one(
             conn,
-            "SELECT source_id, status FROM sources WHERE logical_key = ? AND kind = 'dataset'",
+            "SELECT source_id, status FROM sources WHERE logical_key = ? AND kind = 'dataset'"
+            " AND supersedes IS NULL",
             (key,),
         )
         if source is None or source["status"] != "fetched":

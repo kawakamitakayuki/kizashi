@@ -10,6 +10,7 @@
 - 取得に失敗した資料も sources に failed と理由を残す。ハッシュは求めない。
 - 追加資料（fetch_evidence）：PDF と HTML のページ別テキストを evidence/<資料ID>/pages/<n>.txt に書く。
   公表一覧のデータは取得しない（D-021）。追加資料だけ MAX_EVIDENCE_FETCH に数える。
+- 取り直し（recheck_source）：ハッシュが違えば新しい資料IDで登録し、古い版に依存する主張を stale にする。
 """
 
 from __future__ import annotations
@@ -27,10 +28,10 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from kizashi import ledger, limits, paths, pdftext
-from kizashi.adapters import load_adapter
+from kizashi import hashing, ledger, limits, paths, pdftext
+from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
-from kizashi.hashing import canonical_json, sha256_bytes
+from kizashi.hashing import CALC_REF_RE, canonical_json, sha256_bytes
 from kizashi.ledger import now_iso
 
 TIMEOUT_SEC = 30.0
@@ -611,6 +612,145 @@ def _save_budget(conn: sqlite3.Connection, run_id: str, budget: Budget) -> None:
     )
 
 
+@dataclass(frozen=True)
+class EvidenceDownload:
+    """追加資料・定義・索引の取得の結果（保存した原本とページ別テキスト）。"""
+
+    url: str
+    final_url: str
+    media_type: str | None
+    fmt: str
+    sha256: str
+    size_bytes: int
+    pages: list[str]
+    links: list[dict[str, str]]
+    encoding: str | None
+
+
+def _download_evidence(
+    conn: sqlite3.Connection,
+    root: Path,
+    adapter: Adapter,
+    client: httpx.Client,
+    url: str,
+    budget: Budget,
+) -> EvidenceDownload:
+    """取得して data/raw に保存し、ページ別テキストを取り出す（ページのファイルはまだ書かない）。
+
+    公表一覧のデータ（link_pattern に合う URL、リダイレクトの途中と最後の URL、run が取得した資料と同じ中身）は
+    取得しない（D-021・D-034）。"""
+    allowed = list(adapter.config["fetch"]["allowed_hosts"])
+    check_url(url, allowed)
+    link_pattern = adapter.config["source"]["link_pattern"]
+    if is_dataset_url(url, link_pattern):
+        raise _dataset_refused(url, redirect=False)
+
+    def refuse_redirect(target: httpx.URL) -> None:
+        if is_dataset_url(target, link_pattern):
+            raise _dataset_refused(target, redirect=True)
+
+    final_url, content, media_type = http_get(
+        client, url, allowed_hosts=allowed, budget=budget, refuse_redirect=refuse_redirect
+    )
+    fmt, suffix_url = detect_format(url, final_url, media_type, content)
+    sha, path, size = store_raw(
+        root, suffix_url or url, content, fmt, check_suffix=suffix_url is not None
+    )
+    same = conn.execute(
+        "SELECT source_id FROM sources WHERE kind = 'dataset' AND sha256 = ?", (sha,)
+    ).fetchone()
+    if same is not None:
+        raise KizashiError(
+            "E_BAD_EVIDENCE_SOURCE",
+            "fetch",
+            f"公表一覧の資料（{same[0]}）と同じ中身で、追加資料としては保存しない（D-021）。",
+            next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
+        )
+    links: list[dict[str, str]] = []
+    encoding = None
+    if fmt == "pdf":
+        try:
+            pages = pdftext.extract_pages(path)
+        except Exception as exc:  # noqa: BLE001  PDF のライブラリの例外をまとめて扱う
+            raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
+    else:
+        text, links, encoding = html_text(content, final_url)
+        pages = [text]
+    return EvidenceDownload(
+        url=url,
+        final_url=final_url,
+        media_type=media_type,
+        fmt=fmt,
+        sha256=sha,
+        size_bytes=size,
+        pages=pages,
+        links=links,
+        encoding=encoding,
+    )
+
+
+def _write_evidence(
+    conn: sqlite3.Connection,
+    root: Path,
+    run_id: str,
+    kind: str,
+    dl: EvidenceDownload,
+    *,
+    supersedes: str | None = None,
+) -> Path:
+    """呼び出し側のトランザクションの中で、資料を登録し、ページ別テキストを evidence/<資料ID>/pages/ に書く。
+    書いたフォルダーを返す（確定に失敗したら呼び出し側が消す）。"""
+    source_id = ledger.next_id(conn, "S")
+    folder = paths.run_dir(root, run_id) / "evidence" / source_id
+    page_dir = folder / "pages"
+    page_dir.mkdir(parents=True)
+    paths.ensure_in_data(root, page_dir)
+    for number, page in enumerate(dl.pages, start=1):
+        (page_dir / f"{number}.txt").write_text(page, encoding="utf-8")
+    if dl.links:
+        (folder / "links.json").write_text(
+            json.dumps(dl.links, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    conn.execute(
+        "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, supersedes,"
+        " media_type, encoding, size_bytes, page_count, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
+        " ?, ?, 'fetched')",
+        (
+            source_id,
+            kind,
+            dl.url,
+            dl.final_url,
+            now_iso(),
+            dl.sha256,
+            supersedes,
+            dl.media_type,
+            dl.encoding,
+            dl.size_bytes,
+            len(dl.pages),
+        ),
+    )
+    return folder
+
+
+def _limits_view(budget: Budget) -> dict:
+    return {
+        **budget.to_json(),
+        "max_evidence_fetches": limits.MAX_EVIDENCE_FETCH,
+        "max_http_requests": limits.MAX_HTTP_REQUESTS,
+    }
+
+
+def _open_run(root: Path, run_id: str) -> tuple[sqlite3.Connection, Adapter, Budget]:
+    conn = ledger.open_rw(root, run_id)
+    run = conn.execute(
+        "SELECT domain, limits_json FROM runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    if run is None:
+        conn.close()
+        raise KizashiError("E_REF_NOT_FOUND", "fetch", f"実行の記録がない：{run_id}")
+    return conn, load_adapter(root, run[0]), Budget.from_json(json.loads(run[1]))
+
+
 def fetch_evidence(
     root: Path,
     run_id: str,
@@ -630,16 +770,8 @@ def fetch_evidence(
     """
     if kind not in EVIDENCE_KINDS:
         raise ValueError(f"未知の資料の種類：{kind}")
-    conn = ledger.open_rw(root, run_id)
+    conn, adapter, budget = _open_run(root, run_id)
     try:
-        run = conn.execute(
-            "SELECT domain, limits_json FROM runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        if run is None:
-            raise KizashiError("E_REF_NOT_FOUND", "fetch", f"実行の記録がない：{run_id}")
-        adapter = load_adapter(root, run[0])
-        budget = Budget.from_json(json.loads(run[1]))
-        allowed = list(adapter.config["fetch"]["allowed_hosts"])
         if kind == "evidence" and budget.evidence_fetches >= limits.MAX_EVIDENCE_FETCH:
             raise KizashiError(
                 "E_LIMIT_EVIDENCE",
@@ -648,48 +780,13 @@ def fetch_evidence(
                 affected_ids=[run_id],
                 next_action="保留にして記者に伝える（上限に達しても結論を強めない）。",
             )
-        check_url(url, allowed)
-        link_pattern = adapter.config["source"]["link_pattern"]
-        if is_dataset_url(url, link_pattern):
+        # 通信の前に拒否するもの（許可リスト外、公表一覧のデータの URL）は sources に残さない
+        check_url(url, list(adapter.config["fetch"]["allowed_hosts"]))
+        if is_dataset_url(url, adapter.config["source"]["link_pattern"]):
             raise _dataset_refused(url, redirect=False)
-
-        def refuse_redirect(target: httpx.URL) -> None:
-            if is_dataset_url(target, link_pattern):
-                raise _dataset_refused(target, redirect=True)
-
         client = make_client(transport)
         try:
-            final_url, content, media_type = http_get(
-                client,
-                url,
-                allowed_hosts=allowed,
-                budget=budget,
-                refuse_redirect=refuse_redirect,
-            )
-            fmt, suffix_url = detect_format(url, final_url, media_type, content)
-            sha, path, size = store_raw(
-                root, suffix_url or url, content, fmt, check_suffix=suffix_url is not None
-            )
-            same = conn.execute(
-                "SELECT source_id FROM sources WHERE kind = 'dataset' AND sha256 = ?", (sha,)
-            ).fetchone()
-            if same is not None:
-                raise KizashiError(
-                    "E_BAD_EVIDENCE_SOURCE",
-                    "fetch",
-                    f"公表一覧の資料（{same[0]}）と同じ中身で、追加資料としては保存しない（D-021）。",
-                    next_action="CSV のレコードを kizashi inspect <row_ref> で読み、row_ref で引用する。",
-                )
-            links: list[dict[str, str]] = []
-            encoding = None
-            if fmt == "pdf":
-                try:
-                    pages = pdftext.extract_pages(path)
-                except Exception as exc:  # noqa: BLE001  PDF のライブラリの例外をまとめて扱う
-                    raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
-            else:
-                text, links, encoding = html_text(content, final_url)
-                pages = [text]
+            dl = _download_evidence(conn, root, adapter, client, url, budget)
         except KizashiError as exc:
             source_id = _register_evidence_failure(conn, kind, url, exc, budget, run_id)
             raise KizashiError(
@@ -705,38 +802,10 @@ def fetch_evidence(
 
         if kind == "evidence":
             budget.evidence_fetches += 1
-        run_dir = paths.run_dir(root, run_id)
         written: Path | None = None
         try:
             with ledger.transaction(conn):
-                source_id = ledger.next_id(conn, "S")
-                written = run_dir / "evidence" / source_id
-                page_dir = written / "pages"
-                page_dir.mkdir(parents=True)
-                paths.ensure_in_data(root, page_dir)
-                for number, page in enumerate(pages, start=1):
-                    (page_dir / f"{number}.txt").write_text(page, encoding="utf-8")
-                if links:
-                    (written / "links.json").write_text(
-                        json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8"
-                    )
-                conn.execute(
-                    "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, media_type,"
-                    " encoding, size_bytes, page_count, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                    " 'fetched')",
-                    (
-                        source_id,
-                        kind,
-                        url,
-                        final_url,
-                        now_iso(),
-                        sha,
-                        media_type,
-                        encoding,
-                        size,
-                        len(pages),
-                    ),
-                )
+                written = _write_evidence(conn, root, run_id, kind, dl)
                 _save_budget(conn, run_id, budget)
         except BaseException:
             if written is not None:
@@ -744,26 +813,268 @@ def fetch_evidence(
             raise
     finally:
         conn.close()
+    source_id = written.name
     result = {
         "run_id": run_id,
         "source_id": source_id,
         "kind": kind,
         "url": url,
-        "final_url": final_url,
-        "sha256": sha,
-        "media_type": media_type,
-        "page_count": len(pages),
+        "final_url": dl.final_url,
+        "sha256": dl.sha256,
+        "media_type": dl.media_type,
+        "page_count": len(dl.pages),
         "pages_dir": (written / "pages").relative_to(root).as_posix(),
         "counted_as_evidence": kind == "evidence",
-        "limits": {
-            **budget.to_json(),
-            "max_evidence_fetches": limits.MAX_EVIDENCE_FETCH,
-            "max_http_requests": limits.MAX_HTTP_REQUESTS,
-        },
+        "limits": _limits_view(budget),
     }
-    if fmt == "html":
-        result["links"] = links[:MAX_LINKS_SHOWN]
-        result["links_total"] = len(links)
-        if links:
+    if dl.fmt == "html":
+        result["links"] = dl.links[:MAX_LINKS_SHOWN]
+        result["links_total"] = len(dl.links)
+        if dl.links:
             result["links_file"] = (written / "links.json").relative_to(root).as_posix()
     return result
+
+
+# ---------------------------------------------------------------------------
+# 資料の取り直し（kizashi fetch <run_id> --recheck <source_id>。4.2。設計書4.2の「新しい版の取得」）
+# ---------------------------------------------------------------------------
+
+
+def dataset_links(adapter: Adapter, page_url: str, html: str) -> dict[str, list[str]]:
+    """公表ページのリンクを、論理資料（logical_key）ごとの URL の並びにする（run と --recheck で共有）。"""
+    source_cfg = adapter.config["source"]
+    offset = int(source_cfg["fiscal_year_from_reiwa"])
+    links: dict[str, list[str]] = {}
+    for link in discover_links(page_url, html, source_cfg["link_pattern"]):
+        key = adapter.logical_key(int(link["reiwa"]) + offset, link["family"], link["format"])
+        links.setdefault(key, []).append(link["url"])
+    return links
+
+
+def _redownload_dataset(
+    root: Path, adapter: Adapter, client: httpx.Client, source: dict, budget: Budget
+) -> tuple[Download, str, str | None]:
+    """公表ページから同じ論理資料のリンクをたどり直して取得する。(取得, 公表ページの URL, 文字コード)。"""
+    source_cfg = adapter.config["source"]
+    allowed = list(adapter.config["fetch"]["allowed_hosts"])
+    index = fetch_to_raw(
+        root, client, source_cfg["page"], fmt="html", allowed_hosts=allowed, budget=budget
+    )
+    html = index.path.read_bytes().decode("utf-8", errors="replace")
+    logical_key = source["logical_key"]
+    urls = dataset_links(adapter, index.final_url, html).get(logical_key, [])
+    if len(urls) != 1:
+        why = (
+            "この論理資料のリンクがない"
+            if not urls
+            else "同じ論理資料のリンクが2つ以上ある：" + "、".join(urls)
+        )
+        raise _invalid(f"公表ページ（{index.final_url}）に{why}（{logical_key}）")
+    _, year, family, fmt = logical_key.split("|")
+    spec = adapter.file_spec(int(year), family)
+    if spec is None:
+        raise _invalid(f"dataset.yaml にない論理資料：{logical_key}")
+    validate = (lambda data: adapter.module.validate_csv(data, spec)) if fmt == "csv" else None
+    download = fetch_to_raw(
+        root, client, urls[0], fmt=fmt, allowed_hosts=allowed, budget=budget, validate=validate
+    )
+    return download, index.final_url, spec.encoding if fmt == "csv" else None
+
+
+def _claim_sources(conn: sqlite3.Connection, claim: dict) -> set[str]:
+    """主張が依存する資料：根拠の資料と、参照する計算（本文の {calc:ID} と、派生計算の入れ子を含む）が読んだ
+    資料（基礎集計の行の資料、文書値の資料、照合の計算の資料）。"""
+    sources = {
+        e["source_id"]
+        for e in json.loads(claim["evidence_json"])
+        if isinstance(e, dict) and isinstance(e.get("source_id"), str)
+    }
+    stack = [*json.loads(claim["calc_ids_json"]), *CALC_REF_RE.findall(claim["text"] or "")]
+    seen: set[str] = set()
+    while stack:
+        calc_id = stack.pop()
+        if calc_id in seen:
+            continue
+        seen.add(calc_id)
+        row = conn.execute(
+            "SELECT kind, request_json, row_refs_json, ref_calc_ids_json FROM computations"
+            " WHERE calc_id = ?",
+            (calc_id,),
+        ).fetchone()
+        if row is None:
+            continue
+        kind, request_json, row_refs_json, refs_json = row
+        request = json.loads(request_json)
+        if kind == "base":
+            sources |= {r.split(":", 1)[0] for r in json.loads(row_refs_json or "[]")}
+        elif kind == "doc_value":
+            sources.add(request.get("source_id"))
+        elif kind == "reconcile":
+            sources |= {request.get(k) for k in ("source", "csv_source", "pdf_source")}
+        stack.extend(json.loads(refs_json or "[]"))
+    return {s for s in sources if isinstance(s, str)}
+
+
+def dependent_claims(conn: sqlite3.Connection, source_id: str) -> list[str]:
+    """資料に依存する主張（取り下げ・失効したものを除く。実行のすべての候補）。"""
+    rows = hashing.dict_rows(
+        conn,
+        "SELECT claim_id, text, calc_ids_json, evidence_json FROM claims"
+        " WHERE state IN ('draft', 'checked', 'held') ORDER BY claim_id",
+    )
+    return [c["claim_id"] for c in rows if source_id in _claim_sources(conn, c)]
+
+
+def recheck_source(
+    root: Path,
+    run_id: str,
+    source_id: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """kizashi fetch <run_id> --recheck <source_id>（4.2）。
+
+    - 公表一覧の資料（kind='dataset'）は、公表ページから同じ論理資料のリンクをたどり直す。それ以外は元の URL で
+      取り直す（公表一覧のデータの URL・中身は取得しない。D-021）。
+    - ハッシュが同じなら何もしない（通信は数える）。違えば新しい資料IDで登録し（supersedes に古い資料ID）、
+      古い資料に依存する主張を stale にし、events に recheck を記録する。
+    - 通信の上限には数え、追加資料の上限には数えない。新しい版の公表一覧の資料は正規化しない（新しい版で
+      調べ直すには、同じ設定で新しい実行を作る。設計書4.2）。
+    """
+    conn, adapter, budget = _open_run(root, run_id)
+    written: Path | None = None
+    try:
+        rows = hashing.dict_rows(conn, "SELECT * FROM sources WHERE source_id = ?", (source_id,))
+        if not rows:
+            raise KizashiError(
+                "E_REF_NOT_FOUND",
+                "fetch",
+                f"資料がない：{source_id}",
+                affected_ids=[source_id],
+                next_action=f"kizashi inspect {run_id} で資料IDを確かめる。",
+            )
+        source = rows[0]
+        if source["status"] != "fetched" or not source["sha256"]:
+            raise KizashiError(
+                "E_USAGE",
+                "fetch",
+                f"資料 {source_id} は取得済みでない（{source['status']}）。取り直しは取得済みの資料だけ。",
+                affected_ids=[source_id],
+            )
+        newer = conn.execute(
+            "SELECT source_id FROM sources WHERE supersedes = ? ORDER BY source_id DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if newer is not None:
+            raise KizashiError(
+                "E_USAGE",
+                "fetch",
+                f"資料 {source_id} には新しい版 {newer[0]} がある。",
+                affected_ids=[source_id, newer[0]],
+                next_action=f"kizashi fetch {run_id} --recheck {newer[0]} で取り直す。",
+            )
+        client = make_client(transport)
+        try:
+            if source["kind"] == "dataset":
+                download, referrer, encoding = _redownload_dataset(
+                    root, adapter, client, source, budget
+                )
+                new_sha, dl = download.sha256, None
+            else:
+                dl = _download_evidence(conn, root, adapter, client, source["url"], budget)
+                new_sha, download, referrer, encoding = dl.sha256, None, None, None
+        except KizashiError as exc:
+            with ledger.transaction(conn):
+                _save_budget(conn, run_id, budget)
+            raise KizashiError(
+                exc.code,
+                "fetch",
+                f"資料 {source_id} を取り直せない：{exc.message}",
+                affected_ids=[run_id, source_id],
+                retryable=exc.retryable,
+                next_action=exc.next_action,
+            ) from None
+        finally:
+            client.close()
+
+        changed = new_sha != source["sha256"]
+        new_id: str | None = None
+        stale: list[str] = []
+        with ledger.transaction(conn):
+            if changed:
+                if dl is not None:
+                    written = _write_evidence(
+                        conn, root, run_id, source["kind"], dl, supersedes=source_id
+                    )
+                    new_id = written.name
+                else:
+                    assert download is not None
+                    new_id = ledger.next_id(conn, "S")
+                    conn.execute(
+                        "INSERT INTO sources (source_id, logical_key, kind, url, final_url,"
+                        " referrer_url, fetched_at, sha256, supersedes, media_type, encoding,"
+                        " size_bytes, status, period, terms_note) VALUES (?, ?, 'dataset', ?, ?, ?,"
+                        " ?, ?, ?, ?, ?, ?, 'fetched', ?, ?)",
+                        (
+                            new_id,
+                            source["logical_key"],
+                            download.url,
+                            download.final_url,
+                            referrer,
+                            now_iso(),
+                            download.sha256,
+                            source_id,
+                            download.media_type,
+                            encoding,
+                            download.size_bytes,
+                            source["period"],
+                            source["terms_note"],
+                        ),
+                    )
+                stale = dependent_claims(conn, source_id)
+                for claim_id in stale:
+                    conn.execute(
+                        "UPDATE claims SET state = 'stale' WHERE claim_id = ?", (claim_id,)
+                    )
+                    ledger.add_event(
+                        conn,
+                        claim_id,
+                        "state_change",
+                        after={"state": "stale"},
+                        reason=f"{source_id} の新しい版 {new_id} を取得した",
+                    )
+                ledger.add_event(
+                    conn,
+                    source_id,
+                    "recheck",
+                    before={"source_id": source_id, "sha256": source["sha256"]},
+                    after={"source_id": new_id, "sha256": new_sha, "stale_claims": stale},
+                )
+            _save_budget(conn, run_id, budget)
+    except BaseException:
+        if written is not None:
+            shutil.rmtree(written, ignore_errors=True)
+        raise
+    finally:
+        conn.close()
+    if not changed:
+        message = "原本のハッシュが前と同じだった。台帳は変えていない。"
+    elif stale:
+        message = (
+            f"新しい版 {new_id} を登録し、古い版に依存する主張を stale にした。stale の主張を含む候補は"
+            " check を通らない。新しい版で調べ直すには、同じ設定で新しい実行を作る。"
+        )
+    else:
+        message = f"新しい版 {new_id} を登録した。古い版に依存する主張はなかった。"
+    return {
+        "run_id": run_id,
+        "source_id": source_id,
+        "changed": changed,
+        "new_source_id": new_id,
+        "sha256_before": source["sha256"],
+        "sha256_after": new_sha,
+        "stale_claims": stale,
+        "counted_as_evidence": False,
+        "limits": _limits_view(budget),
+        "message": message,
+    }

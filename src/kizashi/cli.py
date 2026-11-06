@@ -4,9 +4,8 @@
 （E_BAD_ID。test_plan.md の CLI-2）、提案ファイルの引数の形の検査（E_INBOX_PATH）、
 `run <分野> --config`（P0-2〜P0-5。plan〜detect）、`run --resume <run_id>`（P0-5）、
 `fetch <run_id> <URL> [--index | --definition]`・`inspect`・`query`・`record`（P0-4）、
-`check <lead_id> --run <run_id>`・`render <lead_id> --run <run_id>`（P0-6）。
-ほかの形（fetch --recheck、check --publish、render <run_id>、render --public）は、引数を検査したうえで
-{"stub": "<操作名>"} を返す仮の実装である（P0-8 で本実装にする）。
+`check <lead_id> --run <run_id>`・`render <lead_id> --run <run_id>`（P0-6）、
+`fetch --recheck`・`check --publish`・`render <run_id>`・`render --public`（P0-8）。
 """
 
 from __future__ import annotations
@@ -264,13 +263,6 @@ def _check_ids(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stub(name: str) -> Callable[[argparse.Namespace], dict]:
-    def handler(args: argparse.Namespace) -> dict:
-        return {"stub": name}
-
-    return handler
-
-
 def _run(args: argparse.Namespace) -> dict:
     from kizashi import runner
 
@@ -280,10 +272,10 @@ def _run(args: argparse.Namespace) -> dict:
 
 
 def _fetch(args: argparse.Namespace) -> dict:
-    if args.recheck is not None:
-        return {"stub": "fetch"}  # fetch --recheck は P0-8 で本実装にする
     from kizashi import fetcher
 
+    if args.recheck is not None:
+        return fetcher.recheck_source(paths.repo_root(), args.run_id, args.recheck)
     kind = "index" if args.index else "definition" if args.definition else "evidence"
     return fetcher.fetch_evidence(paths.repo_root(), args.run_id, args.url, kind)
 
@@ -309,28 +301,35 @@ def _record(args: argparse.Namespace) -> dict:
 
 def _check(args: argparse.Namespace) -> dict:
     if args.publish is not None:
-        return {"stub": "check"}  # check --publish は P0-8
+        from kizashi import publish
+
+        return publish.check_publish(paths.repo_root(), args.publish, list(args.run_ids))
     from kizashi import check
 
     return check.run_check(paths.repo_root(), args.run_ids[0], args.lead_id)
 
 
 def _render(args: argparse.Namespace) -> dict:
-    if args.run_id is None or args.public:
-        return {"stub": "render"}  # 実行の概要と --public は P0-8
     from kizashi import render
 
-    return render.render_lead(paths.repo_root(), args.run_id, args.target_id)
+    if args.run_id is None:
+        return render.render_run(paths.repo_root(), args.target_id, public=args.public)
+    if ledger.id_kind(args.target_id) == "run":
+        if args.target_id != args.run_id:
+            raise _bad_id("render", args.target_id, ("lead",))
+        return render.render_run(paths.repo_root(), args.run_id, public=args.public)
+    return render.render_lead(paths.repo_root(), args.run_id, args.target_id, public=args.public)
 
 
-HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {op: _stub(op) for op in OPERATIONS}
-HANDLERS["run"] = _run
-HANDLERS["fetch"] = _fetch
-HANDLERS["inspect"] = _inspect
-HANDLERS["query"] = _query
-HANDLERS["record"] = _record
-HANDLERS["check"] = _check
-HANDLERS["render"] = _render
+HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {
+    "run": _run,
+    "fetch": _fetch,
+    "inspect": _inspect,
+    "query": _query,
+    "record": _record,
+    "check": _check,
+    "render": _render,
+}
 
 
 # ---------------------------------------------------------------------------

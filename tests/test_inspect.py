@@ -181,7 +181,7 @@ def test_inspect_lead_shows_matches_and_coefficients(repo: Path, filled: dict) -
         ("tax_basis", "1.1", "proposed")
     ]
     assert [(c["claim_id"], c["state"]) for c in data["claims"]] == [(filled["claim"], "draft")]
-    assert data["memo"] == {"memo_no": 0, "memo_hash": False}
+    assert data["memo"] == {"memo_no": 0, "file": None, "stale": None, "status": "メモなし"}
     assert (data["state"], data["rounds"]) == ("investigating", 0)
 
 

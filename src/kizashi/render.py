@@ -8,7 +8,8 @@ kizashi render <lead_id> --run <run_id> は、1つのトランザクションの
 
 メモの数値は計算記録から「値・意味・計算ID」の形で埋め込む（{calc:ID} の展開）。Claude の文章は、主張・仮説・
 判定・質問の本文として登録されたものだけを使う。表示の丸めは dataset.yaml の display（四捨五入）。
-実行の概要（render <run_id>）と --public は P0-8。
+kizashi render <run_id> は実行の概要を memos/run_summary.v<n>.md に書く（10.3）。--public は、書いたメモ・概要の
+伏せた写し（受注者名と法人番号。12.1。D-022）を public/ に書く。
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from kizashi import check, hashing, ledger, paths, versions
+from kizashi import check, hashing, ledger, limits, paths, versions
 from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
 from kizashi.hashing import dict_rows
+from kizashi.normalize import nfkc
 
 STAGE = "render"
 HEADER_LINES = 4  # 表計算ソフトで開いたときの、論理レコードの前の行の数（10.1。目安）
@@ -725,10 +727,11 @@ class _Memo:
         return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
-    """kizashi render <lead_id> --run <run_id>（4.7）。"""
+def render_lead(root: Path, run_id: str, lead_id: str, *, public: bool = False) -> dict:
+    """kizashi render <lead_id> --run <run_id> [--public]（4.7）。"""
     conn = ledger.open_rw(root, run_id)
-    written: Path | None = None
+    written: list[Path] = []
+    public_path: Path | None = None
     try:
         check.check_rule_versions(conn, root, run_id, STAGE)
         (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
@@ -764,17 +767,9 @@ def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
             paths.ensure_in_data(root, memos)
             path = memos / f"{lead_id}.v{memo_no}.md"
             text = _Memo(conn, root, run_id, adapter, lead_id).text(memo_no, digest)
-            try:
-                with path.open("x", encoding="utf-8") as fh:  # 上書きしない
-                    written = path
-                    fh.write(text)
-            except FileExistsError:
-                raise KizashiError(
-                    "E_INTERNAL",
-                    STAGE,
-                    f"メモ {path.name} がすでにある（番号と台帳が合わない）。上書きしない。",
-                    affected_ids=[lead_id],
-                ) from None
+            _write_new(path, text, written, lead_id)
+            if public:
+                public_path = _write_public(conn, root, run_id, adapter, path, text, written)
             conn.execute(
                 "UPDATE leads SET memo_no = ?, memo_hash = ? WHERE lead_id = ?",
                 (memo_no, digest, lead_id),
@@ -786,16 +781,19 @@ def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
                 after={
                     "memo": path.relative_to(paths.run_dir(root, run_id)).as_posix(),
                     "memo_no": memo_no,
+                    "public": None
+                    if public_path is None
+                    else public_path.relative_to(paths.run_dir(root, run_id)).as_posix(),
                 },
                 check_hash=digest,
             )
     except BaseException:
-        if written is not None:
-            written.unlink(missing_ok=True)
+        for p in written:
+            p.unlink(missing_ok=True)
         raise
     finally:
         conn.close()
-    return {
+    result = {
         "run_id": run_id,
         "lead_id": lead_id,
         "state": lead["proposed_outcome"],
@@ -805,3 +803,617 @@ def render_lead(root: Path, run_id: str, lead_id: str) -> dict:
         "t6": v.t6,
         "message": "メモを書いた。記者の確認リスト（7節）の行を、記者が原本で確かめる。",
     }
+    if public_path is not None:
+        result["public"] = public_path.relative_to(root).as_posix()
+        result["message"] += "伏せた写しを public/ に書いた（公開するかは記者が決める）。"
+    return result
+
+
+# ===========================================================================
+# 実行の概要（kizashi render <run_id>。4.7・10.3）
+# ===========================================================================
+
+SUMMARY_PREFIX = "run_summary"
+FAMILY_NAMES = {"kyoso": "競争入札", "zuikei": "随意契約"}
+QUALITY_STATE_NAMES = {"pass": "合格", "fail": "不合格", "report": "報告", "not_run": "未実行"}
+SOURCE_KIND_NAMES = {
+    "dataset": "公表一覧",
+    "index": "索引ページ",
+    "evidence": "追加資料",
+    "definition": "定義・記入要領",
+}
+
+
+def _cell(value: object) -> str:
+    """表の1つのセル（`|` と改行を表を壊さない形に替える）。"""
+    text = "—" if value is None or value == "" else str(value)
+    return text.replace("|", "｜").replace("\r", " ").replace("\n", " ")
+
+
+def _row(*cells: object) -> str:
+    return "| " + " | ".join(_cell(c) for c in cells) + " |"
+
+
+def _logical(key: str | None) -> str:
+    """論理資料のキーを「令和6年度（2024年度） 競争入札 CSV」の形にする。"""
+    parts = (key or "").split("|")
+    if len(parts) != 4:
+        return key or "—"
+    _, year, family, fmt = parts
+    return f"{_year_ja(year)} {FAMILY_NAMES.get(family, family)} {fmt.upper()}"
+
+
+class _RunSummary:
+    """実行の概要を台帳から組み立てる（10.3）。数値は台帳の件数（counts_json）と表の行の数だけを使う。"""
+
+    def __init__(self, conn: sqlite3.Connection, root: Path, run_id: str, adapter: Adapter) -> None:
+        self.conn, self.root, self.run_id, self.adapter = conn, root, run_id, adapter
+        self.run = _one(conn, "SELECT * FROM runs", ()) or {}
+        self.config = json.loads(self.run["config_json"])
+        self.counts = json.loads(self.run["counts_json"])
+        self.stages = json.loads(self.run["stages_json"])
+        self.sources = dict_rows(conn, "SELECT * FROM sources ORDER BY source_id")
+        self.leads = dict_rows(conn, "SELECT * FROM leads ORDER BY lead_id")
+        screens = self.adapter.config.get("screens") or {}
+        self.screen_names = [s for s in sorted(screens) if s in self.counts] + sorted(
+            s for s in screens if s not in self.counts
+        )
+
+    def years(self, key: str) -> str:
+        years = self.config.get(key) or []
+        return "・".join(_year_ja(y) for y in years) if years else "（記録なし）"
+
+    def title(self) -> str:
+        question = self.config.get("question")
+        if not question:
+            question = "（問いは台帳に保存していない。設定の検査の前に止まった実行。D-040）"
+        return f"# 実行の概要：{question}"
+
+    # -- 取得 ---------------------------------------------------------------
+
+    def section_fetch(self) -> list[str]:
+        lines = ["## 取得", ""]
+        planned = [s for s in self.sources if s["kind"] == "dataset" and not s["supersedes"]]
+        lines += [
+            "公表一覧の資料（予定と結果）：",
+            "",
+            _row("資料ID", "年度", "方式", "形式", "結果", "理由・取得元"),
+            _row("---", "---", "---", "---", "---", "---"),
+        ]
+        for s in planned:
+            _, year, family, fmt = (s["logical_key"] or "|||").split("|")
+            status = SOURCE_STATUS_NAMES.get(s["status"], s["status"])
+            detail = s["failure_reason"] if s["status"] != "fetched" else s["final_url"] or s["url"]
+            lines.append(
+                _row(
+                    s["source_id"],
+                    _year_ja(year) if year else None,
+                    FAMILY_NAMES.get(family, family),
+                    fmt.upper() if fmt else None,
+                    status,
+                    detail,
+                )
+            )
+        if not planned:
+            lines.append(_row("（予定の資料がない）", "", "", "", "", ""))
+        lacking = [s for s in planned if s["status"] != "fetched"]
+        lines += [
+            "",
+            f"- 取得できなかった公表一覧の資料：{len(lacking)}件"
+            + (
+                "（"
+                + "、".join(
+                    f"{s['source_id']} {SOURCE_STATUS_NAMES.get(s['status'], s['status'])}"
+                    for s in lacking
+                )
+                + "）"
+                if lacking
+                else ""
+            ),
+        ]
+        others = [s for s in self.sources if s["kind"] != "dataset" and not s["supersedes"]]
+        if others:
+            lines += [
+                "",
+                "そのほかの資料（索引ページ・追加資料・定義）：",
+                "",
+                _row("資料ID", "種類", "結果", "URL"),
+                _row("---", "---", "---", "---"),
+            ]
+            for s in others:
+                lines.append(
+                    _row(
+                        s["source_id"],
+                        SOURCE_KIND_NAMES.get(s["kind"], s["kind"]),
+                        SOURCE_STATUS_NAMES.get(s["status"], s["status"])
+                        + (f"（{s['failure_reason']}）" if s["status"] != "fetched" else ""),
+                        s["url"],
+                    )
+                )
+        newer = [s for s in self.sources if s["supersedes"]]
+        if newer:
+            lines += [
+                "",
+                "取り直して得た新しい版（fetch --recheck。この実行の計算には使っていない）：",
+                "",
+                _row("資料ID", "古い版", "種類", "取得日時", "SHA-256"),
+                _row("---", "---", "---", "---", "---"),
+            ]
+            lines += [
+                _row(
+                    s["source_id"],
+                    s["supersedes"],
+                    SOURCE_KIND_NAMES.get(s["kind"], s["kind"]),
+                    s["fetched_at"],
+                    s["sha256"],
+                )
+                for s in newer
+            ]
+        budget = json.loads(self.run["limits_json"] or "{}")
+        lines += [
+            "",
+            (
+                f"- 通信：{int(budget.get('http_requests', 0))}回（上限 {limits.MAX_HTTP_REQUESTS}回）"
+                f"、追加資料の取得：{int(budget.get('evidence_fetches', 0))}件"
+                f"（上限 {limits.MAX_EVIDENCE_FETCH}件）"
+            ),
+            "",
+        ]
+        return lines
+
+    # -- 処理の範囲 ---------------------------------------------------------
+
+    def section_scope(self) -> list[str]:
+        records = self.counts.get("records") or {}
+        lines = [
+            "## 処理の範囲",
+            "",
+            f"- 比べる年度：{self.years('compare_years')}",
+            f"- 系列の年度：{self.years('series_years')}",
+            "",
+            "処理した範囲（正規化した公表一覧の CSV と行の数）：",
+            "",
+            _row("資料ID", "論理資料", "行", "採用", "保留", "除外", "うち絞り込みで除外"),
+            _row("---", "---", "---", "---", "---", "---", "---"),
+        ]
+        for source_id in sorted(records):
+            r = records[source_id]
+            lines.append(
+                _row(
+                    source_id,
+                    _logical(r.get("logical_key")),
+                    r.get("records"),
+                    r.get("adopted"),
+                    r.get("held"),
+                    r.get("excluded"),
+                    r.get("out_of_scope", 0),
+                )
+            )
+        if not records:
+            lines.append(_row("（正規化した資料がない）", "", "", "", "", "", ""))
+        lines += ["", "処理していない範囲："]
+        unprocessed = [
+            s
+            for s in self.sources
+            if s["kind"] == "dataset" and not s["supersedes"] and s["status"] != "fetched"
+        ]
+        for s in unprocessed:
+            lines.append(
+                f"- {s['source_id']}（{_logical(s['logical_key'])}）："
+                f"{SOURCE_STATUS_NAMES.get(s['status'], s['status'])}"
+            )
+        for name in self.screen_names:
+            entry = self.counts.get(name) or {}
+            if entry.get("state") == "not_run":
+                lines.append(
+                    f"- 検出SQL {name}：未実行（欠けた資料：{'・'.join(entry.get('missing') or []) or '記録なし'}）"
+                )
+            elif not entry:
+                lines.append(f"- 検出SQL {name}：実行の記録がない")
+        stop = _stop_text(json.loads(self.run["stop_reason"] or "null"))
+        if stop:
+            lines.append(f"- 実行が止まった理由：{stop}")
+        if lines[-1] == "処理していない範囲：":
+            lines.append("- なし（予定の資料をすべて取得し、すべての検出SQLを実行した）")
+        lines += ["", *self.scope_lines(), ""]
+        return lines
+
+    def scope_lines(self) -> list[str]:
+        scope = self.counts.get("scope")
+        if not scope:
+            return ["- 母集団の絞り込み：なし（記者の指示による絞り込みをしていない）"]
+        from kizashi.detect import SCOPE_OPS_JA
+
+        conditions = "、".join(
+            f"{f['field']} が「{f['value']}」{SCOPE_OPS_JA.get(f['op'], f['op'])}"
+            for f in scope.get("filters") or []
+        )
+        lines = [
+            "母集団の絞り込み（記者の指示。実装仕様6.3）：",
+            "",
+            f"- 記者の指示：{scope.get('instruction')}",
+            f"- 条件：{conditions}",
+            (
+                "- 品質検査と取り込みの照合・原本照合（T6a・T6b）は、絞り込む前の全行で行った。"
+                "除いた行は消さず、excluded（out_of_scope）として残している。"
+            ),
+            "",
+            _row("資料ID", "除いた行の数"),
+            _row("---", "---"),
+        ]
+        lines += [_row(s, n) for s, n in sorted((scope.get("excluded") or {}).items())]
+        return lines
+
+    # -- 品質レポートの要約 ------------------------------------------------
+
+    def section_quality(self) -> list[str]:
+        quality = self.counts.get("quality") or {}
+        report = paths.run_dir(self.root, self.run_id) / "quality_report.md"
+        lines = ["## 品質レポートの要約", ""]
+        state = (self.stages.get("quality") or {}).get("state")
+        if not quality:
+            lines += [
+                f"- 品質検査の結果がない（quality の工程：{state or '記録なし'}）。",
+                "",
+            ]
+            return lines
+        lines += [
+            _row("資料ID", "合格", "報告", "不合格", "未実行"),
+            _row("---", "---", "---", "---", "---"),
+        ]
+        problems: list[str] = []
+        for source_id in sorted(quality):
+            items = {k: v for k, v in quality[source_id].items() if isinstance(v, dict)}
+            tally = {
+                s: sum(1 for v in items.values() if v.get("state") == s)
+                for s in QUALITY_STATE_NAMES
+            }
+            lines.append(
+                _row(source_id, tally["pass"], tally["report"], tally["fail"], tally["not_run"])
+            )
+            for qid in sorted(items):
+                item = items[qid]
+                text = f"- {source_id} {qid}（{QUALITY_STATE_NAMES.get(item.get('state'), item.get('state'))}）：{item.get('detail')}"
+                if item.get("state") in ("fail", "not_run"):
+                    problems.append(text)
+        lines += ["", "不合格・未実行："]
+        lines += problems or ["- なし"]
+        lines += [
+            "",
+            (
+                f"- 報告（合否を決めない記録。重複・読めない日付・年度途中など）と全文は品質レポート："
+                f"{report.relative_to(self.root).as_posix()}"
+            ),
+            "",
+        ]
+        return lines
+
+    # -- 検出 ---------------------------------------------------------------
+
+    def section_detect(self) -> list[str]:
+        state = self.run["state"]
+        lines = ["## 検出", ""]
+        if "detect" not in self.stages:
+            lines += ["- 検出（detect）は実行していない。", ""]
+        lines += [
+            _row(
+                "検出SQL",
+                "状態",
+                "比べた組",
+                "比較できない組",
+                "候補",
+                "比較できない理由の付いた候補",
+            ),
+            _row("---", "---", "---", "---", "---", "---"),
+        ]
+        compared_total = 0
+        all_done = bool(self.screen_names)
+        detected = [x for x in self.leads if x["screen_id"] != "explore"]
+        for name in self.screen_names:
+            entry = self.counts.get(name) or {}
+            mine = [x for x in detected if x["screen_id"] == name]
+            flagged = sum(1 for x in mine if json.loads(x["incomparable_reasons_json"] or "[]"))
+            if entry.get("state") == "done":
+                compared = int(entry.get("compared", 0))
+                compared_total += compared
+                count = int(entry.get("leads", len(mine)))
+                leads_text = (
+                    f"0（比べられた{compared}組の中で該当なし）" if count == 0 else str(count)
+                )
+                lines.append(
+                    _row(name, "実行済み", compared, entry.get("incomparable"), leads_text, flagged)
+                )
+            else:
+                all_done = False
+                why = (
+                    f"未実行（欠けた資料：{'・'.join(entry.get('missing') or [])}）"
+                    if entry.get("state") == "not_run"
+                    else "実行の記録がない"
+                )
+                lines.append(_row(name, why, "—", "—", "—", "—"))
+        lines.append("")
+        explore = [x for x in self.leads if x["screen_id"] == "explore"]
+        if state == "completed" and all_done and not detected:
+            lines.append(
+                f"- 検出の候補：比べられた{compared_total}組の中で該当なし（検出SQLのすべてで0件）。"
+            )
+        else:
+            lines.append(f"- 検出の候補の総数：{len(detected)}件")
+        if state in ("partial", "failed"):
+            lines.append(
+                f"- 実行は {state}（{RUN_STATE_NAMES.get(state, state)}）。欠けた資料や実行しなかった検出SQLの分は"
+                "数えていない。候補が0件でも「候補なし」とは言えない。"
+            )
+        lines += [
+            f"- 探索で登録した候補：{len(explore)}件",
+            (
+                "- 比較できない理由の付いた候補は、比べられた組の候補だが、単価契約・年度途中・重複などの理由が"
+                "付いており、比較の前に確かめる必要がある（確認待ち）。"
+            ),
+            "- 最も大きな差が出たことだけで、統計的に意味があるとは言えない。候補の並び順は取材価値の順ではない。",
+            "",
+        ]
+        return lines
+
+    # -- 候補 ---------------------------------------------------------------
+
+    def memo_status(self, lead: dict) -> str:
+        if not lead["memo_no"] or not lead["memo_hash"]:
+            return "メモなし"
+        name = f"memos/{lead['lead_id']}.v{lead['memo_no']}.md"
+        current = hashing.check_hash(self.conn, lead["lead_id"], self.adapter)
+        return f"{name}（{'有効' if current == lead['memo_hash'] else '失効'}）"
+
+    def section_leads(self) -> list[str]:
+        labels = getattr(self.adapter.module, "CATEGORY_LABELS", {}) or {}
+        studied = [
+            x
+            for x in self.leads
+            if x["state"] != "candidate" or x["proposed_outcome"] or x["memo_no"]
+        ]
+        lines = ["## 候補", "", "調べた候補：", ""]
+        if studied:
+            lines += [
+                _row("候補ID", "区分", "比較の単位", "結論", "メモ"),
+                _row("---", "---", "---", "---", "---"),
+            ]
+            for x in studied:
+                if x["state"] in OUTCOME_NAMES:
+                    outcome = OUTCOME_NAMES[x["state"]]
+                    if x["state"] == "change":
+                        outcome += f"（説明の状況：{EXPLANATION_STATUS_NAMES.get(x['explanation_status'], '未記録')}）"
+                elif x["proposed_outcome"]:
+                    outcome = f"結論の案：{OUTCOME_NAMES.get(x['proposed_outcome'])}（メモ未作成・未確定）"
+                else:
+                    outcome = "調査中（結論の案なし）"
+                lines.append(
+                    _row(
+                        x["lead_id"],
+                        labels.get(x["change_category"], x["change_category"]),
+                        x["lead_key"],
+                        outcome,
+                        self.memo_status(x),
+                    )
+                )
+        else:
+            lines.append("- なし（詳しく調べた候補がない）")
+        rest = [x for x in self.leads if x not in studied]
+        lines += ["", f"調べずに残した候補：{len(rest)}件", ""]
+        if rest:
+            tally: dict[tuple[str, str], int] = {}
+            for x in rest:
+                key = (x["screen_id"], labels.get(x["change_category"], x["change_category"]))
+                tally[key] = tally.get(key, 0) + 1
+            lines += [_row("検出SQL", "区分", "件数"), _row("---", "---", "---")]
+            lines += [_row(s, c, n) for (s, c), n in sorted(tally.items())]
+            lines += [
+                "",
+                f"- 調べなかったことは、変化がないことや取材価値がないことを意味しない。一覧は kizashi inspect {self.run_id}。",
+            ]
+        withdrawn = [x for x in self.leads if x["hypothesis_result"] == "withdrawn"]
+        held = [x for x in self.leads if x["state"] == "hold" or x["proposed_outcome"] == "hold"]
+        lines += ["", "取り下げた仮説と、保留にした候補（理由と再開の条件）：", ""]
+        if not withdrawn and not held:
+            lines.append("- なし")
+        for x in withdrawn:
+            memo = _Memo(self.conn, self.root, self.run_id, self.adapter, x["lead_id"])
+            lines.append(
+                f"- {x['lead_id']}：仮説「{memo.expand(x['hypothesis'])}」を取り下げた。"
+                f"取り下げ条件：{memo.expand(x['withdraw_if'])}。"
+                f"再開の条件：{memo.expand(x['reopen_condition']) or '記録なし'}"
+            )
+        for x in held:
+            memo = _Memo(self.conn, self.root, self.run_id, self.adapter, x["lead_id"])
+            lines.append(
+                f"- {x['lead_id']}：保留（{HOLD_REASON_NAMES.get(x['hold_reason'], '理由の記録なし')}）。"
+                f"再開の条件：{memo.expand(x['reopen_condition']) or '記録なし'}"
+            )
+        lines.append("")
+        return lines
+
+    def text(self, number: int) -> str:
+        state = self.run["state"]
+        profile = "はい" if self.run.get("profile") == "investigate" else "いいえ"
+        lines = [
+            self.title(),
+            "",
+            f"> 調査用・記者未確認。実行ID：{self.run_id}　状態：{state}（{RUN_STATE_NAMES.get(state, state)}）",
+            f"> 調査用の設定で実行：{profile}　概要：v{number}　分野：{self.run['domain']}",
+            "",
+            *self.section_fetch(),
+            *self.section_scope(),
+            *self.section_quality(),
+            *self.section_detect(),
+            *self.section_leads(),
+        ]
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _stop_text(reason: object) -> str | None:
+    """stop_reason のうち、資料と検出SQLの一覧（上に並べたもの）のほかの理由（工程とエラー）。"""
+    if not isinstance(reason, dict):
+        return None if reason is None else str(reason)
+    parts = [
+        f"{reason.get('stage') or ''} {reason.get('code') or ''}".strip(),
+        str(reason.get("message") or ""),
+    ]
+    text = "：".join(p for p in parts if p)
+    return text or None
+
+
+def _next_number(folder: Path, prefix: str) -> int:
+    numbers = [0]
+    for path in folder.glob(f"{prefix}.v*.md"):
+        tail = path.name[len(prefix) + 2 : -3]
+        if tail.isdigit():
+            numbers.append(int(tail))
+    return max(numbers) + 1
+
+
+def _write_new(path: Path, text: str, written: list[Path], lead_or_run: str) -> None:
+    try:
+        with path.open("x", encoding="utf-8") as fh:  # 上書きしない
+            written.append(path)
+            fh.write(text)
+    except FileExistsError:
+        raise KizashiError(
+            "E_INTERNAL",
+            STAGE,
+            f"{path.name} がすでにある（番号と台帳が合わない）。上書きしない。",
+            affected_ids=[lead_or_run],
+        ) from None
+
+
+def render_run(root: Path, run_id: str, *, public: bool = False) -> dict:
+    """kizashi render <run_id> [--public]（4.7・10.3）。memos/run_summary.v<n>.md に書く（上書きしない）。"""
+    conn = ledger.open_rw(root, run_id)
+    written: list[Path] = []
+    try:
+        check.check_rule_versions(conn, root, run_id, STAGE)
+        (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
+        adapter = load_adapter(root, domain)
+        memos = paths.run_dir(root, run_id) / "memos"
+        memos.mkdir(parents=True, exist_ok=True)
+        paths.ensure_in_data(root, memos)
+        number = _next_number(memos, SUMMARY_PREFIX)
+        text = _RunSummary(conn, root, run_id, adapter).text(number)
+        path = memos / f"{SUMMARY_PREFIX}.v{number}.md"
+        with ledger.transaction(conn):
+            _write_new(path, text, written, run_id)
+            public_path = (
+                _write_public(conn, root, run_id, adapter, path, text, written) if public else None
+            )
+            ledger.add_event(
+                conn,
+                run_id,
+                "render",
+                after={
+                    "summary": path.relative_to(paths.run_dir(root, run_id)).as_posix(),
+                    "summary_no": number,
+                    "public": None
+                    if public_path is None
+                    else public_path.relative_to(paths.run_dir(root, run_id)).as_posix(),
+                },
+            )
+    except BaseException:
+        for p in written:
+            p.unlink(missing_ok=True)
+        raise
+    finally:
+        conn.close()
+    result = {
+        "run_id": run_id,
+        "summary": path.relative_to(root).as_posix(),
+        "summary_no": number,
+        "message": "実行の概要を書いた。候補のメモは kizashi render <lead_id> --run <run_id> で書く。",
+    }
+    if public_path is not None:
+        result["public"] = public_path.relative_to(root).as_posix()
+    return result
+
+
+# ===========================================================================
+# 伏せた写し（--public。12.1。D-022）
+# ===========================================================================
+
+PUBLIC_NOTICE = (
+    "> 公開用の写し：受注者名は伏せている（「受注者A」などの記号は、この実行の中で同じ名前に同じものを付けた）。"
+    "法人番号も伏せている。examples/disclosure.allow にある名前だけは伏せていない。"
+)
+CORP_NUMBER_MASK = "法人番号（伏せ字）"
+
+
+def disclosure_allow(root: Path) -> set[str]:
+    """examples/disclosure.allow（1行に1つの名前。記者が書く）。なければ空。空行は除く。"""
+    path = root / "examples" / "disclosure.allow"
+    if not path.is_file():
+        return set()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return {nfkc(line.strip()) for line in lines if line.strip()}
+
+
+def _letters(n: int) -> str:
+    """0 → A、25 → Z、26 → AA（受注者の記号）。"""
+    text = ""
+    n += 1
+    while n:
+        n, rest = divmod(n - 1, 26)
+        text = chr(ord("A") + rest) + text
+    return text
+
+
+def redaction_terms(
+    conn: sqlite3.Connection, adapter: Adapter, allow: set[str]
+) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """伏せる語（受注者名と法人番号）と、key → 置き換える文字列。disclosure.allow の名前は伏せない。"""
+    terms: list[tuple[str, str]] = []
+    labels: dict[str, str] = {}
+    index = 0
+    for name in adapter.module.counterparty_names(conn):
+        if nfkc(name) in allow:
+            continue
+        key = f"name:{name}"
+        labels[key] = f"受注者{_letters(index)}"
+        index += 1
+        terms.append((name, key))
+    for number in adapter.module.corp_numbers(conn):
+        if number in allow:
+            continue
+        terms.append((number, "corp"))
+    labels["corp"] = CORP_NUMBER_MASK
+    return terms, labels
+
+
+def redact(text: str, matcher: check.TermMatcher, labels: dict[str, str]) -> str:
+    """受注者名と法人番号の出現を記号に替える（12.1）。重なる出現は、左から長いものを採る。"""
+    out: list[str] = []
+    last = 0
+    for start, end, key in matcher.spans(text):
+        out.append(text[last:start])
+        out.append(labels[key])
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def public_text(conn: sqlite3.Connection, root: Path, adapter: Adapter, text: str) -> str:
+    terms, labels = redaction_terms(conn, adapter, disclosure_allow(root))
+    body = redact(text, check.TermMatcher(terms, wildcard=True), labels)
+    return f"{PUBLIC_NOTICE}\n\n{body}"
+
+
+def _write_public(
+    conn: sqlite3.Connection,
+    root: Path,
+    run_id: str,
+    adapter: Adapter,
+    memo: Path,
+    text: str,
+    written: list[Path],
+) -> Path:
+    folder = paths.run_dir(root, run_id) / "public"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths.ensure_in_data(root, folder)
+    path = folder / memo.name
+    _write_new(path, public_text(conn, root, adapter, text), written, run_id)
+    return path

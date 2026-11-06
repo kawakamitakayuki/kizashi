@@ -4,7 +4,9 @@
 - memo_calc_ids：候補のメモに出る計算（候補が持つ計算、候補・主張・判定・結論が参照する計算と、派生計算が
   参照する計算）。check・render・check_hash が同じものを使う。
 - check_hash：検証記録のハッシュ（11章）。render が主張と候補の状態を更新した後に計算し、inspect が計算し直して
-  比べる（失効の表示は P0-8）。
+  比べ、違えば「失効」と表示する（4.3・10.2）。
+- 公表一覧の資料は、実行が取得した版（supersedes のないもの）を依存する資料とする。fetch --recheck で取った新しい
+  版は、この実行の計算に使っていない。
 """
 
 from __future__ import annotations
@@ -248,7 +250,7 @@ def dependency_sources(conn: sqlite3.Connection, lead_id: str, adapter: Adapter)
             r[0]
             for r in conn.execute(
                 "SELECT source_id FROM sources WHERE logical_key = ? AND kind = 'dataset'"
-                " AND status = 'fetched'",
+                " AND status = 'fetched' AND supersedes IS NULL",
                 (adapter.logical_key(year, family, "csv"),),
             )
         }

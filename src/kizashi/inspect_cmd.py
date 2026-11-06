@@ -7,7 +7,8 @@ kizashi inspect <ID> --run <run_id> [--page <n>]
   変えない。
 - 一覧は1ページ20件。超えた分は next_page を返す。本文の抜粋は1件2,000字まで。
 - 候補IDでは、同種業務の対応（matches）と係数の提案（coefficients）も出す（D-023）。
-- メモの失効の表示は P0-8 で仕上げる。いまは memo_hash の有無だけを出す。
+- 候補のメモの失効（10.2）：メモがあれば、hashing.check_hash で計算し直したハッシュと leads.memo_hash を比べ、
+  違えば「失効」と表示する。規則の版の食い違い（E_RULE_VERSION）とは分ける（設計書4.2）。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import sqlite3
 from decimal import Decimal
 from pathlib import Path
 
-from kizashi import ledger, limits, paths, runner
+from kizashi import hashing, ledger, limits, paths, runner
 from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 
@@ -247,7 +248,35 @@ def _explanation_view(e: sqlite3.Row) -> dict:
     return view
 
 
-def _inspect_lead(conn: sqlite3.Connection, lead_id: str, run_id: str, page: int) -> dict:
+def memo_view(conn: sqlite3.Connection, root: Path, run_id: str, lead: sqlite3.Row) -> dict:
+    """候補のメモの番号と失効の有無（4.3 の末尾・10.2）。メモがなければ status は「メモなし」。"""
+    memo_no, recorded = int(lead["memo_no"]), lead["memo_hash"]
+    if memo_no == 0 or recorded is None:
+        return {"memo_no": memo_no, "file": None, "stale": None, "status": "メモなし"}
+    (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
+    current = hashing.check_hash(conn, lead["lead_id"], load_adapter(root, domain))
+    stale = current != recorded
+    memo = paths.run_dir(root, run_id) / "memos" / f"{lead['lead_id']}.v{memo_no}.md"
+    view = {
+        "memo_no": memo_no,
+        "file": memo.relative_to(root).as_posix(),
+        "check_hash": recorded,
+        "current_hash": current,
+        "stale": stale,
+        "status": "失効" if stale else "有効",
+    }
+    if stale:
+        view["note"] = (
+            f"メモ v{memo_no} を書いた後に台帳の中身が変わった（検証記録のハッシュが違う）。"
+            "このメモの検査の結果は使えない。check と render をやり直すと新しい番号のメモができる"
+            "（古いメモは消さない）。"
+        )
+    return view
+
+
+def _inspect_lead(
+    conn: sqlite3.Connection, root: Path, lead_id: str, run_id: str, page: int
+) -> dict:
     lead = _row(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
     if lead is None:
         raise _not_found("候補", lead_id, run_id)
@@ -327,7 +356,7 @@ def _inspect_lead(conn: sqlite3.Connection, lead_id: str, run_id: str, page: int
         "reopen_condition": lead["reopen_condition"],
         "state": lead["state"],
         "rounds": lead["rounds"],
-        "memo": {"memo_no": lead["memo_no"], "memo_hash": lead["memo_hash"] is not None},
+        "memo": memo_view(conn, root, run_id, lead),
     }
     return _with_next(data, next_page)
 
@@ -484,7 +513,7 @@ def inspect(root: Path, target_id: str, run_id: str, *, page: int = 1) -> dict:
                 raise _not_found("実行", target_id, run_id)
             return _inspect_run(conn, run_id, page)
         if kind == "lead":
-            return _inspect_lead(conn, target_id, run_id, page)
+            return _inspect_lead(conn, root, target_id, run_id, page)
         if kind == "source":
             return _inspect_source(conn, root, target_id, run_id)
         if kind == "record":
