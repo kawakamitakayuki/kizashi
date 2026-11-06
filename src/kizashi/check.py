@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from kizashi import calc, hashing, independent_reader, ledger, paths, quotes, versions
-from kizashi.adapters import FAMILIES, Adapter, load_adapter
+from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
 from kizashi.hashing import canonical_json, dict_rows
 from kizashi.normalize import nfkc
@@ -421,44 +421,10 @@ def _source_of(record_id: str) -> str:
 
 
 def required_sources(
-    conn: sqlite3.Connection, adapter: Adapter, config: dict, lead_id: str
+    conn: sqlite3.Connection, adapter: Adapter, lead_id: str
 ) -> list[tuple[int, str]]:
-    """候補が依存する資料（年度, 方式）。取得できた行からではなく、メモに出る基礎集計の条件・年度と分野の規則から
-    決める（実装仕様9章の「依存する資料」。D-041⑤）。"""
-    screens = adapter.config.get("screens") or {}
-    every_year = sorted(int(y) for y in config.get("series_years") or [])
-    needed: set[tuple[int, str]] = set()
-    for calc_id in hashing.memo_calc_ids(conn, lead_id):
-        comp = _one(
-            conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
-        )
-        if comp is None or comp["kind"] != "base":
-            continue
-        request = json.loads(comp["request_json"])
-        filters = [f for f in request.get("filter", []) if isinstance(f, dict)]
-        years = _filter_values(filters, "fiscal_year")
-        years = every_year if years is None else [y for y in years if isinstance(y, int)]
-        screen = request.get("screen_id")
-        if screen in screens:
-            families = list((screens[screen] or {}).get("requires") or FAMILIES)
-        else:
-            chosen = _filter_values(filters, "method_family")
-            families = list(FAMILIES) if chosen is None else [f for f in chosen if f in FAMILIES]
-        needed |= {(y, f) for y in years for f in families}
-    return sorted(needed)
-
-
-def _filter_values(filters: list[dict], col: str) -> list | None:
-    """条件の列の値を限る `=`・`in` の値（複数あれば共通部分）。限っていなければ None。"""
-    found: set | None = None
-    for f in filters:
-        if f.get("col") != col or f.get("op") not in ("=", "in"):
-            continue
-        vals = [f.get("value")] if f.get("op") == "=" else f.get("value")
-        if not isinstance(vals, list):
-            continue
-        found = set(vals) if found is None else found & set(vals)
-    return None if found is None else sorted(found, key=str)
+    """候補が依存する資料（年度, 方式）。hashing.required_sources と同じ（検証記録のハッシュと共有する）。"""
+    return hashing.required_sources(conn, adapter, lead_id)
 
 
 def _v1(conn: sqlite3.Connection, adapter: Adapter, lead: dict, v: Verification) -> None:
@@ -483,8 +449,7 @@ def _v1(conn: sqlite3.Connection, adapter: Adapter, lead: dict, v: Verification)
             )
     quality = counts.get("quality") or {}
     records = counts.get("records") or {}
-    config = json.loads(run["config_json"])
-    for year, family in required_sources(conn, adapter, config, lead["lead_id"]):
+    for year, family in required_sources(conn, adapter, lead["lead_id"]):
         key = adapter.logical_key(year, family, "csv")
         source = _one(
             conn,
@@ -513,11 +478,10 @@ def _v1(conn: sqlite3.Connection, adapter: Adapter, lead: dict, v: Verification)
 def _v2(
     conn: sqlite3.Connection,
     root: Path,
+    adapter: Adapter,
     lead: dict,
     claims: list[dict],
-    explanations: list[dict],
     matches: list[dict],
-    rows: list[str],
     v: Verification,
 ) -> None:
     lead_id = lead["lead_id"]
@@ -564,7 +528,7 @@ def _v2(
                     f"対応 {match['match_id']} のレコードがない：{ref}",
                     [match["match_id"], ref],
                 )
-    sources = hashing.dependency_sources(conn, lead_id)
+    sources = hashing.dependency_sources(conn, lead_id, adapter)
     for source_id in sources:
         source = _one(conn, "SELECT * FROM sources WHERE source_id = ?", (source_id,))
         if source is None:
@@ -929,22 +893,109 @@ def _has_purpose(questions: list, purpose: str) -> bool:
     return any(purpose in (q.get("purposes") or []) for q in questions if isinstance(q, dict))
 
 
-def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
-    """説明を反映した値（recalc_calc_id）と残る差（residual_calc_id）が計算IDでそろっているか（D-041⑩）。
+def _comp(conn: sqlite3.Connection, calc_id: str | None) -> dict | None:
+    if not calc_id:
+        return None
+    return _one(conn, "SELECT * FROM computations WHERE calc_id = ?", (calc_id,))
 
-    説明を反映した値は、候補の比べる2年度と系列の計算そのものではないこと。残る差は、説明を反映した値を引数に
-    含む派生計算か、条件をそろえた後に残る行を数えた基礎集計の件数。"""
-    recalc, residual = exp.get("recalc_calc_id"), exp.get("residual_calc_id")
-    originals = {lead["calc_from"], lead["calc_to"], *json.loads(lead["calc_ids_json"])}
-    if not recalc or not residual or recalc in originals:
+
+def _normalized_filter(request: dict) -> str:
+    items = []
+    for f in request.get("filter") or []:
+        if isinstance(f, dict):
+            value = f.get("value")
+            items.append(
+                canonical_json(
+                    {**f, "value": sorted(value, key=str) if isinstance(value, list) else value}
+                )
+            )
+    return canonical_json(sorted(items))
+
+
+def same_aggregation(conn: sqlite3.Connection, a_id: str, b_id: str) -> bool:
+    """2つの計算が同じ集計か（値ではなく、基礎集計は表・演算・列・対象行、派生計算は演算と引数、文書値は資料・
+    位置・引用で判定する。別のIDで作り直した同じ集計を見分けるため。D-042③）。"""
+    a, b = _comp(conn, a_id), _comp(conn, b_id)
+    if a is None or b is None or a["kind"] != b["kind"]:
         return False
-    comp = _one(conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (residual,))
-    if comp is None:
+    ra, rb = json.loads(a["request_json"]), json.loads(b["request_json"])
+    if a["kind"] == "base":
+        keys = ("table", "op", "column")
+        return tuple(ra.get(k) for k in keys) == tuple(rb.get(k) for k in keys) and sorted(
+            json.loads(a["row_refs_json"] or "[]")
+        ) == sorted(json.loads(b["row_refs_json"] or "[]"))
+    if a["kind"] == "derived":
+        return ra.get("op") == rb.get("op") and ra.get("args") == rb.get("args")
+    if a["kind"] == "doc_value":
+        keys = ("source_id", "position", "quote")
+        return all(canonical_json(ra.get(k)) == canonical_json(rb.get(k)) for k in keys)
+    return False
+
+
+def is_amount_lead(conn: sqlite3.Connection, lead: dict) -> bool:
+    """金額の候補か（metric が `<列>_sum`、または calc_from が合計）。"""
+    if (lead.get("metric") or "").endswith("_sum"):
+        return True
+    comp = _comp(conn, lead["calc_from"])
+    return comp is not None and json.loads(comp["request_json"]).get("op") == "sum"
+
+
+def residual_comparison(conn: sqlite3.Connection, lead: dict, exp: dict) -> str | None:
+    """金額の候補の残る差（diff）の比較対象（calc_from か calc_to）。残る差が規則に合わなければ None。"""
+    recalc, residual = (
+        _comp(conn, exp.get("recalc_calc_id")),
+        _comp(conn, exp.get("residual_calc_id")),
+    )
+    if recalc is None or residual is None or residual["kind"] != "derived":
+        return None
+    request = json.loads(residual["request_json"])
+    args = request.get("args") or []
+    if request.get("op") != "diff" or len(args) != 2 or recalc["calc_id"] not in args:
+        return None
+    (other,) = [a for a in args if a != recalc["calc_id"]] or [None]
+    if other not in (lead["calc_from"], lead["calc_to"]):
+        return None
+    compared = _comp(conn, other)
+    units = {recalc["unit"], residual["unit"], (compared or {}).get("unit")}
+    return other if len(units) == 1 and None not in units and "" not in units else None
+
+
+def _residual_ok(conn: sqlite3.Connection, lead: dict, exp: dict) -> bool:
+    """説明を反映した値と残る差が、実装仕様9章の「説明を反映した値と残る差」を満たすか（D-042③）。"""
+    recalc_id, residual_id = exp.get("recalc_calc_id"), exp.get("residual_calc_id")
+    if not recalc_id or not residual_id or not json.loads(exp.get("evidence_json") or "[]"):
+        return False  # 説明を反映した条件の根拠がない
+    originals = [lead["calc_from"], lead["calc_to"], *json.loads(lead["calc_ids_json"])]
+    if is_amount_lead(conn, lead):
+        if any(recalc_id == o or same_aggregation(conn, recalc_id, o) for o in originals):
+            return False
+        return residual_comparison(conn, lead, exp) is not None
+    # 金額以外の候補：条件をそろえた後に残る行の件数
+    if recalc_id in originals or (
+        recalc_id != residual_id and any(same_aggregation(conn, recalc_id, o) for o in originals)
+    ):
         return False
-    request = json.loads(comp["request_json"])
-    if comp["kind"] == "derived":
-        return recalc in (request.get("args") or [])
-    return comp["kind"] == "base" and request.get("op") == "count"
+    residual = _comp(conn, residual_id)
+    if residual is None or residual["kind"] != "base":
+        return False
+    request = json.loads(residual["request_json"])
+    if request.get("op") != "count":
+        return False
+    limited, years = hashing.filter_values(request.get("filter") or [], "fiscal_year")
+    periods = {int(lead["period_from"]): lead["calc_from"], int(lead["period_to"]): lead["calc_to"]}
+    if not limited or len(years) != 1 or years[0] not in periods:
+        return False
+    base = _comp(conn, periods[years[0]])
+    if base is None:
+        return False
+    base_request = json.loads(base["request_json"])
+    rows = set(json.loads(residual["row_refs_json"] or "[]"))
+    return (
+        request.get("table") == base_request.get("table")
+        and residual["unit"] == base["unit"]
+        and _normalized_filter(request) != _normalized_filter(base_request)
+        and rows <= set(json.loads(base["row_refs_json"] or "[]"))
+    )
 
 
 def _v8_explanation_status(
@@ -964,8 +1015,9 @@ def _v8_explanation_status(
     if status in ("full", "part") and not any(_residual_ok(conn, lead, judged[t]) for t in scoped):
         v.fail(
             "V8_EXPLANATION_STATUS",
-            "説明の状況が「全部」「一部」なのに、支持の T1・T3・T4 に、説明を反映した値（recalc_calc_id。"
-            "比べる年度の合計そのものは不可）と残る差（residual_calc_id）がない。",
+            "説明の状況が「全部」「一部」なのに、支持の T1・T3・T4（根拠付き）に、説明を反映した値（recalc_calc_id。"
+            "比べる年度・系列と同じ集計は不可）と、規則に合う残る差（residual_calc_id。金額の候補は比較対象との diff、"
+            "金額以外の候補は条件をそろえた後に残る候補の行の件数）がない（実装仕様9章）。",
             [lead["lead_id"]],
         )
     if status == "unknown" and not _has_purpose(questions, "reason_breakdown"):
@@ -1021,7 +1073,7 @@ def verify(
     )
     v.memo_claims = [c["claim_id"] for c in claims]
     _v1(conn, adapter, lead, v)
-    _v2(conn, root, lead, claims, explanations, matches, rows, v)
+    _v2(conn, root, adapter, lead, claims, matches, v)
     _v3(conn, root, adapter, lead, claims, v)
     _v4(conn, root, run_id, adapter, lead, claims, explanations, matches, v)
     _v8(conn, adapter, lead, claims, matches, v)
@@ -1069,7 +1121,7 @@ def run_check(root: Path, run_id: str, lead_id: str) -> dict:
             if counted:
                 conn.execute("UPDATE leads SET rounds = ? WHERE lead_id = ?", (rounds, lead_id))
             checked = [] if v.failures else mark_checked(conn, v.memo_claims)
-            digest = hashing.check_hash(conn, lead_id)
+            digest = hashing.check_hash(conn, lead_id, adapter)
             ledger.add_event(
                 conn,
                 lead_id,

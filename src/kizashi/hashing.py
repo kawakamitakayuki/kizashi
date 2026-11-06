@@ -14,6 +14,10 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kizashi.adapters import Adapter
 
 CALC_REF_RE = re.compile(r"\{calc:([^}]*)\}")
 # 検証記録のハッシュに入れない候補の列（11章の1。メモの番号、ハッシュ、巡回数）
@@ -186,10 +190,68 @@ def t6_calc_ids(conn: sqlite3.Connection, lead_id: str) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def dependency_sources(conn: sqlite3.Connection, lead_id: str) -> list[str]:
-    """検証が依存する資料（実装仕様9章。D-041⑥）：メモに出る基礎集計の行の資料（率の分母だけに使う行を含む）、
-    T6a・T6b の根拠の照合の計算が読んだ CSV と PDF、主張・判定・対応・係数の根拠と文書値の資料。"""
+def filter_values(filters: list, col: str) -> tuple[bool, list]:
+    """条件の列の値を限る `=`・`in` の値（複数あれば共通部分）。(限っているか, 値)。値が整数でなく解釈できない
+    ときは限っていないものとする（D-042②。「依存する資料なし」にしない）。"""
+    found: set | None = None
+    for f in filters:
+        if not isinstance(f, dict) or f.get("col") != col or f.get("op") not in ("=", "in"):
+            continue
+        vals = [f.get("value")] if f.get("op") == "=" else f.get("value")
+        if not isinstance(vals, list):
+            return False, []
+        found = set(vals) if found is None else found & set(vals)
+    return (False, []) if found is None else (True, sorted(found, key=str))
+
+
+def required_sources(
+    conn: sqlite3.Connection, adapter: Adapter, lead_id: str
+) -> list[tuple[int, str]]:
+    """候補が依存する資料（年度, 方式）。取得できた行からではなく、メモに出る基礎集計の条件・年度と分野の規則から
+    決める（実装仕様9章の「依存する資料」。D-041⑤・D-042②）。"""
+    from kizashi.adapters import FAMILIES
+
+    (config_json,) = conn.execute("SELECT config_json FROM runs").fetchone()
+    every_year = sorted(int(y) for y in json.loads(config_json).get("series_years") or [])
+    screens = adapter.config.get("screens") or {}
+    needed: set[tuple[int, str]] = set()
+    for calc_id in memo_calc_ids(conn, lead_id):
+        for comp in dict_rows(
+            conn, "SELECT kind, request_json FROM computations WHERE calc_id = ?", (calc_id,)
+        ):
+            if comp["kind"] != "base":
+                continue
+            request = json.loads(comp["request_json"])
+            filters = request.get("filter") or []
+            limited, years = filter_values(filters, "fiscal_year")
+            if not limited or not all(
+                isinstance(y, int) and not isinstance(y, bool) for y in years
+            ):
+                years = every_year
+            screen = request.get("screen_id")
+            if screen in screens:
+                families = list((screens[screen] or {}).get("requires") or FAMILIES)
+            else:
+                limited, chosen = filter_values(filters, "method_family")
+                families = [f for f in chosen if f in FAMILIES] if limited else list(FAMILIES)
+            needed |= {(y, f) for y in years for f in families}
+    return sorted(needed)
+
+
+def dependency_sources(conn: sqlite3.Connection, lead_id: str, adapter: Adapter) -> list[str]:
+    """検証が依存する資料（実装仕様9章。D-041⑥・D-042①）：V1 の依存する資料の CSV（該当する行が0でも）、
+    メモに出る基礎集計の行の資料（率の分母だけに使う行を含む）、T6a・T6b の根拠の照合の計算が読んだ CSV と PDF、
+    主張・判定・対応・係数の根拠と文書値の資料。"""
     sources: set[str] = set()
+    for year, family in required_sources(conn, adapter, lead_id):
+        sources |= {
+            r[0]
+            for r in conn.execute(
+                "SELECT source_id FROM sources WHERE logical_key = ? AND kind = 'dataset'"
+                " AND status = 'fetched'",
+                (adapter.logical_key(year, family, "csv"),),
+            )
+        }
     for calc_id in [*memo_calc_ids(conn, lead_id), *t6_calc_ids(conn, lead_id)]:
         for comp in dict_rows(
             conn,
@@ -215,7 +277,7 @@ def dependency_sources(conn: sqlite3.Connection, lead_id: str) -> list[str]:
     return sorted(s for s in sources if isinstance(s, str) and s)
 
 
-def check_hash(conn: sqlite3.Connection, lead_id: str) -> str:
+def check_hash(conn: sqlite3.Connection, lead_id: str, adapter: Adapter) -> str:
     """検証記録のハッシュ（11章）。render が読む行を集め、表の名前と ID の順に正規化JSONで連結した SHA-256。"""
     items: list[tuple[str, str, object]] = []
     (lead,) = dict_rows(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
@@ -241,7 +303,7 @@ def check_hash(conn: sqlite3.Connection, lead_id: str) -> str:
         ).fetchone()
         if row is not None:
             items.append(("records", record_id, {"cells_sha256": row[0]}))
-    for source_id in dependency_sources(conn, lead_id):
+    for source_id in dependency_sources(conn, lead_id, adapter):
         row = conn.execute(
             "SELECT sha256 FROM sources WHERE source_id = ?", (source_id,)
         ).fetchone()

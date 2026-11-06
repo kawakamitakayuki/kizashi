@@ -16,6 +16,7 @@ import pytest
 
 from conftest import ledger_of, rec
 from kizashi import cli, hashing, render
+from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 from test_check import ROW_FROM, ROW_TO, prepare
 
@@ -51,7 +52,11 @@ def test_one_lead_from_records_to_memo(repo: Path, synthetic_run: str) -> None:
         1,
         0,
     )  # render は巡回数に数えない
-    assert row["memo_hash"] == hashing.check_hash(conn, lid) == result["check_hash"]
+    assert (
+        row["memo_hash"]
+        == hashing.check_hash(conn, lid, load_adapter(repo, "cao-procurement"))
+        == result["check_hash"]
+    )
     assert [r[0] for r in conn.execute("SELECT state FROM claims")] == ["checked", "checked"]
     event = conn.execute("SELECT * FROM events WHERE kind = 'render'").fetchone()
     assert (event["target_id"], event["check_hash"]) == (lid, row["memo_hash"])
@@ -233,14 +238,14 @@ def test_hash_changes_with_the_ledger(repo: Path, synthetic_run: str) -> None:
     lead = prepare(repo, synthetic_run)
     render.render_lead(repo, synthetic_run, lead["lead"])
     conn = ledger_of(repo, synthetic_run)
-    before = hashing.check_hash(conn, lead["lead"])
+    before = hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement"))
     conn.execute(
         "UPDATE leads SET memo_no = 9, memo_hash = 'x', rounds = 5 WHERE lead_id = ?",
         (lead["lead"],),
     )
-    assert hashing.check_hash(conn, lead["lead"]) == before
+    assert hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement")) == before
     conn.execute("UPDATE claims SET text = text || '。' WHERE claim_id = ?", (lead["observation"],))
-    assert hashing.check_hash(conn, lead["lead"]) != before
+    assert hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement")) != before
     conn.close()
 
 
@@ -324,5 +329,138 @@ def test_d041_source_list_traces_quotes(repo: Path, synthetic_run: str) -> None:
         assert f"data/raw/{row['sha256']}.{ext}" in line, sid
     section8 = text.split("## 8 再現情報")[1]
     assert (
-        "Skill とルールのファイル" in section8 and "確かめられない" in section8
+        "- Skill とルールのファイル（run の開始時の記録）：コミットと同じかは確かめられなかった"
+        in section8
     )  # 合成のフォルダーは git でない
+
+
+# ---------------------------------------------------------------------------
+# D-042④：Skill とルールのファイルの版
+# ---------------------------------------------------------------------------
+
+
+def _git(root: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Test",
+         "-c", "user.email=test@example.invalid", *args],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+
+
+def test_d042_rule_files_state_detects_added_deleted_changed(tmp_path: Path) -> None:
+    """3.5（D-042④）：コミットとの照合は、内容だけでなくファイルの一覧（追加・削除）も照らす。"""
+    import shutil
+
+    from kizashi import versions
+
+    if shutil.which("git") is None:
+        pytest.skip("git がない")
+    root = tmp_path / "rules"
+    skill = root / ".claude" / "skills" / "investigate" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    (root / "CLAUDE.md").write_text("テスト用のルール\n", encoding="utf-8")
+    skill.write_text("テスト用の Skill\n", encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "CLAUDE.md", ".claude")
+    _git(root, "commit", "-qm", "合成の基準")
+    commit = _git(root, "rev-parse", "HEAD")
+    state = versions.rule_files_record(root, commit)
+    assert state["matches_commit"] is True and (
+        state["added"],
+        state["deleted"],
+        state["changed"],
+    ) == ([], [], [])
+    skill.unlink()
+    extra = root / ".claude" / "skills" / "review-lead" / "SKILL.md"
+    extra.parent.mkdir(parents=True)
+    extra.write_text("足した Skill\n", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("書き換えたルール\n", encoding="utf-8")
+    state = versions.rule_files_record(root, commit)
+    assert state["matches_commit"] is False
+    assert state["deleted"] == [".claude/skills/investigate/SKILL.md"]
+    assert state["added"] == [".claude/skills/review-lead/SKILL.md"]
+    assert state["changed"] == ["CLAUDE.md"]
+
+
+def _start_with_rule_files(repo: Path) -> str:
+    from conftest import Site, write_config
+    from kizashi import runner
+
+    skill = repo / ".claude" / "skills" / "investigate" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("開始時の Skill\n", encoding="utf-8")
+    (repo / "CLAUDE.md").write_text("開始時のルール\n", encoding="utf-8")
+    return runner.start_run(
+        repo, "cao-procurement", write_config(repo), transport=Site().transport
+    )["run_id"]
+
+
+def test_d042_rule_files_recorded_at_start_and_compared_at_render(repo: Path) -> None:
+    """3.5・10.1（D-042④）：run の開始時に Skill とルールのファイルの一覧と SHA-256 を記録し、メモの8節に開始時の
+    記録と render の時点の値を分けて出し、開始時からの追加・削除・変更を書く。開始時の記録は上書きしない。"""
+    import hashlib
+
+    run_id = _start_with_rule_files(repo)
+    conn = ledger_of(repo, run_id)
+    recorded = json.loads(conn.execute("SELECT rule_versions_json FROM runs").fetchone()[0])
+    conn.close()
+    start = recorded["rule_files"]
+    assert start["files"] == {
+        ".claude/skills/investigate/SKILL.md": hashlib.sha256(
+            "開始時の Skill\n".encode()
+        ).hexdigest(),
+        "CLAUDE.md": hashlib.sha256("開始時のルール\n".encode()).hexdigest(),
+    }
+    assert start["matches_commit"] is None  # 合成のフォルダーは git でない
+    (repo / ".claude" / "skills" / "investigate" / "SKILL.md").write_text(
+        "書き換えた Skill\n", encoding="utf-8"
+    )
+    (repo / "CLAUDE.md").unlink()
+    added = repo / ".claude" / "skills" / "review-lead" / "SKILL.md"
+    added.parent.mkdir(parents=True)
+    added.write_text("足した Skill\n", encoding="utf-8")
+    lead = prepare(repo, run_id)
+    text = (repo / render.render_lead(repo, run_id, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    section8 = text.split("## 8 再現情報")[1]
+    assert "- Skill とルールのファイル（run の開始時の記録）：" in section8
+    assert "- Skill とルールのファイル（render の時点）：" in section8
+    assert (
+        "開始時から変わった：追加 .claude/skills/review-lead/SKILL.md、削除 CLAUDE.md、変更 .claude/skills/investigate/SKILL.md"
+        in section8
+    )
+    assert start["files"]["CLAUDE.md"] in section8.split("（render の時点）")[0]
+    conn = ledger_of(repo, run_id)
+    again = json.loads(conn.execute("SELECT rule_versions_json FROM runs").fetchone()[0])
+    conn.close()
+    assert again["rule_files"] == start  # 上書きしない
+
+
+def test_d042_run_without_start_record_is_unrecorded(repo: Path, synthetic_run: str) -> None:
+    """10.1（D-042④）：開始時の記録のない実行は「未記録」とし、render の時点の値で補わない。"""
+    conn = ledger_of(repo, synthetic_run)
+    conn.execute(
+        "UPDATE runs SET rule_versions_json = json_remove(rule_versions_json, '$.rule_files')"
+    )
+    conn.commit()
+    conn.close()
+    lead = prepare(repo, synthetic_run)
+    text = (repo / render.render_lead(repo, synthetic_run, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    assert "- Skill とルールのファイル（run の開始時の記録）：未記録" in text
+
+
+def test_d042_source_list_includes_required_csv_without_rows(
+    repo: Path, synthetic_run: str
+) -> None:
+    """10.1（D-042①）：資料の一覧に、該当する行のない依存する CSV（翻訳業務の随意契約 S003・S007）も出る。"""
+    lead = prepare(repo, synthetic_run)
+    text = (repo / render.render_lead(repo, synthetic_run, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    listing = text.split("### 資料の一覧")[1].split("## 4")[0]
+    assert "- S003：" in listing and "- S007：" in listing

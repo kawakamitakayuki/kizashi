@@ -920,7 +920,10 @@ def record(root: Path, run_id: str, arg: str) -> dict:
     conn = ledger.open_rw(root, run_id)
     accepted: Path | None = None
     try:
-        adapter = load_adapter(root, _domain(conn, run_id))
+        domain = _domain(conn, run_id)
+        # 版の違う台帳には登録しない（check・render ができず、表の形も違いうる。D-042⑤）
+        check.check_rule_versions(conn, root, run_id, STAGE)
+        adapter = load_adapter(root, domain)
         ctx = Ctx(root=root, run_id=run_id, conn=conn, adapter=adapter, data=proposal.data)
         with ledger.transaction(conn):
             target_id, extra, before = HANDLERS[kind](ctx)

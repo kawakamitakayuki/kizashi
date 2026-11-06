@@ -16,6 +16,7 @@ import pytest
 
 from conftest import ledger_of, rec
 from kizashi import check, cli, hashing
+from kizashi.adapters import load_adapter
 from kizashi.errors import KizashiError
 
 GROUP = "翻訳業務"
@@ -207,7 +208,11 @@ def test_check_passes_and_marks_claims_checked(repo: Path, synthetic_run: str) -
         "SELECT * FROM events WHERE kind = 'check' AND target_id = ?", (lead["lead"],)
     ).fetchone()
     assert json.loads(event["result_json"]) == {"passed": True, "failures": []}
-    assert event["check_hash"] == hashing.check_hash(conn, lead["lead"]) == result["check_hash"]
+    assert (
+        event["check_hash"]
+        == hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement"))
+        == result["check_hash"]
+    )
     conn.close()
 
 
@@ -736,9 +741,9 @@ def test_d041_reconcile_pdf_sha_is_in_check_hash(repo: Path, synthetic_run: str)
     """11章（D-041⑬）：照合の PDF の SHA-256 を変えると、検証記録のハッシュが変わる。"""
     lead = prepare(repo, synthetic_run)
     conn = ledger_of(repo, synthetic_run)
-    before = hashing.check_hash(conn, lead["lead"])
+    before = hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement"))
     conn.execute("UPDATE sources SET sha256 = ? WHERE source_id = 'S002'", ("f" * 64,))
-    assert hashing.check_hash(conn, lead["lead"]) != before
+    assert hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement")) != before
     conn.close()
 
 
@@ -903,22 +908,67 @@ def test_d041_question_purposes(repo: Path, synthetic_run: str) -> None:
     assert check.run_check(repo, synthetic_run, lid)["passed"] is True
 
 
-def test_d041_explanation_needs_recalc_and_residual(repo: Path, synthetic_run: str) -> None:
-    """V8（D-041⑩）：説明の状況「全部」は、説明を反映した値が候補の比べる年度の合計そのもの（calc_from）なら、
-    残る差があっても V8_EXPLANATION_STATUS。別の計算で説明を反映した値を出し、それを引数に含む派生計算を残る差に
-    すれば合格する。範囲不明は、理由・内訳の確認（reason_breakdown）の質問がなければ不合格。"""
-    from conftest import calc_sum
+def fetch_html_evidence(repo: Path, run_id: str, text: str) -> str:
+    """追加資料（HTML）を取得の経路で台帳と data/raw に足し、資料IDを返す（通信はまねる）。"""
+    import httpx
 
+    from kizashi import fetcher
+
+    body = f"<html><body><p>{text}</p></body></html>".encode()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "text/html; charset=utf-8"}, content=body
+        )
+    )
+    url = "https://www.cao.go.jp/test/translation-volume.html"
+    return fetcher.fetch_evidence(repo, run_id, url, "evidence", transport=transport)["source_id"]
+
+
+VOLUME_TEXT = "翻訳の分量を前年度の1.15倍とした。"
+
+
+def adjusted_by_volume(repo: Path, run_id: str, lead: dict) -> tuple[str, str, dict]:
+    """説明を反映した値：資料の倍率（文書値 1.15）×令和6年度の合計＝747,500円（650,000×1.15。手で計算した）。
+    戻り値は (説明を反映した値の計算ID, 文書値の計算ID, 根拠)。"""
+    sid = fetch_html_evidence(repo, run_id, VOLUME_TEXT)
+    evidence = {"source_id": sid, "position": {"page": 1}, "quote": VOLUME_TEXT, "role": "support"}
+    ratio = rec(
+        repo,
+        run_id,
+        {
+            "kind": "doc_value",
+            "lead_id": lead["lead"],
+            **{k: evidence[k] for k in ("source_id", "position", "quote")},
+            "value": "1.15",
+            "label": "翻訳の分量の前年度に対する倍率（公表元の説明）",
+            "unit": "倍",
+        },
+    )["id"]
+    adjusted = rec(
+        repo,
+        run_id,
+        {
+            "kind": "derive",
+            "op": "product",
+            "args": [lead["calc_from"], ratio],
+            "label": "分量の増加を反映した令和7年度の見込みの合計",
+            "unit": "円",
+            "lead_id": lead["lead"],
+        },
+    )
+    assert adjusted["value"] == "747500.00"
+    return adjusted["id"], ratio, evidence
+
+
+def test_d041_explanation_needs_recalc_and_residual(repo: Path, synthetic_run: str) -> None:
+    """V8（D-041⑩・D-042③）：説明の状況「全部」は、説明を反映した値が候補の比べる年度の合計そのもの
+    （calc_from）なら不合格。資料の倍率で説明を反映した値（747,500円）を出し、比較対象（calc_to）との diff を残る差
+    （750,000−747,500＝2,500円）にすれば合格する。範囲不明は、理由・内訳の確認（reason_breakdown）の質問が
+    なければ不合格。"""
     lead = prepare(repo, synthetic_run)
     lid = lead["lead"]
-    support = {"evidence": [T2_EVIDENCE], "searched": "仕様書を確かめた。"}
-    rec(
-        repo,
-        synthetic_run,
-        explanation(
-            lid, "T3", "support", scope="full", recalc_calc_id=lead["calc_from"], **support
-        ),
-    )
+    adjusted, _, evidence = adjusted_by_volume(repo, synthetic_run, lead)
+    support = {"evidence": [evidence], "searched": "公表元の説明を確かめた。"}
     rec(
         repo,
         synthetic_run,
@@ -930,35 +980,33 @@ def test_d041_explanation_needs_recalc_and_residual(repo: Path, synthetic_run: s
             "explanation_status": "full",
         },
     )
-    assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"]
-    adjusted = rec(
-        repo, synthetic_run, calc_sum(GROUP, 2025, label="分量の増加を反映した令和7年度の合計")
-    )["id"]
     residual = rec(
         repo,
         synthetic_run,
         {
             "kind": "derive",
             "op": "diff",
-            "args": [adjusted, lead["calc_from"]],
-            "label": "残る差",
+            "args": [lead["calc_to"], adjusted],
+            "label": "説明を反映した後に残る差",
             "unit": "円",
         },
-    )["id"]
-    rec(
-        repo,
-        synthetic_run,
-        explanation(
-            lid,
-            "T3",
-            "support",
-            scope="full",
-            recalc_calc_id=lead["calc_from"],
-            residual_calc_id=residual,
-            **support,
-        ),
     )
-    assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"]  # 元の合計そのものは不可
+    assert residual["value"] == "2500.00"
+    for recalc in (lead["calc_from"], lead["calc_to"]):  # 比べる年度の合計そのものは不可
+        rec(
+            repo,
+            synthetic_run,
+            explanation(
+                lid,
+                "T3",
+                "support",
+                scope="full",
+                recalc_calc_id=recalc,
+                residual_calc_id=residual["id"],
+                **support,
+            ),
+        )
+        assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"]
     rec(
         repo,
         synthetic_run,
@@ -968,7 +1016,7 @@ def test_d041_explanation_needs_recalc_and_residual(repo: Path, synthetic_run: s
             "support",
             scope="full",
             recalc_calc_id=adjusted,
-            residual_calc_id=residual,
+            residual_calc_id=residual["id"],
             **support,
         ),
     )
@@ -977,7 +1025,7 @@ def test_d041_explanation_needs_recalc_and_residual(repo: Path, synthetic_run: s
         repo,
         synthetic_run,
         explanation(
-            lid, "T3", "support", scope="unknown", no_quant_reason="分量の記載がない。", **support
+            lid, "T3", "support", scope="unknown", no_quant_reason="分量の内訳がない。", **support
         ),
     )
     rec(
@@ -1020,3 +1068,293 @@ def test_d041_t6b_missing_applicable_field_is_unknown(repo: Path, synthetic_run:
         },
     )
     assert check.run_check(repo, synthetic_run, lead["lead"])["t6"]["T6b"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# D-042 の回帰（先に失敗するテストとして書いた）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("how", ["changed", "deleted"])
+def test_d042_required_csv_without_rows_is_dependency(
+    repo: Path, synthetic_run: str, how: str
+) -> None:
+    """V2（D-042①）：S1 の「翻訳業務」は両方式の CSV に依存する。該当する行のない令和7年度の随意契約の CSV（S007）
+    を書き換えるか消しても V2_HASH_MISMATCH。その SHA-256 は検証記録のハッシュにも入る。"""
+    lead = prepare(repo, synthetic_run)
+    conn = ledger_of(repo, synthetic_run)
+    assert "S007" in hashing.dependency_sources(
+        conn, lead["lead"], load_adapter(repo, "cao-procurement")
+    )
+    before = hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement"))
+    conn.execute("UPDATE sources SET sha256 = sha256 WHERE source_id = 'S007'")
+    (sha,) = conn.execute("SELECT sha256 FROM sources WHERE source_id = 'S007'").fetchone()
+    conn.execute("UPDATE sources SET sha256 = ? WHERE source_id = 'S007'", ("e" * 64,))
+    assert hashing.check_hash(conn, lead["lead"], load_adapter(repo, "cao-procurement")) != before
+    conn.rollback()
+    conn.close()
+    raw = repo / "data" / "raw" / f"{sha}.csv"
+    if how == "changed":
+        raw.write_bytes(raw.read_bytes() + b"\r\n")
+    else:
+        raw.unlink()
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, synthetic_run, lead["lead"])
+    assert codes(info) == ["V2_HASH_MISMATCH"] and "S007" in info.value.failures[0]["affected_ids"]
+
+
+def test_d042_string_years_are_rejected_and_not_dropped(repo: Path, synthetic_run: str) -> None:
+    """V1（D-042②）：record は条件の fiscal_year の文字列（"2024"、["2024"]）を E_SCHEMA にする。台帳に整数でない
+    年度があっても、依存する資料を空にせず、series_years のすべての年度を求める。"""
+    from conftest import calc_sum, put
+    from kizashi import record
+
+    for value, op in (("2024", "="), (["2024"], "in"), (True, "=")):
+        data = calc_sum(GROUP, 2024)
+        data["filter"] = [
+            f if f["col"] != "fiscal_year" else {**f, "op": op, "value": value}
+            for f in data["filter"]
+        ]
+        with pytest.raises(KizashiError) as info:
+            record.record(repo, synthetic_run, put(repo, "y.json", data))
+        assert info.value.code == "E_SCHEMA" and "fiscal_year" in info.value.message
+    lead = prepare(repo, synthetic_run)
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE computations SET request_json = json_set(request_json, '$.filter[0].value', '2024')"
+        " WHERE calc_id = ?",
+        (lead["calc_from"],),
+    )
+    conn = ledger_of(repo, synthetic_run)
+    needed = hashing.required_sources(conn, load_adapter(repo, "cao-procurement"), lead["lead"])
+    conn.close()
+    assert needed == [(2024, "kyoso"), (2024, "zuikei"), (2025, "kyoso"), (2025, "zuikei")]
+
+
+def test_d042_amount_residual_must_be_diff_with_comparison(repo: Path, synthetic_run: str) -> None:
+    """V8（D-042③）：金額の候補の残る差に、前の年度の行の件数、説明を反映した値を引数に含む掛け算、元の合計と同じ
+    集計を別のIDで作り直した値との差を使うと V8_EXPLANATION_STATUS。"""
+    from conftest import calc_sum
+
+    lead = prepare(repo, synthetic_run)
+    lid = lead["lead"]
+    adjusted, ratio, evidence = adjusted_by_volume(repo, synthetic_run, lead)
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lid,
+            "outcome": "change",
+            "comparison_state": "comparable",
+            "explanation_status": "full",
+        },
+    )
+    count = rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "calc",
+            "op": "count",
+            "table": "procurement_contracts",
+            "filter": [
+                {"col": "fiscal_year", "op": "=", "value": 2024},
+                {"col": "record_id", "op": "in", "value": [ROW_FROM]},
+            ],
+            "label": "残る行の件数",
+            "unit": "件",
+        },
+    )["id"]
+    product = rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "derive",
+            "op": "product",
+            "args": [adjusted, ratio],
+            "label": "残る差",
+            "unit": "円",
+        },
+    )["id"]
+    duplicate = rec(repo, synthetic_run, calc_sum(GROUP, 2025, label="作り直した令和7年度の合計"))[
+        "id"
+    ]
+    dup_diff = rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "derive",
+            "op": "diff",
+            "args": [duplicate, lead["calc_from"]],
+            "label": "残る差",
+            "unit": "円",
+        },
+    )["id"]
+    for recalc, residual in ((adjusted, count), (adjusted, product), (duplicate, dup_diff)):
+        rec(
+            repo,
+            synthetic_run,
+            explanation(
+                lid,
+                "T3",
+                "support",
+                scope="full",
+                recalc_calc_id=recalc,
+                residual_calc_id=residual,
+                evidence=[evidence],
+                searched="公表元の説明を確かめた。",
+            ),
+        )
+        assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"], (recalc, residual)
+
+
+def s3_lead(repo: Path, run_id: str) -> dict:
+    """S3 の候補「調査研究委託」（令和6年度 S003:000001 → 令和7年度 S007:000001。理由の分類の変化）に、比較成立の
+    必須の中身をそろえる（対応はこの候補の行で登録する）。"""
+    conn = ledger_of(repo, run_id)
+    row = conn.execute(
+        "SELECT * FROM leads WHERE screen_id = 's3_reason_change' AND lead_key = '調査研究委託'"
+    ).fetchone()
+    conn.close()
+    lead = prepare(repo, run_id, lead=row, match="none", conclusion=False)
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "match",
+            "lead_id": lead["lead"],
+            "left": ["S003:000001"],
+            "right": ["S007:000001"],
+            "relation": "1:1",
+            "reason": "件名と業務の内容が同じ。",
+            "evidence": [],
+            "status": "confirmed",
+        },
+    )
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "change",
+            "comparison_state": "comparable",
+            "explanation_status": "part",
+        },
+    )
+    return lead
+
+
+def zuikei_count(repo: Path, run_id: str, year: int, group: str, **extra) -> str:
+    return rec(
+        repo,
+        run_id,
+        {
+            "kind": "calc",
+            "op": "count",
+            "table": "procurement_contracts",
+            "filter": [
+                {"col": "fiscal_year", "op": "=", "value": year},
+                {"col": "group_key", "op": "=", "value": group},
+                {"col": "method_family", "op": "=", "value": "zuikei"},
+            ],
+            "label": "説明を反映した条件で残る随意契約の行の件数",
+            "unit": "件",
+            **extra,
+        },
+    )["id"]
+
+
+def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str) -> None:
+    """V8（D-042③）：金額以外の候補（S3）では、条件をそろえた後に残る行の件数を残る差にできる。比べる年度の1つの
+    fiscal_year、同じ表と単位、候補の計算と違う条件、候補の行の部分集合、判定の根拠がそろえば合格。無関係な業務の
+    行、候補の計算と同じ条件、比べる年度でない年度、根拠のない判定は不合格。"""
+    lead = s3_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    good = zuikei_count(
+        repo, synthetic_run, 2025, "調査研究委託"
+    )  # S007:000001 だけ（候補の行の部分集合）
+    other = zuikei_count(repo, synthetic_run, 2025, "通訳業務")  # S007:000004（候補の行でない）
+    old_year = zuikei_count(repo, synthetic_run, 2023, "調査研究委託")  # 比べる年度でない
+    same = rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "calc",
+            "op": "count",
+            "table": "procurement_contracts",
+            "filter": [
+                {"col": "fiscal_year", "op": "=", "value": 2025},
+                {"col": "record_id", "op": "in", "value": ["S007:000001"]},
+            ],
+            "label": "候補の計算と同じ条件の件数",
+            "unit": "件",
+        },
+    )["id"]
+    support = {"evidence": [T2_EVIDENCE], "searched": "公募の要領を確かめた。"}
+    for residual in (other, old_year, same):
+        rec(
+            repo,
+            synthetic_run,
+            explanation(
+                lid,
+                "T1",
+                "support",
+                scope="part",
+                recalc_calc_id=residual,
+                residual_calc_id=residual,
+                **support,
+            ),
+        )
+        expected = ["V8_EXPLANATION_STATUS"]
+        if residual == old_year:  # 令和5年度の計算は、取得していない令和5年度の資料にも依存する
+            expected = ["V1_RUN_FAILED", "V8_EXPLANATION_STATUS"]
+        assert failing(repo, synthetic_run, lid) == expected, residual
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lid,
+            "T1",
+            "support",
+            scope="part",
+            recalc_calc_id=good,
+            residual_calc_id=good,
+            evidence=[],
+            searched="公募の要領を確かめた。",
+        ),
+    )
+    assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"]  # 根拠がない
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lid,
+            "T1",
+            "support",
+            scope="part",
+            recalc_calc_id=good,
+            residual_calc_id=good,
+            **support,
+        ),
+    )
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+
+
+def test_d042_record_on_other_rule_version_is_typed(repo: Path, synthetic_run: str) -> None:
+    """4.5（D-042⑤）：規則の版がいまと違う台帳への record は、SQL の例外ではなく E_RULE_VERSION（終了コード3）で
+    拒否し、提案を inbox/ に残す。"""
+    from conftest import calc_sum, put
+    from kizashi import record
+
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE runs SET rule_versions_json = json_set(rule_versions_json, '$.rules_version', '0')",
+    )
+    arg = put(repo, "c.json", calc_sum(GROUP, 2024))
+    with pytest.raises(KizashiError) as info:
+        record.record(repo, synthetic_run, arg)
+    assert (info.value.code, info.value.exit_code) == ("E_RULE_VERSION", 3)
+    assert (repo / arg).is_file()

@@ -69,6 +69,14 @@ class BaseResult:
     null_rows: int
 
 
+# 条件の値を整数に限る列（D-042②。年度の文字列で依存する資料が分からなくならないように）
+INTEGER_COLUMNS = frozenset({"fiscal_year"})
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _scalar_ok(value: object) -> bool:
     return isinstance(value, (str, int)) and not isinstance(value, bool)
 
@@ -136,6 +144,14 @@ def build_query(
         if keys != {"col", "op", "value"}:
             raise _err("E_SCHEMA", 'filter の要素は {"col", "op", "value"} の形で書く。')
         value = item["value"]
+        if col in INTEGER_COLUMNS and not (
+            all(_is_int(v) for v in value) if isinstance(value, list) else _is_int(value)
+        ):
+            raise _err(
+                "E_SCHEMA",
+                f'{col} の value は整数（in は整数の配列）で書く：{value!r}（"2024" のような文字列は使えない）',
+                next_action="年度は西暦の整数で書く（例：2024）。",
+            )
         if fop == "in":
             if (
                 not isinstance(value, list)
