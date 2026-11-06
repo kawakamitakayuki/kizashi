@@ -384,6 +384,41 @@ def test_d042_rule_files_state_detects_added_deleted_changed(tmp_path: Path) -> 
     assert state["changed"] == ["CLAUDE.md"]
 
 
+def test_d043_japanese_rule_file_names(tmp_path: Path) -> None:
+    """3.5（D-043③）：日本語名の Skill の補助ファイルも、変更なし・追加・削除・内容の変更をコミットと照らせる
+    （git の引用・エスケープしたパスを読まない）。"""
+    import shutil
+
+    from kizashi import versions
+
+    if shutil.which("git") is None:
+        pytest.skip("git がない")
+    root = tmp_path / "rules"
+    helper = root / ".claude" / "skills" / "review-lead" / "判断基準.md"
+    helper.parent.mkdir(parents=True)
+    (root / "CLAUDE.md").write_text("テスト用のルール\n", encoding="utf-8")
+    helper.write_text("テスト用の判断基準\n", encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "CLAUDE.md", ".claude")
+    _git(root, "commit", "-qm", "合成の基準")
+    commit = _git(root, "rev-parse", "HEAD")
+    rel = ".claude/skills/review-lead/判断基準.md"
+
+    def state() -> tuple:
+        r = versions.rule_files_record(root, commit)
+        return r["matches_commit"], r["added"], r["deleted"], r["changed"]
+
+    assert state() == (True, [], [], [])
+    added = root / ".claude" / "skills" / "review-lead" / "新しい手順.md"
+    added.write_text("足した手順\n", encoding="utf-8")
+    assert state() == (False, [".claude/skills/review-lead/新しい手順.md"], [], [])
+    added.unlink()
+    helper.write_text("書き換えた判断基準\n", encoding="utf-8")
+    assert state() == (False, [], [], [rel])
+    helper.unlink()
+    assert state() == (False, [], [rel], [])
+
+
 def _start_with_rule_files(repo: Path) -> str:
     from conftest import Site, write_config
     from kizashi import runner

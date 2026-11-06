@@ -128,6 +128,7 @@ CREATE TABLE explanations (
   searched TEXT,
   recalc_calc_id TEXT REFERENCES computations(calc_id),
   residual_calc_id TEXT REFERENCES computations(calc_id),
+  reflected_conditions_json TEXT,
   scope TEXT CHECK (scope IN ('full','part','unknown')),
   no_quant_reason TEXT,
   context TEXT NOT NULL DEFAULT 'main_session',

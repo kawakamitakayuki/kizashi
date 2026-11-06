@@ -126,7 +126,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 
 - **照合するもの**：`dataset_yaml_sha256`、`sql_sha256`、`rules_version`、`parser_version`。`check` と `render` は毎回いまの値と照らし、違えば `E_RULE_VERSION` で止まり、新しい実行を求める（設計書4.2）。
 - **記録だけのもの**：`code_version` と `git_commit`。開発中のコミットのたびに既存の実行が使えなくなるのを避けるためである。
-- **Skill とルールのファイル**（記録だけ。D-042④）：`run` の開始時に、`CLAUDE.md` と `.claude/skills/` の Markdown の一覧と SHA-256 を `rule_files`（`{"files": {"<パス>": "<SHA-256>"}, "commit": "<git_commit>", "matches_commit": true / false / null, "added": [...], "deleted": [...], "changed": [...]}`）に書く。`added`・`deleted`・`changed` は、記録したコミットのファイルの一覧と内容に比べた追加・削除・変更（ファイルの一覧も照らす）。確かめられなければ `matches_commit` を null にする。開始時の記録は上書きしない。
+- **Skill とルールのファイル**（記録だけ。D-042④）：`run` の開始時に、`CLAUDE.md` と `.claude/skills/` の Markdown の一覧と SHA-256 を `rule_files`（`{"files": {"<パス>": "<SHA-256>"}, "commit": "<git_commit>", "matches_commit": true / false / null, "added": [...], "deleted": [...], "changed": [...]}`）に書く。`added`・`deleted`・`changed` は、記録したコミットのファイルの一覧と内容に比べた追加・削除・変更（ファイルの一覧も照らす。一覧は `git ls-tree -z` の NUL 区切りで読み、日本語などのパスを引用・エスケープの形で扱わない。D-043③）。確かめられなければ `matches_commit` を null にする。開始時の記録は上書きしない。
 - `rules_version`（`versions.py` の定数）と `parser_version`（`dataset.yaml`）は、正規化・照合・検証の結果を変えるコードの変更をしたときに、人が手で上げる。上げ忘れを防ぐため、テストの期待値を変えたときは上げる、と共通ルールに書く。
 - Claude Codeの版は、`scripts/investigate` が環境変数 `KIZASHI_CLAUDE_VERSION` に入れ、`run` が記録する。モデル名は `investigate` のSkillが `run_config` に書かせる（6.2）。
 
@@ -294,7 +294,7 @@ kizashi record <run_id> inbox/<名前>.json
 - V7の数値と氏名の検査（9章）を、Claudeが書く文字列に対して行う。不合格なら登録しない（巡回数は使わない）。強い語は警告。
 - 1つのトランザクションで登録し、成功したら提案を `accepted/<連番>-<kind>.json` に写して消す。失敗したら提案を残し、直す箇所を返す。
 - `events` に `record` を記録する。
-- 最初に規則の版を照らし（3.5）、違えば `E_RULE_VERSION`（終了コード3）で拒否する（版の違う台帳に登録しても `check`・`render` ができないため。古い台帳の表の形の違いを SQL の例外にしない。D-042⑤）。
+- 最初に規則の版を照らし（3.5の照合する4つ。`check`・`render` と同じ）、違えば `E_RULE_VERSION`（終了コード3）で拒否する（版の違う台帳に登録しても `check`・`render` ができないため。古い台帳の表の形の違いを SQL の例外にしない。D-042⑤）。提案は `inbox/` に残し、台帳（開始時の版を含む）を変えず、`next_action` で新しい実行が要ることを示す。記録だけのもの（`code_version`・`git_commit`・Skill とルールのファイル）の違いでは拒否しない（D-043④）。
 
 ### 4.6 `check`
 
@@ -483,6 +483,7 @@ CREATE TABLE explanations (
   searched TEXT,
   recalc_calc_id TEXT REFERENCES computations(calc_id),
   residual_calc_id TEXT REFERENCES computations(calc_id),
+  reflected_conditions_json TEXT,
   scope TEXT CHECK (scope IN ('full','part','unknown')),
   no_quant_reason TEXT,
   context TEXT NOT NULL DEFAULT 'main_session',
@@ -534,7 +535,7 @@ CREATE TABLE events (
 | `hypothesis` | `lead_id`、`text`、`withdraw_if`。結果を書くときは `result`（`kept` / `withdrawn`） | 最初の登録で候補を `investigating` にする（調べる候補が3件を超えるなら `E_LIMIT_LEADS`） |
 | `match` | `lead_id`、`left`・`right`（`row_ref` の配列）、`relation`（`1:1` / `1:n` / `n:1` / `n:m`）、`reason`、`evidence`、`status`（`confirmed` / `pending`） | 分野の対応表に登録する |
 | `claim` | `lead_id`、`type`、`text`、`calc_ids`、`evidence`。`type` が `record` のときは `fiscal_year` | 主張を `draft` で登録する |
-| `explanation` | `lead_id`、`type`（T1〜T5、T6c）、`judgment`、`evidence`、`searched`。支持のT1・T3・T4では `scope` と、`recalc_calc_id` または `no_quant_reason`。任意で `residual_calc_id`（説明を反映した後に残る差、または条件をそろえた後に残る行の件数の計算ID。説明の状況を「全部」「一部」にするときは必須。9章の `V8_EXPLANATION_STATUS`。D-041⑩） | 型ごとに上書きする（前の値は `events` に残る）。T6a・T6bはCLIが照合の計算から登録するため、提案では受け付けない（9章の末尾） |
+| `explanation` | `lead_id`、`type`（T1〜T5、T6c）、`judgment`、`evidence`、`searched`。支持のT1・T3・T4では `scope` と、`recalc_calc_id` または `no_quant_reason`。任意で `residual_calc_id`（説明を反映した後に残る差、または条件をそろえた後に残る行の件数の計算ID。説明の状況を「全部」「一部」にするときは必須。9章の `V8_EXPLANATION_STATUS`。D-041⑩）と `reflected_conditions`（説明によって足した・変えた条件。`filter` の要素の形の配列。金額以外の候補で残る件数を残る差にするときは必須。D-043②） | 型ごとに上書きする（前の値は `events` に残る）。T6a・T6bはCLIが照合の計算から登録するため、提案では受け付けない（9章の末尾） |
 | `question` | `lead_id`、`to`、`question`、`documents`、`decision_impact`、`purposes`（質問の目的の空でない配列：`verify_record` 元の記載の確認、`reason_breakdown` 理由・内訳の確認、`missing_documents` 不足資料の照会、`other` そのほか。D-041⑩）。任意で `foia` | `leads.questions_json` に足す |
 | `coefficient` | `lead_id`、`key`（短い名前）、`value`（十進数の文字列）、`meaning`、`why_needed`、`apply_to`（どの計算にどう使うか）、`basis`（推測の手がかり。6.4）、`status`（`proposed` / `accepted` / `declined`）。`accepted`・`declined` では `reporter_note`（記者の判断の要約） | 係数の提案として `leads.coefficients_json` に `(lead_id, key)` で上書きする（前の値は `events` に残る）。計算には使わない（6.4。D-012） |
 | `conclusion` | `lead_id`、`outcome`、`comparison_state`。`change` なら `explanation_status`、`adjusted` なら `adjustment`（方法、補正前後の計算ID）、`hold` なら `hold_reason`。任意で `reopen_condition`、`comparison`（比較の条件のうち既定値と違うもの） | 結論の案として登録する。`comparison` は `leads.comparison_json` に上書きする。確定は `render` |
@@ -696,8 +697,9 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 **説明を反映した値と残る差**（`V8_EXPLANATION_STATUS`。D-042③）：
 - 金額の候補（候補の `metric` が `<列>_sum`、または `calc_from` が合計）：残る差は、説明を反映した値（`recalc_calc_id`）と比較対象（`calc_from` か `calc_to`）の `diff` の派生計算だけとする（`diff(説明を反映した値, 比較対象)` か `diff(比較対象, 説明を反映した値)`。メモに比較対象と引き算の向きを出す）。説明を反映した値・比較対象・残る差の単位は同じ。掛け算などを残る差としては受け付けない。件数を残る差にしない。
 - 説明を反映した値は、候補の比べる2年度・系列の計算と同じ集計であってはならない。同じ集計かは、値ではなく、基礎集計なら表・演算・列・対象行（`row_refs`）、派生計算なら演算と引数で判定する（別のIDで作り直した同じ集計を拒否する）。
-- 金額以外の候補（方式・理由の変化など）：残る差は、条件をそろえた後に残る行を数えた基礎集計の件数でもよい。その計算は、候補の比べる年度のどちらか1つの `fiscal_year` を条件に持ち、表と単位が候補の計算と同じで、条件（`filter`）がその年度の候補の計算と違い（説明を反映した条件が記録されている）、対象行がその年度の候補の行の部分集合であること（無関係な業務・年度の行を数えない）。件数が減ることは求めない。説明を反映した値は、この件数そのものでよい。
-- どちらでも、その判定（支持の T1・T3・T4）に根拠（`evidence`）があること（説明を反映した条件の根拠）。
+- 金額以外の候補（方式・理由の変化など）：残る差は、条件をそろえた後に残る行を数えた基礎集計の件数とし、P0では説明を反映した値と同じ計算にする（`recalc_calc_id` = `residual_calc_id`。別の計算を説明を反映した値にしない。D-043①）。その計算は、候補の比べる年度のどちらか1つの `fiscal_year` を条件に持ち、表と単位が候補の計算と同じで、対象行がその年度の候補の行の部分集合であること（無関係な業務・年度の行を数えない）。件数が減ることは求めない。
+- 判定には、説明によって足した・変えた条件を `reflected_conditions` に書く。それぞれの条件は、残る件数の条件にあり、その年度の候補の計算の条件になく、候補を選び直すだけの列（`fiscal_year`・`record_id`・`group_key`）の条件でないこと（条件の書き換えだけを説明の反映としない。D-043②）。条件を比べる前に、単純な同値の表現をそろえる：重複した条件を1つにし、`in` の値を並べて重複を除き、値が1つの `in` を `=` にする。一般の条件式の意味の同値までは判定しない。
+- どちらでも、その判定（支持の T1・T3・T4）に根拠（`evidence`）があること。CLI が確かめるのは根拠の引用が資料にあることまでで、根拠が説明を裏付けるかは `review-lead` と記者が確かめる。
 
 **メモに出る計算**（V2・V3・11章で共有。D-041③⑧）：候補が持つ計算、`calc_from`・`calc_to`・系列、主張の `calc_ids`、補正の前後、判定の再計算と残る差、派生計算が参照する計算（入れ子）と、メモが `{calc:ID}` を展開する欄のすべての参照。展開する欄は、主張の本文、判定の `searched`・`no_quant_reason`、仮説・取り下げ条件・候補の注記・再開の条件、質問のすべての文字列、比較の条件の6項目、補正の方法、係数の提案の文字列、対応の理由で、`render` は同じ一覧を展開する。取り下げた計算への参照は `V2_STALE_OR_WITHDRAWN`。
 
@@ -731,6 +733,7 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 - 6つの型と状態は日本語の名前で表示する（T1 制度・定義の変更、T2 集計範囲・期間の違い、T3 業務・数量の変化、T4 価格・市場の条件、T5 主体の同一性、T6a 取り込みの誤り、T6b 公表形式間の食い違い、T6c 元の記載の誤り。支持・否定・未確認・対象外）。
 - 「CSVとPDFの一致は元の記載の正しさを示さない」を5節に定型文で入れる。
 - 母集団の絞り込み（6.3）があれば、1節に記者の指示と条件を出す。係数の提案（6.4）は4節と7節の先頭に出す。
+- 4節の判定には、説明を反映した値、残る差（金額の候補は比較対象と引き算の向き、金額以外の候補は残る行）、説明によって足した・変えた条件（`reflected_conditions`）を出す（D-043②）。
 - 3節の末尾に「資料の一覧」を置き、検証が依存する資料（9章）のすべてについて、資料ID、URL、取得日時、保存場所（`data/raw/<sha256>.<拡張子>`）、SHA-256を出す。引用と行の表示は資料IDでこの一覧を引く（D-041⑭）。
 - 8節の版：Skill とルールのファイル（`CLAUDE.md`、`.claude/skills/` の Markdown）は、開始時の記録（3.5の `rule_files`。コミットとの一致を含む）と、`render` の時点の一覧・ハッシュを分けて出し、開始時からの追加・削除・変更を書く。開始時の記録のない実行は「未記録」とし、`render` の時点の値で補わない（D-041⑭・D-042④）。
 - 7節の各行：ファイル名、手元の原本の場所（`data/raw/<sha256>.csv`）、「NO」の値、表計算ソフトで開いたときの行番号（見出し4行＋論理レコード番号。セル内の改行がある行より後はずれうるため「目安」と書く）、PDFのページ、確かめる項目と値。照合できなかった行と項目を先頭に置く。

@@ -1266,34 +1266,111 @@ def zuikei_count(repo: Path, run_id: str, year: int, group: str, **extra) -> str
     )["id"]
 
 
-def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str) -> None:
-    """V8（D-042③）：金額以外の候補（S3）では、条件をそろえた後に残る行の件数を残る差にできる。比べる年度の1つの
-    fiscal_year、同じ表と単位、候補の計算と違う条件、候補の行の部分集合、判定の根拠がそろえば合格。無関係な業務の
-    行、候補の計算と同じ条件、比べる年度でない年度、根拠のない判定は不合格。"""
-    lead = s3_lead(repo, synthetic_run)
-    lid = lead["lead"]
-    good = zuikei_count(
-        repo, synthetic_run, 2025, "調査研究委託"
-    )  # S007:000001 だけ（候補の行の部分集合）
-    other = zuikei_count(repo, synthetic_run, 2025, "通訳業務")  # S007:000004（候補の行でない）
-    old_year = zuikei_count(repo, synthetic_run, 2023, "調査研究委託")  # 比べる年度でない
-    same = rec(
+RULE_TEXT = "令和7年度から、調査研究の委託は企画競争により相手方を選ぶこととした。"
+PLANNING = {"col": "reason_category", "op": "=", "value": "planning_competition"}
+
+
+def count_2025(repo: Path, run_id: str, filters: list[dict]) -> str:
+    return rec(
         repo,
-        synthetic_run,
+        run_id,
         {
             "kind": "calc",
             "op": "count",
             "table": "procurement_contracts",
-            "filter": [
-                {"col": "fiscal_year", "op": "=", "value": 2025},
-                {"col": "record_id", "op": "in", "value": ["S007:000001"]},
-            ],
-            "label": "候補の計算と同じ条件の件数",
+            "filter": filters,
+            "label": "説明を反映した条件で残る行の件数",
             "unit": "件",
         },
     )["id"]
-    support = {"evidence": [T2_EVIDENCE], "searched": "公募の要領を確かめた。"}
-    for residual in (other, old_year, same):
+
+
+def rule_change_evidence(repo: Path, run_id: str) -> dict:
+    """条件の変更（企画競争）を裏付ける合成の追加資料（取得の経路で data/raw に保存する）。"""
+    sid = fetch_html_evidence(repo, run_id, RULE_TEXT)
+    return {"source_id": sid, "position": {"page": 1}, "quote": RULE_TEXT, "role": "support"}
+
+
+def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str) -> None:
+    """V8（D-042③・D-043①②）：金額以外の候補（S3「調査研究委託」。令和6年度は公募、令和7年度は企画競争）では、
+    条件をそろえた後に残る行の件数を、説明を反映した値と残る差の両方にできる。条件は fiscal_year = 2025・
+    group_key・説明によって足した reason_category = planning_competition（S007:000001 だけ。候補の行の部分集合）。
+    根拠は企画競争への変更を書いた合成の追加資料。合格し、メモの4節に足した条件が出る。"""
+    lead = s3_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    good = count_2025(
+        repo,
+        synthetic_run,
+        [
+            {"col": "fiscal_year", "op": "=", "value": 2025},
+            {"col": "group_key", "op": "=", "value": "調査研究委託"},
+            PLANNING,
+        ],
+    )
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lid,
+            "T1",
+            "support",
+            scope="part",
+            recalc_calc_id=good,
+            residual_calc_id=good,
+            reflected_conditions=[PLANNING],
+            evidence=[evidence],
+            searched="公表元の告知を確かめた。",
+        ),
+    )
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    from kizashi import render
+
+    text = (repo / render.render_lead(repo, synthetic_run, lid)["memo"]).read_text(encoding="utf-8")
+    assert "説明によって足した・変えた条件：reason_category = planning_competition" in text
+    assert "条件をそろえた後に残る行：S007:000001" in text
+
+
+def test_d043_non_amount_residual_rejects_rewrites_and_unrelated(
+    repo: Path, synthetic_run: str
+) -> None:
+    """V8（D-043①②）：金額以外の候補で、説明を反映した値に無関係な業務の金額（翻訳業務の令和6年度の合計）を使う、
+    元の fiscal_year の条件を重ねただけ、値が1つの in を = に書き換えただけ、候補を選び直すだけの group_key の条件、
+    残る件数の条件にない条件を足したと書く、足した条件を書かない、のどれも V8_EXPLANATION_STATUS。"""
+    from conftest import calc_sum
+
+    lead = s3_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run)
+    fy = {"col": "fiscal_year", "op": "=", "value": 2025}
+    good = count_2025(
+        repo,
+        synthetic_run,
+        [fy, {"col": "group_key", "op": "=", "value": "調査研究委託"}, PLANNING],
+    )
+    unrelated = rec(repo, synthetic_run, calc_sum(GROUP, 2024, label="翻訳業務の令和6年度の合計"))[
+        "id"
+    ]
+    doubled = count_2025(
+        repo, synthetic_run, [fy, fy, {"col": "record_id", "op": "in", "value": ["S007:000001"]}]
+    )
+    rewritten = count_2025(
+        repo, synthetic_run, [fy, {"col": "record_id", "op": "=", "value": "S007:000001"}]
+    )
+    regroup = count_2025(
+        repo, synthetic_run, [fy, {"col": "group_key", "op": "=", "value": "調査研究委託"}]
+    )
+    open_call = {"col": "reason_category", "op": "=", "value": "open_call"}
+    cases = [
+        (unrelated, good, [PLANNING]),
+        (doubled, doubled, [fy]),
+        (rewritten, rewritten, [{"col": "record_id", "op": "=", "value": "S007:000001"}]),
+        (regroup, regroup, [{"col": "group_key", "op": "=", "value": "調査研究委託"}]),
+        (good, good, [open_call]),  # 残る件数の条件にない
+        (good, good, None),  # 足した条件を書かない
+    ]
+    for recalc, residual, reflected in cases:
+        extra = {} if reflected is None else {"reflected_conditions": reflected}
         rec(
             repo,
             synthetic_run,
@@ -1302,59 +1379,70 @@ def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str)
                 "T1",
                 "support",
                 scope="part",
-                recalc_calc_id=residual,
+                recalc_calc_id=recalc,
                 residual_calc_id=residual,
-                **support,
+                evidence=[evidence],
+                searched="公表元の告知を確かめた。",
+                **extra,
             ),
         )
-        expected = ["V8_EXPLANATION_STATUS"]
-        if residual == old_year:  # 令和5年度の計算は、取得していない令和5年度の資料にも依存する
-            expected = ["V1_RUN_FAILED", "V8_EXPLANATION_STATUS"]
-        assert failing(repo, synthetic_run, lid) == expected, residual
-    rec(
-        repo,
-        synthetic_run,
-        explanation(
-            lid,
-            "T1",
-            "support",
-            scope="part",
-            recalc_calc_id=good,
-            residual_calc_id=good,
-            evidence=[],
-            searched="公募の要領を確かめた。",
-        ),
-    )
-    assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"]  # 根拠がない
-    rec(
-        repo,
-        synthetic_run,
-        explanation(
-            lid,
-            "T1",
-            "support",
-            scope="part",
-            recalc_calc_id=good,
-            residual_calc_id=good,
-            **support,
-        ),
-    )
-    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+        assert failing(repo, synthetic_run, lid) == ["V8_EXPLANATION_STATUS"], (
+            recalc,
+            residual,
+            reflected,
+        )
+
+
+def test_d043_reflected_conditions_are_validated_at_record(repo: Path, synthetic_run: str) -> None:
+    """6.2（D-043②）：reflected_conditions は filter の要素の形で、使える列・演算・整数の年度だけ（record で検査）。"""
+    from conftest import put
+    from kizashi import record
+
+    lead = s3_lead(repo, synthetic_run)
+    for bad in (
+        "reason_category",
+        [{"col": "nosuch", "op": "=", "value": 1}],
+        [{"col": "fiscal_year", "op": "=", "value": "2025"}],
+    ):
+        data = explanation(lead["lead"], "T1", "unknown", reflected_conditions=bad)
+        with pytest.raises(KizashiError) as info:
+            record.record(repo, synthetic_run, put(repo, "e.json", data))
+        assert info.value.code in ("E_SCHEMA", "E_NOT_ALLOWED_COLUMN"), bad
 
 
 def test_d042_record_on_other_rule_version_is_typed(repo: Path, synthetic_run: str) -> None:
-    """4.5（D-042⑤）：規則の版がいまと違う台帳への record は、SQL の例外ではなく E_RULE_VERSION（終了コード3）で
-    拒否し、提案を inbox/ に残す。"""
+    """4.5（D-042⑤・D-043④）：照合する4つの版がいまと違う台帳への record は、SQL の例外ではなく E_RULE_VERSION
+    （終了コード3）で拒否し、提案を inbox/ に残し、台帳（開始時の版）を変えず、新しい実行が要ることを示す。
+    記録だけのもの（git のコミット、Skill とルールのファイル）の違いでは拒否しない。"""
     from conftest import calc_sum, put
     from kizashi import record
 
     tamper(
         repo,
         synthetic_run,
+        "UPDATE runs SET rule_versions_json = json_set(rule_versions_json, '$.git_commit', 'abc1234',"
+        ' \'$.rule_files\', json(\'{"files": {"CLAUDE.md": "00"}}\'))',
+    )
+    assert (
+        record.record(repo, synthetic_run, put(repo, "ok.json", calc_sum(GROUP, 2024)))["kind"]
+        == "calc"
+    )
+    tamper(
+        repo,
+        synthetic_run,
         "UPDATE runs SET rule_versions_json = json_set(rule_versions_json, '$.rules_version', '0')",
     )
-    arg = put(repo, "c.json", calc_sum(GROUP, 2024))
+    conn = ledger_of(repo, synthetic_run)
+    before = conn.execute("SELECT rule_versions_json FROM runs").fetchone()[0]
+    n_calcs = conn.execute("SELECT COUNT(*) FROM computations").fetchone()[0]
+    conn.close()
+    arg = put(repo, "c.json", calc_sum(GROUP, 2025))
     with pytest.raises(KizashiError) as info:
         record.record(repo, synthetic_run, arg)
     assert (info.value.code, info.value.exit_code) == ("E_RULE_VERSION", 3)
+    assert "新しい実行" in info.value.next_action and "rules_version" in info.value.message
     assert (repo / arg).is_file()
+    conn = ledger_of(repo, synthetic_run)
+    assert conn.execute("SELECT rule_versions_json FROM runs").fetchone()[0] == before
+    assert conn.execute("SELECT COUNT(*) FROM computations").fetchone()[0] == n_calcs
+    conn.close()
