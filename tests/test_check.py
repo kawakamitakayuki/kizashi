@@ -153,6 +153,25 @@ def prepare(
     return {"lead": lid, "observation": observation, "record": record_claim, **dict(lead)}
 
 
+@pytest.fixture(autouse=True)
+def many_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """このファイルのテストは、ほかの検査を確かめるために同じ結論の案で何度も check する。巡回数の上限
+    （E_ROUNDS_EXCEEDED）はここでは確かめず、test_rounds.py（CK-3）で確かめるため、上限を大きくする。"""
+    from kizashi import limits
+
+    monkeypatch.setattr(limits, "MAX_ROUNDS", 99)
+
+
+def withdraw_comparison(repo: Path, run_id: str, lead: dict) -> None:
+    """比較の条件を unresolved（確定できない）にする前に、両年度を比べる主張（prepare の観測）を取り下げる。
+    同種と確かめられなければ、比較の主張は残さない（V5_UNRESOLVED_COMPARISON。設計書5.3）。"""
+    rec(
+        repo,
+        run_id,
+        {"kind": "withdraw", "target": lead["observation"], "reason": "同種と確かめられない。"},
+    )
+
+
 def codes(info: pytest.ExceptionInfo) -> list[str]:
     return [f["code"] for f in info.value.failures]
 
@@ -343,6 +362,7 @@ def test_ck5_match_must_cover_both_years(repo: Path, synthetic_run: str, case: s
         check.run_check(repo, synthetic_run, lead["lead"])
     assert codes(info) == ["V8_MATCH_UNCONFIRMED"]
     assert ROW_TO in info.value.failures[0]["affected_ids"]
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,
@@ -389,6 +409,7 @@ def test_cp1_pending_coefficient_blocks_change(
         assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
         return
     assert failing(repo, synthetic_run, lead["lead"]) == ["V8_COEFFICIENT_PENDING"]
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,
@@ -585,7 +606,7 @@ def test_ck1_v8_required_and_withdraw_result(repo: Path, synthetic_run: str) -> 
 
 def test_ck1_v8_questions_and_types(repo: Path, synthetic_run: str) -> None:
     """CK-1：比較成立で取材質問がなければ V8_T6C_QUESTION と V8_REQUIRED_MISSING。型の判定が欠ければ
-    V8_REQUIRED_MISSING。"""
+    V6_TYPE_MISSING と V8_REQUIRED_MISSING（6つの型の判定は V6 の検査で、2.1 の必須の中身でもある）。"""
     lead = prepare(repo, synthetic_run)
     tamper(
         repo,
@@ -619,13 +640,14 @@ def test_ck1_v8_questions_and_types(repo: Path, synthetic_run: str) -> None:
     tamper(repo, synthetic_run, "DELETE FROM explanations WHERE type = 'T4'")
     with pytest.raises(KizashiError) as info:
         check.run_check(repo, synthetic_run, lead["lead"])
-    assert codes(info) == ["V8_REQUIRED_MISSING"] and "T4" in info.value.message
+    assert codes(info) == ["V6_TYPE_MISSING", "V8_REQUIRED_MISSING"] and "T4" in info.value.message
 
 
 def test_ck1_v8_change_not_negated_and_explanation_status(repo: Path, synthetic_run: str) -> None:
     """CK-1：比較成立で T2 が否定されていなければ V8_CHANGE_NOT_NEGATED。T3 が支持なのに説明の状況が
-    「なし」なら V8_EXPLANATION_STATUS。"""
+    「なし」なら V8_EXPLANATION_STATUS（支持の根拠には公表元の資料の位置を付ける。V6）。"""
     lead = prepare(repo, synthetic_run)
+    volume = fetch_html_evidence(repo, synthetic_run, VOLUME_TEXT)
     rec(repo, synthetic_run, explanation(lead["lead"], "T2", "unknown"))
     assert failing(repo, synthetic_run, lead["lead"]) == ["V8_CHANGE_NOT_NEGATED"]
     rec(
@@ -642,6 +664,14 @@ def test_ck1_v8_change_not_negated_and_explanation_status(repo: Path, synthetic_
             "support",
             scope="unknown",
             no_quant_reason="仕様書に分量の記載がない。",
+            evidence=[
+                {
+                    "source_id": volume,
+                    "position": {"page": 1},
+                    "quote": VOLUME_TEXT,
+                    "role": "support",
+                }
+            ],
         ),
     )
     assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
@@ -649,7 +679,8 @@ def test_ck1_v8_change_not_negated_and_explanation_status(repo: Path, synthetic_
 
 def test_ck1_v8_artifact_and_hold(repo: Path, synthetic_run: str) -> None:
     """CK-1：見かけの変化で、T2・T5・T6a・T6b のどれも根拠付きで支持されていなければ V8_ARTIFACT_NO_FACTOR。
-    T2 を根拠付きで支持すれば合格。保留で取材質問がなければ V8_HOLD_REASON。"""
+    T2 の支持の根拠が候補の行そのもの（契約日の欄）だけなら V6_SELF_EVIDENCE。公表元の資料の位置を根拠に
+    T2 を支持すれば合格。保留で取材質問がなければ V8_HOLD_REASON。"""
     lead = prepare(repo, synthetic_run)
     rec(
         repo,
@@ -663,7 +694,28 @@ def test_ck1_v8_artifact_and_hold(repo: Path, synthetic_run: str) -> None:
     )
     assert failing(repo, synthetic_run, lead["lead"]) == ["V8_ARTIFACT_NO_FACTOR"]
     rec(repo, synthetic_run, explanation(lead["lead"], "T2", "support", evidence=[T2_EVIDENCE]))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V6_SELF_EVIDENCE"]
+    period = fetch_html_evidence(repo, synthetic_run, PERIOD_TEXT)
+    rec(
+        repo,
+        synthetic_run,
+        explanation(
+            lead["lead"],
+            "T2",
+            "support",
+            evidence=[
+                T2_EVIDENCE,
+                {
+                    "source_id": period,
+                    "position": {"page": 1},
+                    "quote": PERIOD_TEXT,
+                    "role": "support",
+                },
+            ],
+        ),
+    )
     assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,
@@ -695,6 +747,7 @@ def test_check_collects_all_failures_and_counts_rounds(repo: Path, synthetic_run
     assert codes(info) == ["V1_RUN_FAILED", "V2_STALE_OR_WITHDRAWN"]
     assert info.value.code == "V1_RUN_FAILED"
     assert lead_row(repo, synthetic_run)["rounds"] == 1
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,
@@ -888,6 +941,7 @@ def test_d041_question_purposes(repo: Path, synthetic_run: str) -> None:
     assert info.value.code == "E_SCHEMA"
     rec(repo, synthetic_run, {**question, "purposes": ["other"]})
     assert failing(repo, synthetic_run, lid) == ["V8_T6C_QUESTION"]
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,
@@ -925,6 +979,7 @@ def fetch_html_evidence(repo: Path, run_id: str, text: str) -> str:
 
 
 VOLUME_TEXT = "翻訳の分量を前年度の1.15倍とした。"
+PERIOD_TEXT = "令和7年度の公表データには、令和6年度末に締結した契約の一部を含めている。"
 
 
 def adjusted_by_volume(repo: Path, run_id: str, lead: dict) -> tuple[str, str, dict]:
@@ -1080,7 +1135,8 @@ def test_d042_required_csv_without_rows_is_dependency(
     repo: Path, synthetic_run: str, how: str
 ) -> None:
     """V2（D-042①）：S1 の「翻訳業務」は両方式の CSV に依存する。該当する行のない令和7年度の随意契約の CSV（S007）
-    を書き換えるか消しても V2_HASH_MISMATCH。その SHA-256 は検証記録のハッシュにも入る。"""
+    を書き換えるか消しても V2_HASH_MISMATCH。その SHA-256 は検証記録のハッシュにも入る。消した場合は、氏名の一覧
+    を原本から作れないので、check の時点の V7 も不合格（V7_PERSONAL_NAME。検査を飛ばして合格にしない）。"""
     lead = prepare(repo, synthetic_run)
     conn = ledger_of(repo, synthetic_run)
     assert "S007" in hashing.dependency_sources(
@@ -1100,7 +1156,8 @@ def test_d042_required_csv_without_rows_is_dependency(
         raw.unlink()
     with pytest.raises(KizashiError) as info:
         check.run_check(repo, synthetic_run, lead["lead"])
-    assert codes(info) == ["V2_HASH_MISMATCH"] and "S007" in info.value.failures[0]["affected_ids"]
+    expected = ["V2_HASH_MISMATCH"] + (["V7_PERSONAL_NAME"] if how == "deleted" else [])
+    assert codes(info) == expected and "S007" in info.value.failures[0]["affected_ids"]
 
 
 def test_d042_string_years_are_rejected_and_not_dropped(repo: Path, synthetic_run: str) -> None:
@@ -1790,6 +1847,7 @@ def test_d048_applies_to_every_memo_with_a_residual(repo: Path, synthetic_run: s
             reflected_conditions=[NOT_PLANNING],
         ),
     )  # fmt: skip
+    withdraw_comparison(repo, synthetic_run, lead)
     rec(
         repo,
         synthetic_run,

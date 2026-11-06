@@ -85,7 +85,7 @@ def test_v7_findings_collects_fields() -> None:
     )
     assert errors == [
         {"code": "V7_RAW_NUMBER", "field": "text", "hit": "300"},
-        {"code": "V7_PERSONAL_NAME", "field": "text", "at": [7, 11]},
+        {"code": "V7_PERSONAL_NAME", "field": "text", "at": [7, 11], "what": "name"},
     ]
     assert warnings == [{"code": "W7_STRONG_WORD", "field": "question", "hit": "不正"}]
 
@@ -105,8 +105,13 @@ def test_v7_names_only_fields_skip_numbers_but_not_names() -> None:
         words_only=comparison,
     )
     assert errors == [
-        {"code": "V7_PERSONAL_NAME", "field": "comparison.population", "at": [0, 5]},
-        {"code": "V7_PERSONAL_NAME", "field": "evidence[0].quote", "at": [3, 7]},
+        {
+            "code": "V7_PERSONAL_NAME",
+            "field": "comparison.population",
+            "at": [0, 5],
+            "what": "name",
+        },
+        {"code": "V7_PERSONAL_NAME", "field": "evidence[0].quote", "at": [3, 7], "what": "name"},
     ]
     assert warnings == [{"code": "W7_STRONG_WORD", "field": "comparison.population", "hit": "不正"}]
 

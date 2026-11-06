@@ -47,7 +47,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     不合格にする。別の説明の合格で免除しない）。check・render の結果が変わる。
 # 15：D-049（空の値で外れた行の検査を免除する別の条件を、その判定の reflected_conditions に宣言した説明用の条件に
 #     限る）。check・render の結果が変わる。
-RULES_VERSION = "15"
+# 16：P0-8（check の V5・V6 と check の時点の V7、V7 の取り込まない列の値（D-032。record と check）、巡回数の
+#     上限（E_ROUNDS_EXCEEDED。record の結論の案と check））。check・render・record の結果が変わる。
+RULES_VERSION = "16"
 
 
 def code_version() -> str:

@@ -41,7 +41,8 @@ argument-hint: "[lead_id] [run_id]"
    - T2・T5に限り、補正できるなら補正前後の値を計算する。補正しても変化が残れば
      comparison_state を adjusted とし、adjustment（method、before・after の計算ID）を付けて比較成立に進む。
    - 補正すると変化が消える、または比べられないと確定したら、見かけの変化。
-   - 比べられるかを確定できなければ、保留（hold_reason: comparison）。
+   - 比べられるかを確定できなければ、保留（hold_reason: comparison）。comparison_state を unresolved にするなら、
+     両年度を比べる主張は取り下げ、各年度の値は別々の主張にする（V5_UNRESOLVED_COMPARISON）。
    - 同種業務の対応が confirmed でない、または比べる行の一部しか覆っていなければ、比較成立にしない（V8_MATCH_UNCONFIRMED）。
    - 規1（税込か税抜か、単位、範囲）の違いを補正するのに資料にない係数が要るなら、計算せずに kind: coefficient で
      提案し、記者に伝える。提案が proposed・accepted のまま残れば比較成立にしない（V8_COEFFICIENT_PENDING）。

@@ -1,13 +1,17 @@
 """検証（implementation_spec.md 9章の check.py。4.6 の kizashi check）。
 
 - V7 の数値・氏名・強い語の検査の関数（P0-4）。record が Claude の書く文字列に対して使う（4.5）。
-- V1〜V4・V8 の検証と check の操作（P0-6）。不合格をすべて集めて返す。T6a・T6b の判定は check のたびに
-  照合の計算から機械で決め、explanations に登録する（context='cli'）。V5・V6 と、check の時点の V7 は P0-8。
+- V1〜V8 の検証と check の操作（P0-6・P0-8）。不合格をすべて集めて返す。T6a・T6b の判定は check のたびに
+  照合の計算から機械で決め、explanations に登録する（context='cli'）。check の時点の V7 は、台帳にある Claude の
+  書いた文字列を record と同じ欄の分け方で見直す（氏名の一覧と取り込まない列の値は検査のたびに原本から作る）。
+- 巡回数（4.6）：結論の案（保留を除く）を登録した後の check を1巡と数える。上限（MAX_ROUNDS。保留にしたことの
+  ある候補は1巡を足す）に達した候補は、保留以外の結論の案を E_ROUNDS_EXCEEDED で拒否する（record と check）。
 
 - V7_RAW_NUMBER：NFKC にした後、照合済みの引用の中と、9章の表の対象外の形（{calc:ID}、ID、型、検出、
   品質検査、年度、日付、条文）を、この順に取り除いてから、残った数字を見る。
 - V7_PERSONAL_NAME：氏名の一覧（呼び出し側が原本から作って渡す。保存しない）の、姓と名をつないだ全体で
-  照らす。姓や名の1語だけでは照らさない。見つけた語そのものは返さない（位置だけ）。
+  照らす。姓や名の1語だけでは照らさない。取り込まない列の値（担当官の所在地と相手方の住所。D-032）も同じコードで
+  照らす（`?` は D-022 の規則）。見つけた語そのものは返さない（位置だけ）。
 - W7_STRONG_WORD：強い語は警告。例外語と照合済みの引用の中は対象外。
 """
 
@@ -22,7 +26,7 @@ from dataclasses import field as dc_field
 from decimal import Decimal
 from pathlib import Path
 
-from kizashi import calc, hashing, independent_reader, ledger, paths, quotes, versions
+from kizashi import calc, hashing, independent_reader, ledger, limits, paths, quotes, versions
 from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
 from kizashi.hashing import canonical_json, dict_rows
@@ -209,6 +213,19 @@ class TermMatcher:
         return result
 
 
+def excluded_matcher(values: Iterable[str]) -> TermMatcher:
+    """取り込まない列の値（D-032）を照らす TermMatcher（`?` は D-022 の規則）。"""
+    return TermMatcher(((v, "excluded_value") for v in values), wildcard=True)
+
+
+def v7_hit_text(error: dict) -> str:
+    """V7 の不合格の1件の説明（氏名・取り込まない列の値は位置だけで、語を書かない）。"""
+    if error["code"] == "V7_PERSONAL_NAME":
+        what = "（取り込まない列の値）" if error.get("what") == "excluded_value" else ""
+        return f"{error['code']}：{error['field']} の {error['at'][0] + 1}〜{error['at'][1]} 文字目{what}"
+    return f"{error['code']}：{error['field']} に「{error['hit']}」"
+
+
 def string_leaves(value: object, path: str = "") -> Iterator[tuple[str, str]]:
     """提案の中の文字列の値を、入れ子（辞書・配列）も含めて (欄の道筋, 値) で返す（D-036）。
 
@@ -231,31 +248,48 @@ def v7_findings(
     quotes: Iterable[str] = (),
     names_only: Mapping[str, str] | None = None,
     words_only: Mapping[str, str] | None = None,
+    excluded: TermMatcher | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """欄（名前 → 文字列）ごとの V7 の不合格と警告。
 
     texts の欄には、数値・氏名・強い語のすべてを当てる。names_only の欄（数字を書いてよい欄や引用。
     比較の条件、単位、根拠の引用、条件の値など）には氏名の検査だけを、words_only の欄（比較の条件）には
     強い語の警告だけを当てる（D-035・D-036）。
-    戻り値の不合格は {"code", "field", "hit"}（数値）か {"code", "field", "at"}（氏名。語は返さない）。
-    警告は {"code": "W7_STRONG_WORD", "field", "hit"}。
+    excluded（取り込まない列の値。D-032）は、氏名と同じ欄に当てる（D-035）。
+    戻り値の不合格は {"code", "field", "hit"}（数値）か {"code", "field", "at", "what"}（氏名と取り込まない列の値。
+    語は返さない。what は name か excluded_value）。警告は {"code": "W7_STRONG_WORD", "field", "hit"}。
     """
     names = list(names)
     quotes = list(quotes)
     errors: list[dict] = []
     warnings: list[dict] = []
+
+    def sensitive(field: str, text: str) -> None:
+        for start, end in personal_names(text, names):
+            errors.append(
+                {"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end], "what": "name"}
+            )
+        if excluded:
+            for start, end, _ in excluded.spans(text):
+                errors.append(
+                    {
+                        "code": "V7_PERSONAL_NAME",
+                        "field": field,
+                        "at": [start, end],
+                        "what": "excluded_value",
+                    }
+                )
+
     for field, text in texts.items():
         if not text:
             continue
         for hit in raw_numbers(text, quotes):
             errors.append({"code": "V7_RAW_NUMBER", "field": field, "hit": hit})
-        for start, end in personal_names(text, names):
-            errors.append({"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end]})
+        sensitive(field, text)
         for word in strong_words(text, quotes):
             warnings.append({"code": "W7_STRONG_WORD", "field": field, "hit": word})
     for field, text in (names_only or {}).items():
-        for start, end in personal_names(text, names):
-            errors.append({"code": "V7_PERSONAL_NAME", "field": field, "at": [start, end]})
+        sensitive(field, text)
     for field, text in (words_only or {}).items():
         for word in strong_words(text, quotes):
             warnings.append({"code": "W7_STRONG_WORD", "field": field, "hit": word})
@@ -297,6 +331,7 @@ class Verification:
     t6: dict[str, str] = dc_field(default_factory=dict)
     memo_claims: list[str] = dc_field(default_factory=list)
     candidate_rows: list[str] = dc_field(default_factory=list)
+    warnings: list[dict] = dc_field(default_factory=list)
 
     def fail(self, code: str, message: str, ids: Iterable[str] = ()) -> None:
         self.failures.append(
@@ -1295,6 +1330,357 @@ def _v8_explanation_status(
 
 
 # ---------------------------------------------------------------------------
+# V5 比較の条件
+# ---------------------------------------------------------------------------
+
+COMPARISON_KEYS = ("population", "row_meaning", "period", "unit", "entity_mapping", "formula")
+COMPARISON_NAMES = {
+    "population": "母集団",
+    "row_meaning": "1行の意味",
+    "period": "期間",
+    "unit": "単位",
+    "entity_mapping": "主体の対応",
+    "formula": "算式",
+}
+RATE_OPS = ("ratio", "rate")
+
+
+def _calc_closure(conn: sqlite3.Connection, ids: Iterable[str]) -> list[dict]:
+    """計算と、派生計算が参照する計算（入れ子を含む）の行。"""
+    seen: dict[str, dict] = {}
+    stack = list(ids)
+    while stack:
+        calc_id = stack.pop()
+        if calc_id in seen:
+            continue
+        row = _one(conn, "SELECT * FROM computations WHERE calc_id = ?", (calc_id,))
+        if row is None:
+            continue
+        seen[calc_id] = row
+        stack.extend(json.loads(row["ref_calc_ids_json"] or "[]"))
+    return list(seen.values())
+
+
+def calc_years(conn: sqlite3.Connection, ids: Iterable[str]) -> set[int]:
+    """計算（派生計算の入れ子を含む）の基礎集計が限る年度（条件の fiscal_year が1つのもの）。"""
+    years: set[int] = set()
+    for comp in _calc_closure(conn, ids):
+        if comp["kind"] != "base":
+            continue
+        limited, values = hashing.filter_values(
+            json.loads(comp["request_json"]).get("filter") or [], "fiscal_year"
+        )
+        if limited and len(values) == 1 and isinstance(values[0], int):
+            years.add(values[0])
+    return years
+
+
+def comparing_claims(conn: sqlite3.Connection, claims: list[dict]) -> list[str]:
+    """比較の主張：参照する計算（本文の {calc:ID} と派生計算の入れ子を含む）が2つ以上の年度にまたがる主張。"""
+    found = []
+    for claim in claims:
+        refs = [*json.loads(claim["calc_ids_json"]), *hashing.CALC_REF_RE.findall(claim["text"])]
+        if len(calc_years(conn, refs)) >= 2:
+            found.append(claim["claim_id"])
+    return found
+
+
+def _v5(
+    conn: sqlite3.Connection, adapter: Adapter, lead: dict, claims: list[dict], v: Verification
+) -> None:
+    lead_id = lead["lead_id"]
+    comparison = json.loads(lead["comparison_json"] or "{}")
+    blank = [
+        COMPARISON_NAMES[k]
+        for k in COMPARISON_KEYS
+        if not isinstance(comparison.get(k), str) or not comparison[k].strip()
+    ]
+    if blank:
+        v.fail(
+            "V5_CONDITION_MISSING",
+            "比較の条件に空欄がある：" + "・".join(blank),
+            [lead_id],
+        )
+    state = lead["comparison_state"]
+    if state == "unresolved":
+        comparing = comparing_claims(conn, [c for c in claims if c["state"] != "stale"])
+        if comparing or lead["proposed_outcome"] == "change":
+            what = "、".join(comparing) if comparing else "比較成立の結論の案"
+            v.fail(
+                "V5_UNRESOLVED_COMPARISON",
+                f"比較の条件が「確定できない」（unresolved）なのに、比較の主張がある（{what}）。"
+                "各年度の値は別々の記載として残し、比較は保留にする。",
+                [lead_id, *comparing],
+            )
+    if state == "adjusted":
+        adjustment = json.loads(lead["adjustment_json"] or "null")
+        values_ok = isinstance(adjustment, dict) and bool(
+            str(adjustment.get("method") or "").strip()
+        )
+        if values_ok:
+            for key in ("before", "after"):
+                row = _comp(conn, adjustment.get(key))
+                values_ok = values_ok and row is not None and row["value"] is not None
+        if not values_ok:
+            v.fail(
+                "V5_ADJUSTED_NO_VALUES",
+                "比較の条件が「補正した」（adjusted）なのに、補正の方法と補正前後の値（計算）がない。",
+                [lead_id],
+            )
+    for comp in _calc_closure(conn, hashing.memo_calc_ids(conn, lead_id)):
+        if comp["kind"] != "derived":
+            continue
+        op = json.loads(comp["request_json"]).get("op")
+        if op not in RATE_OPS:
+            continue
+        args = json.loads(comp["ref_calc_ids_json"] or "[]")
+        base = _comp(conn, args[1]) if len(args) == 2 else None
+        value = None if base is None or base["value"] is None else Decimal(base["value"])
+        if value is None or (op == "ratio" and value == 0) or (op == "rate" and value <= 0):
+            why = "分母のない率" if op == "ratio" else "0や負の値からの増加率"
+            v.fail("V5_BAD_RATE", f"{why}：{comp['calc_id']}", [comp["calc_id"]])
+    if lead["proposed_outcome"] == "change":
+        years = {int(lead["period_from"]), int(lead["period_to"])}
+        partial = {
+            y
+            for y in years
+            for f in ("kyoso", "zuikei")
+            if (spec := adapter.file_spec(y, f)) is not None and spec.partial_year
+        }
+        if partial and partial != years:
+            v.fail(
+                "V5_PARTIAL_YEAR",
+                "比較成立なのに、年度途中（"
+                + "・".join(f"{y}年度" for y in sorted(partial))
+                + "）と年度全体を比べている。",
+                [lead_id],
+            )
+
+
+# ---------------------------------------------------------------------------
+# V6 説明の判定
+# ---------------------------------------------------------------------------
+
+EXPLAINING_TYPES = ("T1", "T2", "T3", "T4", "T5")
+
+
+def _v6(conn: sqlite3.Connection, lead: dict, v: Verification) -> None:
+    lead_id = lead["lead_id"]
+    judged = {
+        r["type"]: r
+        for r in dict_rows(conn, "SELECT * FROM explanations WHERE lead_id = ?", (lead_id,))
+    }
+    absent = [f"{t} {TYPE_NAMES[t]}" for t in TYPES if t not in judged]
+    if absent:
+        v.fail("V6_TYPE_MISSING", "判定のない型がある：" + "、".join(absent), [lead_id])
+    own_rows = set(v.candidate_rows)
+    for etype in TYPES:
+        row = judged.get(etype)
+        if row is None:
+            continue
+        evidence = [e for e in json.loads(row["evidence_json"]) if isinstance(e, dict)]
+        judgment = row["judgment"]
+        if judgment in ("support", "refute") and not evidence:
+            v.fail(
+                "V6_NO_EVIDENCE",
+                f"{etype} を{'支持' if judgment == 'support' else '否定'}としたのに、根拠の位置がない。",
+                [lead_id],
+            )
+        if judgment == "unknown" and not (row["searched"] or "").strip():
+            v.fail(
+                "V6_NO_SEARCH_SCOPE",
+                f"{etype} が未確認なのに、探した範囲（searched）がない。",
+                [lead_id],
+            )
+        if (
+            judgment == "support"
+            and etype in EXPLAINING_TYPES
+            and evidence
+            and all((e.get("position") or {}).get("row_ref") in own_rows for e in evidence)
+        ):
+            v.fail(
+                "V6_SELF_EVIDENCE",
+                f"{etype} の支持の根拠が、説明する対象のレコード（候補の行）そのものだけである。"
+                "公表元の説明・仕様書など、別の資料の位置を根拠にする。",
+                [lead_id],
+            )
+
+
+# ---------------------------------------------------------------------------
+# V7 数値と個人情報（check の時点。record と同じ欄の分け方で、台帳の文字列を見直す）
+# ---------------------------------------------------------------------------
+
+
+def _quotes_of(items: Iterable[object]) -> list[str]:
+    return [e["quote"] for e in items if isinstance(e, dict) and isinstance(e.get("quote"), str)]
+
+
+def ledger_texts(
+    conn: sqlite3.Connection, lead_id: str
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], list[str]]:
+    """台帳にある、候補の Claude が書いた文字列を欄ごとに分ける（record の分け方。D-035・D-036）。
+
+    (数値・氏名・強い語を当てる欄, 氏名だけの欄, 氏名と強い語の欄（比較の条件）, 照合済みの引用)。
+    CLI が書いた文字列（検出の候補の注記、T6a・T6b の判定、run の計算の意味）は、数値と強い語の対象にしない
+    （氏名と取り込まない列の値は当てる）。"""
+    (lead,) = dict_rows(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
+    full: dict[str, str] = {}
+    names_only: dict[str, str] = {}
+    words: dict[str, str] = {}
+    quotes_: list[str] = []
+
+    def put(target: dict[str, str], key: str, value: object) -> None:
+        if isinstance(value, str) and value:
+            target[key] = value
+
+    by_claude = lead["screen_id"] == "explore"
+    put(names_only, "lead_key", lead["lead_key"])
+    put(full if by_claude else names_only, "note", lead["note"])
+    for key in ("hypothesis", "withdraw_if", "reopen_condition"):
+        put(full, key, lead[key])
+    for i, question in enumerate(json.loads(lead["questions_json"])):
+        for key, value in question.items():
+            put(full, f"questions[{i}].{key}", value)
+    for key, value in json.loads(lead["comparison_json"]).items():
+        put(words, f"comparison.{key}", value)
+        put(names_only, f"comparison.{key}", value)
+    if lead["adjustment_json"]:
+        put(full, "adjustment.method", json.loads(lead["adjustment_json"]).get("method"))
+    for coef in json.loads(lead["coefficients_json"]):
+        key = coef.get("key")
+        put(names_only, f"coefficients.{key}.key", key)
+        for name in ("meaning", "why_needed", "apply_to", "reporter_note"):
+            put(full, f"coefficients.{key}.{name}", coef.get(name))
+        basis = coef.get("basis") or []
+        quotes_ += _quotes_of(basis)
+        for leaf_key, leaf in string_leaves(basis, f"coefficients.{key}.basis"):
+            put(names_only, leaf_key, leaf)
+    for claim in memo_claims(conn, lead_id):
+        put(full, f"{claim['claim_id']}.text", claim["text"])
+        evidence = json.loads(claim["evidence_json"])
+        quotes_ += _quotes_of(evidence)
+        for leaf_key, leaf in string_leaves(evidence, f"{claim['claim_id']}.evidence"):
+            put(names_only, leaf_key, leaf)
+    for exp in dict_rows(conn, "SELECT * FROM explanations WHERE lead_id = ?", (lead_id,)):
+        evidence = json.loads(exp["evidence_json"])
+        quotes_ += _quotes_of(evidence)
+        if exp["context"] == "cli":
+            continue
+        put(full, f"{exp['type']}.searched", exp["searched"])
+        put(full, f"{exp['type']}.no_quant_reason", exp["no_quant_reason"])
+        for leaf_key, leaf in string_leaves(evidence, f"{exp['type']}.evidence"):
+            put(names_only, leaf_key, leaf)
+        for leaf_key, leaf in string_leaves(
+            json.loads(exp["reflected_conditions_json"] or "[]"),
+            f"{exp['type']}.reflected_conditions",
+        ):
+            put(names_only, leaf_key, leaf)
+    for match in dict_rows(
+        conn,
+        "SELECT match_id, reason, evidence_json FROM procurement_matches WHERE lead_id = ?",
+        (lead_id,),
+    ):
+        put(full, f"{match['match_id']}.reason", match["reason"])
+        evidence = json.loads(match["evidence_json"])
+        quotes_ += _quotes_of(evidence)
+        for leaf_key, leaf in string_leaves(evidence, f"{match['match_id']}.evidence"):
+            put(names_only, leaf_key, leaf)
+    for comp in _calc_closure(conn, hashing.memo_calc_ids(conn, lead_id)):
+        if comp["origin"] != "record":
+            continue
+        put(full, f"{comp['calc_id']}.meaning", comp["meaning"])
+        put(names_only, f"{comp['calc_id']}.unit", comp["unit"])
+        request = json.loads(comp["request_json"])
+        if comp["kind"] == "doc_value" and isinstance(request.get("quote"), str):
+            quotes_.append(request["quote"])
+        for leaf_key, leaf in string_leaves(request, f"{comp['calc_id']}.request"):
+            put(names_only, leaf_key, leaf)
+    names_only = {k: v for k, v in names_only.items() if k not in full}
+    return full, names_only, words, quotes_
+
+
+def _unreadable_csv(conn: sqlite3.Connection, root: Path) -> list[str]:
+    """氏名の一覧と取り込まない列の値を作る原本（取得済みの公表一覧の CSV）のうち、data/raw にないもの。"""
+    return [
+        source_id
+        for source_id, sha in conn.execute(
+            "SELECT source_id, sha256 FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
+            " AND logical_key LIKE '%|csv' ORDER BY source_id"
+        )
+        if not (paths.raw_dir(root) / f"{sha}.csv").is_file()
+    ]
+
+
+def _v7(
+    conn: sqlite3.Connection, root: Path, adapter: Adapter, lead: dict, v: Verification
+) -> None:
+    full, names_only, words, quotes_ = ledger_texts(conn, lead["lead_id"])
+    missing = _unreadable_csv(conn, root)
+    if missing:
+        # 一覧を作れないまま氏名の検査を飛ばして合格にしない
+        v.fail(
+            "V7_PERSONAL_NAME",
+            f"氏名の一覧と取り込まない列の値を作る原本（{'・'.join(missing)}）が data/raw にないため、"
+            "氏名の検査ができない。",
+            [lead["lead_id"], *missing],
+        )
+        names: list[str] = []
+        excluded: TermMatcher | None = None
+    else:
+        names = name_variants(adapter.module.name_list(conn, root, adapter))
+        excluded = excluded_matcher(adapter.module.excluded_values(conn, root, adapter))
+    errors, warnings = v7_findings(
+        full,
+        names=names,
+        quotes=quotes_,
+        names_only=names_only,
+        words_only=words,
+        excluded=excluded,
+    )
+    for error in errors:
+        v.fail(error["code"], v7_hit_text(error), [lead["lead_id"]])
+    v.warnings += [
+        {
+            "code": w["code"],
+            "message": f"{w['field']} に強い語「{w['hit']}」がある。表現を見直す（不合格にはしない）。",
+            "affected_ids": [lead["lead_id"]],
+        }
+        for w in warnings
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 巡回数（4.6。設計書4.3）
+# ---------------------------------------------------------------------------
+
+
+def round_limit(conn: sqlite3.Connection, lead: dict) -> int:
+    """候補の巡回数の上限。保留にしたことのある候補（保留のメモを書いた、または保留の結論の案を登録した）を
+    調べ直す場合は、1巡を足す（実装仕様3.6）。"""
+    held = (
+        lead["state"] == "hold"
+        or conn.execute(
+            "SELECT 1 FROM events WHERE kind = 'record' AND target_id = ?"
+            " AND json_extract(after_json, '$.kind') = 'conclusion'"
+            " AND json_extract(after_json, '$.outcome') = 'hold' LIMIT 1",
+            (lead["lead_id"],),
+        ).fetchone()
+        is not None
+    )
+    return limits.MAX_ROUNDS + (1 if held else 0)
+
+
+def rounds_exceeded(lead_id: str, rounds: int, limit: int, stage: str) -> KizashiError:
+    return KizashiError(
+        "E_ROUNDS_EXCEEDED",
+        stage,
+        f"候補 {lead_id} の修正の巡回数が上限（{limit}巡）に達している（{rounds}巡）。保留以外の結論の案は受け付けない。",
+        affected_ids=[lead_id],
+        next_action="結論を強めず、保留の結論の案（outcome: hold、hold_reason: limit）を登録して render する。",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 全体
 # ---------------------------------------------------------------------------
 
@@ -1311,8 +1697,8 @@ def memo_claims(conn: sqlite3.Connection, lead_id: str) -> list[dict]:
 def verify(
     conn: sqlite3.Connection, root: Path, run_id: str, adapter: Adapter, lead_id: str
 ) -> Verification:
-    """V1〜V4・V8 を行い、不合格をすべて集める。T6a・T6b の判定を explanations に登録する（呼び出し側の
-    トランザクションの中で）。"""
+    """V1〜V8 を行い、不合格をすべて集める（強い語は warnings）。T6a・T6b の判定を explanations に登録する
+    （呼び出し側のトランザクションの中で）。"""
     lead = _one(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
     if lead is None:
         raise KizashiError(
@@ -1342,6 +1728,9 @@ def verify(
     _v2(conn, root, adapter, lead, claims, matches, v)
     _v3(conn, root, adapter, lead, claims, v)
     _v4(conn, root, run_id, adapter, lead, claims, explanations, matches, v)
+    _v5(conn, adapter, lead, claims, v)
+    _v6(conn, lead, v)
+    _v7(conn, root, adapter, lead, v)
     _v8(conn, adapter, lead, claims, matches, v)
     return v
 
@@ -1376,6 +1765,11 @@ def run_check(root: Path, run_id: str, lead_id: str) -> dict:
         check_rule_versions(conn, root, run_id, CHECK_STAGE)
         (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
         adapter = load_adapter(root, domain)
+        current = _one(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
+        if current is not None and current["proposed_outcome"] in COUNTED_OUTCOMES:
+            limit = round_limit(conn, current)
+            if current["rounds"] >= limit:  # この check で上限を超える。数えず、検査もしない
+                raise rounds_exceeded(lead_id, current["rounds"], limit, CHECK_STAGE)
         with ledger.transaction(conn):
             v = verify(conn, root, run_id, adapter, lead_id)
             lead = _one(
@@ -1400,7 +1794,7 @@ def run_check(root: Path, run_id: str, lead_id: str) -> dict:
         conn.close()
     if v.failures:
         raise failure_error(v, CHECK_STAGE)
-    return {
+    result = {
         "run_id": run_id,
         "lead_id": lead_id,
         "passed": True,
@@ -1410,3 +1804,6 @@ def run_check(root: Path, run_id: str, lead_id: str) -> dict:
         "check_hash": digest,
         "message": "合格した。メモに出る主張を checked にした。メモは kizashi render <lead_id> --run <run_id> で書く。",
     }
+    if v.warnings:
+        result["warnings"] = v.warnings
+    return result
