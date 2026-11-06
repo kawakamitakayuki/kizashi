@@ -65,7 +65,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     check・render・record・query・fetch・check --publish の結果が変わる。
 # 21：D-068 の続き（リダイレクト先の URL の氏名の照合を、許可リストと公表一覧のデータの検査より先に行い、
 #     fetch --recheck でも URL を照らす）。fetch・fetch --recheck の結果が変わる。
-RULES_VERSION = "21"
+# 22：D-073（公表一覧の fetch --recheck で、たどり直すリンクの候補のすべてを、リンクの数の検査より先に氏名で照らす）。
+#     fetch --recheck の結果が変わる。
+RULES_VERSION = "22"
 
 
 def code_version() -> str:
