@@ -368,3 +368,74 @@ def test_ft4_fetch_url_with_known_name_is_refused_before_request(
     (after,) = conn.execute("SELECT COUNT(*) FROM sources").fetchone()
     conn.close()
     assert after == before
+
+
+SAFE_PAGE = "https://www.cao.go.jp/test/privacy-redirect.html"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://www.cao.go.jp/test/details.html",
+        "https://unapproved.example.invalid/details.html",
+        "dataset",
+    ],
+    ids=["allowed-host", "unapproved-host", "dataset-url"],
+)
+def test_ft4_redirect_to_named_url_is_refused_first(
+    repo: Path, synthetic_run: str, site, target: str
+) -> None:
+    """FT-4（D-068）：リダイレクト先の URL に実行の担当官の氏名があれば、許可リスト外のホストや公表一覧のデータの
+    検査より先に E_V7 で止める（その先には通信しない）。不合格の文にも、台帳（取得の失敗の記録を含む）にも、
+    氏名と URL を残さない。"""
+    from urllib.parse import quote, unquote
+
+    from conftest import URL as FIXTURE_URL
+
+    base = FIXTURE_URL["k24_csv"] if target == "dataset" else target
+    destination = base + "?person=" + quote("架空太郎")
+    site.routes[SAFE_PAGE] = httpx.Response(302, headers={"Location": destination})
+    site.requests.clear()
+    with pytest.raises(KizashiError) as info:
+        fetcher.fetch_evidence(repo, synthetic_run, SAFE_PAGE, "evidence", transport=site.transport)
+    assert info.value.code == "E_V7"
+    assert site.requests == [SAFE_PAGE]
+    assert "架空太郎" not in unquote(info.value.message + info.value.next_action)
+    conn = ledger_of(repo, synthetic_run)
+    dump = "\n".join(conn.iterdump())
+    conn.close()
+    assert "架空太郎" not in unquote(dump)
+
+
+def test_ft4_recheck_of_named_url_is_refused_before_request(
+    repo: Path, synthetic_run: str, site
+) -> None:
+    """FT-4・HS-3（D-068）：前の実装で氏名を含む URL の資料が台帳にあっても、fetch --recheck は通信の前に E_V7 で
+    止め、新しい版を登録しない（取り直しも取得と同じ入り口で URL を照らす）。前の実装で登録された状態は、台帳に
+    行を書いて作る。"""
+    from urllib.parse import quote
+
+    named = "https://www.cao.go.jp/test/legacy.html?person=" + quote("架空太郎")
+    content = b"<html><body><p>legacy</p></body></html>"
+    import hashlib
+
+    sha = hashlib.sha256(content).hexdigest()
+    (raw_dir(repo) / f"{sha}.html").write_bytes(content)
+    tamper(
+        repo,
+        synthetic_run,
+        "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, media_type,"
+        " size_bytes, page_count, status) VALUES ('S099', 'evidence', ?, ?, '2026-11-06T00:00:00+09:00',"
+        " ?, 'text/html', ?, 1, 'fetched')",
+        (named, named, sha, len(content)),
+    )
+    site.routes[named] = httpx.Response(200, content=b"<html><body><p>new</p></body></html>")
+    site.requests.clear()
+    with pytest.raises(KizashiError) as info:
+        fetcher.recheck_source(repo, synthetic_run, "S099", transport=site.transport)
+    assert info.value.code == "E_V7" and site.requests == []
+    assert "架空" not in info.value.message
+    conn = ledger_of(repo, synthetic_run)
+    (newer,) = conn.execute("SELECT COUNT(*) FROM sources WHERE supersedes = 'S099'").fetchone()
+    conn.close()
+    assert newer == 0

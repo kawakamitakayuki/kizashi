@@ -225,10 +225,13 @@ def http_get(
     allowed_hosts: Iterable[str],
     budget: Budget,
     refuse_redirect: Callable[[httpx.URL], None] | None = None,
+    screen_url: Callable[[httpx.URL], None] | None = None,
 ) -> tuple[str, bytes, str | None]:
     """許可リストとリダイレクトを1段ずつ検査して GET する。(最終の URL, 中身, media type) を返す。
 
-    refuse_redirect は、リダイレクト先に通信する前に呼ぶ検査（拒否するときは KizashiError を出す）。
+    screen_url は、リダイレクト先の URL を、ほかのどの検査（URL を不合格の文に書く許可リストの検査など）よりも
+    先に照らす検査（氏名を含む URL を書き出さないため。D-068）。refuse_redirect は、許可リストの検査の後、
+    リダイレクト先に通信する前に呼ぶ検査。どちらも拒否するときは KizashiError を出す。
     """
     allowed = list(allowed_hosts)
     current = check_url(url, allowed)
@@ -238,7 +241,10 @@ def http_get(
             location = headers.get("location")
             if not location:
                 raise _fetch_failed(current, f"HTTP {status} に Location がない", retryable=False)
-            current = check_url(current.join(location), allowed, redirect=True)
+            target = current.join(location)
+            if screen_url is not None:
+                screen_url(target)
+            current = check_url(target, allowed, redirect=True)
             if refuse_redirect is not None:
                 refuse_redirect(current)
             continue
@@ -297,10 +303,11 @@ def fetch_to_raw(
     allowed_hosts: Iterable[str],
     budget: Budget,
     validate: Callable[[bytes], None] | None = None,
+    screen_url: Callable[[httpx.URL], None] | None = None,
 ) -> Download:
     """取得し、一時ファイルに保存して検査してから data/raw/<sha256>.<拡張子> に移す。"""
     final_url, content, media_type = http_get(
-        client, url, allowed_hosts=allowed_hosts, budget=budget
+        client, url, allowed_hosts=allowed_hosts, budget=budget, screen_url=screen_url
     )
     sha, final, size = store_raw(root, url, content, fmt, validate=validate)
     return Download(
@@ -642,27 +649,32 @@ def _download_evidence(
     """取得して data/raw に保存し、ページ別テキストを取り出す（ページのファイルはまだ書かない）。
 
     公表一覧のデータ（link_pattern に合う URL、リダイレクトの途中と最後の URL、run が取得した資料と同じ中身）は
-    取得しない（D-021・D-034）。"""
+    取得しない（D-021・D-034）。URL とリダイレクト先の URL に実行の担当官の氏名があれば、ほかの検査（URL を
+    不合格の文に書くもの）より先に E_V7 で止める（取得と取り直しの共通の入り口。D-068）。"""
+    from kizashi import check  # check は取得の処理を使うので、ここで読み込む
+
+    names = (
+        matcher if matcher is not None else check.officer_name_matcher(conn, root, adapter, "fetch")
+    )
+    screen = name_screen(names)
+    screen(url)
     allowed = list(adapter.config["fetch"]["allowed_hosts"])
     check_url(url, allowed)
     link_pattern = adapter.config["source"]["link_pattern"]
     if is_dataset_url(url, link_pattern):
         raise _dataset_refused(url, redirect=False)
 
-    from kizashi import check  # check は取得の処理を使うので、ここで読み込む
-
-    names = (
-        matcher if matcher is not None else check.officer_name_matcher(conn, root, adapter, "fetch")
-    )
-
     def refuse_redirect(target: httpx.URL) -> None:
         if is_dataset_url(target, link_pattern):
             raise _dataset_refused(target, redirect=True)
-        if url_has_name(str(target), names):
-            raise _url_name_refused(redirect=True)
 
     final_url, content, media_type = http_get(
-        client, url, allowed_hosts=allowed, budget=budget, refuse_redirect=refuse_redirect
+        client,
+        url,
+        allowed_hosts=allowed,
+        budget=budget,
+        refuse_redirect=refuse_redirect,
+        screen_url=screen,
     )
     fmt, suffix_url = detect_format(url, final_url, media_type, content)
     sha, path, size = store_raw(
@@ -706,6 +718,19 @@ def url_has_name(url: str, matcher) -> bool:
     """URL（そのままと、% の符号と + を戻した形）に、実行の担当官の氏名があるか（D-068）。"""
     forms = {url, unquote(url), unquote_plus(url)}
     return any(matcher.spans(form) for form in forms)
+
+
+def name_screen(matcher) -> Callable[[object], None]:
+    """URL に実行の担当官の氏名があれば E_V7 を出す検査（最初の URL ならリダイレクトでない扱い）。"""
+    state = {"first": True}
+
+    def screen(target: object) -> None:
+        redirect = not state["first"]
+        state["first"] = False
+        if url_has_name(str(target), matcher):
+            raise _url_name_refused(redirect=redirect)
+
+    return screen
 
 
 def _url_name_refused(*, redirect: bool) -> KizashiError:
@@ -933,13 +958,25 @@ def dataset_links(adapter: Adapter, page_url: str, html: str) -> dict[str, list[
 
 
 def _redownload_dataset(
-    root: Path, adapter: Adapter, client: httpx.Client, source: dict, budget: Budget
+    root: Path,
+    adapter: Adapter,
+    client: httpx.Client,
+    source: dict,
+    budget: Budget,
+    screen_url: Callable[[object], None] | None = None,
 ) -> tuple[Download, str, str | None]:
-    """公表ページから同じ論理資料のリンクをたどり直して取得する。(取得, 公表ページの URL, 文字コード)。"""
+    """公表ページから同じ論理資料のリンクをたどり直して取得する。(取得, 公表ページの URL, 文字コード)。
+    screen_url があれば、たどるリンクとリダイレクト先の URL を、ほかの検査より先に照らす（D-068）。"""
     source_cfg = adapter.config["source"]
     allowed = list(adapter.config["fetch"]["allowed_hosts"])
     index = fetch_to_raw(
-        root, client, source_cfg["page"], fmt="html", allowed_hosts=allowed, budget=budget
+        root,
+        client,
+        source_cfg["page"],
+        fmt="html",
+        allowed_hosts=allowed,
+        budget=budget,
+        screen_url=screen_url,
     )
     html = index.path.read_bytes().decode("utf-8", errors="replace")
     logical_key = source["logical_key"]
@@ -956,8 +993,17 @@ def _redownload_dataset(
     if spec is None:
         raise _invalid(f"dataset.yaml にない論理資料：{logical_key}")
     validate = (lambda data: adapter.module.validate_csv(data, spec)) if fmt == "csv" else None
+    if screen_url is not None:
+        screen_url(urls[0])
     download = fetch_to_raw(
-        root, client, urls[0], fmt=fmt, allowed_hosts=allowed, budget=budget, validate=validate
+        root,
+        client,
+        urls[0],
+        fmt=fmt,
+        allowed_hosts=allowed,
+        budget=budget,
+        validate=validate,
+        screen_url=screen_url,
     )
     return download, index.final_url, spec.encoding if fmt == "csv" else None
 
@@ -1070,13 +1116,19 @@ def recheck_source(
             )
         client = make_client(transport)
         try:
+            from kizashi import check  # check は取得の処理を使うので、ここで読み込む
+
+            # 取り直しも、取得と同じく URL を最初に照らす（前の実装で登録した URL を含む。D-068）
+            names = check.officer_name_matcher(conn, root, adapter, "fetch")
             if source["kind"] == "dataset":
                 download, referrer, encoding = _redownload_dataset(
-                    root, adapter, client, source, budget
+                    root, adapter, client, source, budget, screen_url=name_screen(names)
                 )
                 new_sha, dl = download.sha256, None
             else:
-                dl = _download_evidence(conn, root, adapter, client, source["url"], budget)
+                dl = _download_evidence(
+                    conn, root, adapter, client, source["url"], budget, matcher=names
+                )
                 new_sha, download, referrer, encoding = dl.sha256, None, None, None
         except KizashiError as exc:
             with ledger.transaction(conn):

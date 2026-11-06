@@ -63,7 +63,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 20：D-067〜D-070・D-072（inbox のファイル名を英数字に限る、氏名を含む URL のリンクを残さず fetch で拒否する、取り下げた
 #     対応の根拠を検証が依存する資料に入れない、公開の検査の合格のメッセージに検査しなかった中身の数を書く）。
 #     check・render・record・query・fetch・check --publish の結果が変わる。
-RULES_VERSION = "20"
+# 21：D-068 の続き（リダイレクト先の URL の氏名の照合を、許可リストと公表一覧のデータの検査より先に行い、
+#     fetch --recheck でも URL を照らす）。fetch・fetch --recheck の結果が変わる。
+RULES_VERSION = "21"
 
 
 def code_version() -> str:
