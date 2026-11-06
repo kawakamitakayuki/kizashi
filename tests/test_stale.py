@@ -309,7 +309,8 @@ def test_hs3_dataset_recheck_follows_public_page(
     assert site.requests[-2:] == ["https://www.cao.go.jp/chotatsu/kohyo/kohyo.html", URL["k24_csv"]]
 
 
-CHANGED = "翻訳業務の仕様は前年度から変更した。"
+# 新しい版も、業務の仕様が前年度と同じことを述べる（T3「否定」の根拠として意味が合う素材にする）
+UPDATED = "翻訳業務の仕様と対象範囲は前年度と同じとした。"
 
 
 def judged_lead(repo: Path, run_id: str, site: Site) -> tuple[dict, str]:
@@ -348,7 +349,7 @@ def test_hs3_new_version_of_judgment_evidence_makes_memo_stale(
 
     lead, source_id = judged_lead(repo, synthetic_run, site)
     lid = lead["lead"]
-    site.routes[EVIDENCE_URL] = html(CHANGED)
+    site.routes[EVIDENCE_URL] = html(UPDATED)
     result = fetcher.recheck_source(repo, synthetic_run, source_id, transport=site.transport)
     new_id = result["new_source_id"]
     assert result["changed"] is True and result["stale_claims"] == []
@@ -364,7 +365,7 @@ def test_hs3_new_version_of_judgment_evidence_makes_memo_stale(
     memos = repo / "data" / "runs" / synthetic_run / "memos"
     assert sorted(p.name for p in memos.iterdir()) == [f"{lid}.v1.md"]
 
-    rec(repo, synthetic_run, judgment_t3(lid, new_id, CHANGED))
+    rec(repo, synthetic_run, judgment_t3(lid, new_id, UPDATED))
     assert check.run_check(repo, synthetic_run, lid)["passed"] is True
     assert render.render_lead(repo, synthetic_run, lid)["memo_no"] == 2
     assert memo_of(repo, synthetic_run, lid)["status"] == "有効"
@@ -395,3 +396,65 @@ def test_hs3_new_version_of_zero_row_dependency_csv_makes_memo_stale(
     [failure] = stale_source_failures(info, "S003")
     assert result["new_source_id"] in failure["affected_ids"]
     assert "新しい実行" in failure["message"]
+
+
+def matching(lead_id: str, source_id: str, quote: str) -> dict:
+    from test_check import ROW_TO
+
+    return {
+        "kind": "match",
+        "lead_id": lead_id,
+        "left": [ROW_FROM],
+        "right": [ROW_TO],
+        "relation": "1:1",
+        "reason": "仕様と対象の業務が同じ。",
+        "status": "confirmed",
+        "evidence": [
+            {"source_id": source_id, "position": {"page": 1}, "quote": quote, "role": "support"}
+        ],
+    }
+
+
+@pytest.mark.parametrize("withdraw_old", [False, True], ids=["keep-old-blocks", "withdraw-old"])
+def test_hs3_replace_match_with_new_version(
+    repo: Path, synthetic_run: str, site: Site, withdraw_old: bool
+) -> None:
+    """HS-3（D-072）：同種業務の対応の根拠の追加資料に新しい版を取ると、メモは失効し check は通らない。古い版に
+    基づく対応を取り下げて、新しい版に基づく対応を登録し直せば、検証が依存する資料から古い版が外れて check を
+    通り、新しい番号のメモができる。取り下げなければ通らない（取り下げた対応の根拠は依存する資料に入れない）。"""
+    from kizashi import check
+
+    lead = prepare(repo, synthetic_run, match="none")
+    lid = lead["lead"]
+    site.routes[EVIDENCE_URL] = html(NOTICE)
+    old = fetcher.fetch_evidence(
+        repo, synthetic_run, EVIDENCE_URL, "evidence", transport=site.transport
+    )["source_id"]
+    old_match = rec(repo, synthetic_run, matching(lid, old, NOTICE))["id"]
+    render.render_lead(repo, synthetic_run, lid)
+    site.routes[EVIDENCE_URL] = html(UPDATED)
+    new = fetcher.recheck_source(repo, synthetic_run, old, transport=site.transport)
+    assert new["affected_leads"] == [lid]
+    assert memo_of(repo, synthetic_run, lid)["status"] == "失効"
+    if withdraw_old:
+        rec(
+            repo,
+            synthetic_run,
+            {
+                "kind": "withdraw",
+                "target": old_match,
+                "reason": "新しい版を根拠に対応を登録し直す。",
+            },
+        )
+    rec(repo, synthetic_run, matching(lid, new["new_source_id"], UPDATED))
+    if withdraw_old:
+        assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+        assert render.render_lead(repo, synthetic_run, lid)["memo_no"] == 2
+    else:
+        with pytest.raises(KizashiError) as info:
+            check.run_check(repo, synthetic_run, lid)
+        assert [old] == [
+            f["affected_ids"][0]
+            for f in info.value.failures
+            if f["code"] == "V2_STALE_OR_WITHDRAWN"
+        ]

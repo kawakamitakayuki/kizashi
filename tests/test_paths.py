@@ -99,3 +99,24 @@ def test_writes_are_limited_to_data(
     os.symlink(elsewhere, tmp_path / "data" / "escape")
     with pytest.raises(KizashiError):
         paths.ensure_in_data(tmp_path, tmp_path / "data" / "escape" / "x")
+
+
+@pytest.mark.parametrize("name", ["架空太郎.sql", "設定.json", "ｑ1.sql", "q 1.sql", "q+1.json"])
+def test_in1_inbox_names_are_ascii_letters_digits_and_marks(root: Path, name: str) -> None:
+    """IN-1（D-067）：inbox/ のファイル名は英数字と `-`・`_`・`.` だけ（先頭は英数字）。ほかの文字（日本語・全角・
+    空白など）は E_INBOX_PATH。英数字以外の文字を含む名前は不合格の文に書かない（氏名がファイル名に入って保存・表示される
+    経路をなくす。氏名の一覧は日本語なので、英数字の名前には入らない）。"""
+    suffix = Path(name).suffix
+    with pytest.raises(KizashiError) as info:
+        paths.check_inbox_arg(f"inbox/{name}", (suffix,))
+    assert info.value.code == "E_INBOX_PATH"
+    if (
+        not name.isascii()
+    ):  # 英数字以外の文字を含む名前は表示しない（英数字だけの名前には氏名が入らない）
+        assert Path(name).stem not in info.value.message
+
+
+@pytest.mark.parametrize("name", ["q-001.sql", "run-config.json", "t1.json", "a_b.c.json"])
+def test_in1_inbox_ascii_names_pass(root: Path, name: str) -> None:
+    """IN-1（D-067）：英数字と `-`・`_`・`.` の名前は通る。"""
+    assert paths.check_inbox_arg(f"inbox/{name}", (Path(name).suffix,)) == name

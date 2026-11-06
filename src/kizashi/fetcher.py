@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, unquote_plus
 
 import httpx
 
@@ -626,6 +627,7 @@ class EvidenceDownload:
     links: list[dict[str, str]]
     encoding: str | None
     masked_names: int = 0  # ページ別テキストとリンクの文で「（氏名）」に替えた数（D-062）
+    dropped_links: int = 0  # URL に既知の氏名があるので保存しなかったリンクの数（D-068）
 
 
 def _download_evidence(
@@ -635,6 +637,7 @@ def _download_evidence(
     client: httpx.Client,
     url: str,
     budget: Budget,
+    matcher: object | None = None,
 ) -> EvidenceDownload:
     """取得して data/raw に保存し、ページ別テキストを取り出す（ページのファイルはまだ書かない）。
 
@@ -646,9 +649,17 @@ def _download_evidence(
     if is_dataset_url(url, link_pattern):
         raise _dataset_refused(url, redirect=False)
 
+    from kizashi import check  # check は取得の処理を使うので、ここで読み込む
+
+    names = (
+        matcher if matcher is not None else check.officer_name_matcher(conn, root, adapter, "fetch")
+    )
+
     def refuse_redirect(target: httpx.URL) -> None:
         if is_dataset_url(target, link_pattern):
             raise _dataset_refused(target, redirect=True)
+        if url_has_name(str(target), names):
+            raise _url_name_refused(redirect=True)
 
     final_url, content, media_type = http_get(
         client, url, allowed_hosts=allowed, budget=budget, refuse_redirect=refuse_redirect
@@ -673,7 +684,9 @@ def _download_evidence(
         if fmt != "pdf":
             raise
         raise _invalid(f"PDF のテキストを読めない（{type(exc).__name__}）") from None
-    pages, links, masked = mask_known_names(conn, root, adapter, pages, links)
+    pages, links, masked, dropped = mask_known_names(
+        conn, root, adapter, pages, links, matcher=names
+    )
     return EvidenceDownload(
         url=url,
         final_url=final_url,
@@ -685,6 +698,23 @@ def _download_evidence(
         links=links,
         encoding=encoding,
         masked_names=masked,
+        dropped_links=dropped,
+    )
+
+
+def url_has_name(url: str, matcher) -> bool:
+    """URL（そのままと、% の符号と + を戻した形）に、実行の担当官の氏名があるか（D-068）。"""
+    forms = {url, unquote(url), unquote_plus(url)}
+    return any(matcher.spans(form) for form in forms)
+
+
+def _url_name_refused(*, redirect: bool) -> KizashiError:
+    where = "リダイレクト先の URL" if redirect else "URL"
+    return KizashiError(
+        "E_V7",
+        "fetch",
+        f"{where}に実行の担当官の氏名がある（% の符号を戻して照らした）。取得も保存もしない（URL と氏名は表示しない）。",
+        next_action="氏名を含まない URL の資料を使う。記者は原本の HTML からたどれる（D-068）。",
     )
 
 
@@ -706,12 +736,15 @@ def mask_known_names(
     pages: list[str],
     links: list[dict[str, str]],
     stage: str = "fetch",
-) -> tuple[list[str], list[dict[str, str]], int]:
+    matcher: object | None = None,
+) -> tuple[list[str], list[dict[str, str]], int, int]:
     """ページ別テキストとリンクの文の、実行の担当官の氏名（V7 と同じ3通り）を「（氏名）」に替える（D-062）。
-    原本は書き換えない。未知の氏名は見つけられない（保証しない）。戻り値の最後は替えた数（氏名は返さない）。"""
+    URL に氏名があるリンクは残さない（D-068）。原本は書き換えない。未知の氏名は見つけられない（保証しない）。
+    戻り値は (ページ, リンク, 替えた数, 除いたリンクの数)（氏名は返さない）。"""
     from kizashi import check  # check は取得の処理を使うので、ここで読み込む
 
-    matcher = check.officer_name_matcher(conn, root, adapter, stage)
+    if matcher is None:
+        matcher = check.officer_name_matcher(conn, root, adapter, stage)
     masked_pages: list[str] = []
     total = 0
     for page in pages:
@@ -719,11 +752,15 @@ def mask_known_names(
         masked_pages.append(text)
         total += n
     masked_links: list[dict[str, str]] = []
+    dropped = 0
     for link in links:
+        if url_has_name(link.get("url") or "", matcher):
+            dropped += 1
+            continue
         text, n = check.mask_names(link.get("text") or "", matcher)
         masked_links.append({**link, "text": text})
         total += n
-    return masked_pages, masked_links, total
+    return masked_pages, masked_links, total, dropped
 
 
 def _write_evidence(
@@ -817,13 +854,18 @@ def fetch_evidence(
                 affected_ids=[run_id],
                 next_action="保留にして記者に伝える（上限に達しても結論を強めない）。",
             )
-        # 通信の前に拒否するもの（許可リスト外、公表一覧のデータの URL）は sources に残さない
+        # 通信の前に拒否するもの（氏名を含む URL、許可リスト外、公表一覧のデータの URL）は sources に残さない
+        from kizashi import check  # check は取得の処理を使うので、ここで読み込む
+
+        names = check.officer_name_matcher(conn, root, adapter, "fetch")
+        if url_has_name(url, names):
+            raise _url_name_refused(redirect=False)
         check_url(url, list(adapter.config["fetch"]["allowed_hosts"]))
         if is_dataset_url(url, adapter.config["source"]["link_pattern"]):
             raise _dataset_refused(url, redirect=False)
         client = make_client(transport)
         try:
-            dl = _download_evidence(conn, root, adapter, client, url, budget)
+            dl = _download_evidence(conn, root, adapter, client, url, budget, matcher=names)
         except KizashiError as exc:
             source_id = _register_evidence_failure(conn, kind, url, exc, budget, run_id)
             raise KizashiError(
@@ -862,6 +904,7 @@ def fetch_evidence(
         "page_count": len(dl.pages),
         "pages_dir": (written / "pages").relative_to(root).as_posix(),
         "masked_names": dl.masked_names,
+        "dropped_links": dl.dropped_links,
         "counted_as_evidence": kind == "evidence",
         "limits": _limits_view(budget),
     }

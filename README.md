@@ -53,7 +53,7 @@ uv run pytest -q        # 合成データのテスト（通信なし）
 scripts/investigate
 ```
 
-`scripts/investigate` は、`uv sync --frozen` の後、Claude Code を次の設定で起動する：許可したものだけが動くモード（`--permission-mode dontAsk`）、プロジェクトの設定だけを読む（`--setting-sources project`）、使えるツールを Bash・Read・Grep・Glob・Skill・WebSearch・Write に絞る、調査用の設定 `investigate.settings.json` を足す。このセッションで Claude が書けるのは `inbox/` 直下の `.json` と `.sql` だけで、Bash で動かせるのは `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）だけである。WebFetch、サブエージェント、MCP、`git push` は使えない。操作が拒否されたら、Claude は何をしようとして拒否されたかを記者に伝える（権限を広げる方法は案内しない）。
+`scripts/investigate` は、`uv sync --frozen` の後、Claude Code を次の設定で起動する：許可したものだけが動くモード（`--permission-mode dontAsk`）、プロジェクトの設定だけを読む（`--setting-sources project`）、使えるツールを Bash・Read・Grep・Glob・Skill・WebSearch・Write に絞る、調査用の設定 `investigate.settings.json` を足す。このセッションの許可の一覧にあるのは、`inbox/` 直下の `.json` と `.sql` への書き込みと、Bash の `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）、Skill、WebSearch である。Skill も Claude に「Bash では kizashi だけを使う」と指示している。ただし、指示と、実行が機械的に拒否されることは別で、拒否を実機で確かめたのは次の範囲である（Claude Code v2.1.318・v2.1.319。`docs/decisions.md` の D-001・D-017・D-071）：`inbox/` の下のフォルダーや `.json`・`.sql` 以外への書き込み、`src/`・`docs/`・`README.md` などへの書き込み、`python3`・`curl`・`jq`、書き込みのできる Bash のコマンド（`mkdir`・`cp`・`touch` など。モードを accept edits に切り替えた後も）、WebFetch・サブエージェント（道具がない）。`tail` などの読み取りだけのコマンドが拒否されるかは確かめていない（Read で読める範囲と同じ）。MCP と `git push` は設定で拒否しているが、実機では試していない。操作が拒否されたら、Claude は何をしようとして拒否されたかを記者に伝える（権限を広げる方法は案内しない）。
 
 起動したら、次のどちらかで始める。
 
@@ -115,7 +115,7 @@ scripts/investigate
 
 ## 公開の手順と、公開しないもの
 
-公開する生成例は、記者が `render --public` の伏せた写しから選んで `examples/` に置き、`examples/publish.manifest` に書いてから `kizashi check --publish` を通す。手順、`disclosure.allow`（伏せない名前。記者が書く）、補助資料の一覧（`KIZASHI_DENYLIST`。4点を1行ずつ）の書き方は `examples/README.md` にある。**公開するのは、`check --publish` を通した後のコミットだけにする**（実装仕様12.2）。検査は `examples/` だけでなく、ステージと、すべての参照からたどれる履歴の中身を見る。履歴で見つかったものは作業フォルダーを直しても消えないので、新しいリポジトリを作り直す。
+公開する生成例は、記者が `render --public` の伏せた写しから選んで `examples/` に置き、`examples/publish.manifest` に書き、公開用のコミットを手元で作ってから（push しない）、そのコミットで `kizashi check --publish` を通し、通ったそのコミットを公開する（検査は最新のコミットの一覧との一致を求めるので、コミットの前は不合格になる）。手順、`disclosure.allow`（伏せない名前。記者が書く）、補助資料の一覧（`KIZASHI_DENYLIST`。4点を1行ずつ）の書き方は `examples/README.md` にある。**公開するのは、`check --publish` を通したコミットそのもの（検査の後に変えていないもの）だけにする**（実装仕様12.2）。氏名・受注者名などを検査するのは UTF-8 として読めて 5MB 以下の中身だけで、それ以外（Shift_JIS の CSV、PDF など）はハッシュだけを照らす。合格のメッセージにその数が出るので、0件でなければ記者が中身を確かめる。検査は `examples/` だけでなく、ステージと、すべての参照からたどれる履歴の中身を見る。履歴で見つかったものは作業フォルダーを直しても消えないので、新しいリポジトリを作り直す。
 
 ひな形の状態（`examples/` に `README.md` と `publish.manifest` だけがある状態）で検査が何を見るか：
 
@@ -138,7 +138,7 @@ scripts/investigate
 - 点検（`review-lead`）は調査と同じ文脈で行うので、独立した読み直しではない。独立した確認は、別経路の再集計（V3b）と記者が担う。別のセッションでの読み直しは P1。
 - 強い語（「不正」「疑惑」など）は警告だけで、書き出しを止めない。表現の行き過ぎは記者が確かめる。
 - 比較の条件を確定できない候補で、1つの年度の値だけを参照して文で比べる主張は、機械の検査（V5）では見分けない。`review-lead` が点検し、メモの7節で記者が確かめる（D-056④）。
-- 権限の設定は、許可した `kizashi` の中の処理には及ばない。`kizashi` は入力の場所・拡張子・パスを検査するが、OS の水準の制限（サンドボックス）は P1。取得した資料の中の指示（プロンプトインジェクション）を完全には防げない。
+- 権限の設定は、許可した `kizashi` の中の処理には及ばない。`kizashi` は入力の場所・拡張子・パスを検査するが、OS の水準の制限（サンドボックス）は P1。取得した資料の中の指示（プロンプトインジェクション）を完全には防げない。テストの SF-1 は、資料の中の指示で `kizashi` の台帳や設定が変わらないこと（取得の処理）を確かめたもので、資料を読んだ後の Claude の振る舞いは試していない。
 - 内閣府のファイルは同じ URL のまま差し替わることがある。`fetch --recheck` で取り直してハッシュを比べる。
 - 知識ファイルに誤りや版の更新がありうる。メモの根拠にはしない（V2）。
 - 追加資料のページ別テキストでは、実行の担当官の氏名（公表一覧の担当官の列にある氏名）を「（氏名）」に替えて保存する。それ以外の氏名は見つけられない。`check` は、引用したページ別テキストを原本から抽出し直して比べ、文書値を引用の数値と照らし直す。台帳や `data/` を直接書き換えた場合の検出は、この2つと原本の SHA-256（V2）、計算のやり直し（V3）の範囲に限る。

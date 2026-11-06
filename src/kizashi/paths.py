@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
@@ -56,12 +57,18 @@ def ensure_in_data(root: Path, path: Path) -> Path:
     return resolved
 
 
+# inbox/ のファイル名に使える文字（D-067）。氏名の一覧は日本語なので、英数字の名前には既知の氏名が入らない。
+# ファイル名は accepted/・queries/・events に残るため、氏名がファイル名から保存・表示される経路をなくす
+INBOX_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def _inbox_error(arg: str, why: str, suffixes: Iterable[str]) -> KizashiError:
     allowed = "・".join(suffixes)
+    shown = arg if arg.isascii() else "（英数字以外の文字を含む指定。表示しない）"
     return KizashiError(
         "E_INBOX_PATH",
         "cli",
-        f"提案ファイルの指定が誤っている（{why}）：{arg}",
+        f"提案ファイルの指定が誤っている（{why}）：{shown}",
         next_action=f"inbox/ の直下の {allowed} のファイルを inbox/<名前>{allowed} の形で指定する。",
     )
 
@@ -85,6 +92,10 @@ def check_inbox_arg(arg: str, suffixes: Iterable[str] = INBOX_SUFFIXES) -> str:
     name = parts[1]
     if PurePosixPath(name).suffix not in suffixes or name.startswith("."):
         raise _inbox_error(arg, "拡張子が違う", suffixes)
+    if not INBOX_NAME_RE.fullmatch(name):
+        raise _inbox_error(
+            arg, "ファイル名に使えるのは英数字と - _ . だけ（先頭は英数字）", suffixes
+        )
     return name
 
 

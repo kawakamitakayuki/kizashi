@@ -60,7 +60,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 19：D-064〜D-066（係数の手がかりに引用した取得資料も V4 の引用と抽出し直しの対象にする、文書値の位置が受注先の列を
 #     引くときも受注先を扱うとする、UTF-8 として壊れたページ別テキストを V4_PAGE_TEXT_MISMATCH・E_QUOTE_NOT_FOUND に
 #     する）。check・render・record の結果が変わる。
-RULES_VERSION = "19"
+# 20：D-067〜D-070・D-072（inbox のファイル名を英数字に限る、氏名を含む URL のリンクを残さず fetch で拒否する、取り下げた
+#     対応の根拠を検証が依存する資料に入れない、公開の検査の合格のメッセージに検査しなかった中身の数を書く）。
+#     check・render・record・query・fetch・check --publish の結果が変わる。
+RULES_VERSION = "20"
 
 
 def code_version() -> str:
