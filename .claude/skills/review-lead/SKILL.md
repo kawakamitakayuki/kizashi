@@ -24,29 +24,42 @@ argument-hint: "[lead_id] [run_id]"
 15. 個人を中心にした候補は作らない。秘匿された値を引き算などで復元しない。
 
 ## 手順
-1. kizashi inspect <lead_id> --run <run_id> で、計算、系列、同じ区分の件数、比較の条件、判定、主張を読む。
+引数は lead_id、run_id の順。run_id が渡されず会話からも分からなければ、記者に尋ねる（推測しない）。
+提案の書き方は .claude/skills/investigate/record-examples.md を読む。
+
+1. kizashi inspect <lead_id> --run <run_id> で、計算、系列、同じ区分の件数、比較の条件、判定、主張、
+   取材質問、同種業務の対応（matches）、係数の提案（coefficients）を読む。
    T6a・T6bの判定は kizashi check が照合の結果から登録する。自分で explanation を書かない。
+   結論の案を登録する前の check は巡回数に数えないので、判定を見るために先に1回実行してよい。
 2. 6つの型を当て、型ごとに支持・否定の資料を探す。一般論だけで「否定」にしない。
    説明の根拠は、説明する記録の外（公募の結果、仕様書、制度の改正など）に求める。
 3. 同じ区分の件数が多ければ、「固有のニュースではない」可能性として記録する。
-4. 仮説の取り下げ条件が満たされていないかを確かめ、満たされていれば取り下げを登録する。
+4. 仮説の取り下げ条件が満たされていないかを確かめ、同じ仮説（text・withdraw_if）に result を足して登録し直す
+   （満たされていれば withdrawn、いなければ kept）。kind: withdraw は主張・対応・計算の取り下げで、仮説には使わない。
 5. 比較を誤らせる要因（T2・T5・T6a・T6b）が支持されたら：
    - T2・T5に限り、補正できるなら補正前後の値を計算する。補正しても変化が残れば
-     comparison_state を adjusted として比較成立に進む。
+     comparison_state を adjusted とし、adjustment（method、before・after の計算ID）を付けて比較成立に進む。
    - 補正すると変化が消える、または比べられないと確定したら、見かけの変化。
    - 比べられるかを確定できなければ、保留（hold_reason: comparison）。
    - 同種業務の対応が confirmed でない、または比べる行の一部しか覆っていなければ、比較成立にしない（V8_MATCH_UNCONFIRMED）。
    - 規1（税込か税抜か、単位、範囲）の違いを補正するのに資料にない係数が要るなら、計算せずに kind: coefficient で
      提案し、記者に伝える。提案が proposed・accepted のまま残れば比較成立にしない（V8_COEFFICIENT_PENDING）。
 6. 支持された平凡な説明（T1・T3・T4）があれば、説明が変化のどこまでに及ぶかを calc・derive で
-   再計算し、残る差を記録する。数量に表れない変化では、説明を反映した条件で件数を数える。
-   定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問を登録する。
-7. 結論の案を kind: conclusion で登録する。
+   再計算し、判定に根拠と、説明を反映した値（recalc_calc_id）と残る差（residual_calc_id）を書く。
+   - 金額の候補：説明を反映した値は、比べる年度・系列と同じ集計にしない。残る差は、それと比較対象
+     （候補の calc_from か calc_to）の diff だけ。
+   - 数量に表れない変化（方式・理由）：説明を反映した条件で、比べる年度の1つの候補の行を数えた count を、
+     説明を反映した値と残る差の両方にする。説明によって足した条件を reflected_conditions に書く
+     （fiscal_year・record_id・group_key・method_family は足した条件にできない）。候補の行にその条件だけを
+     当てた行が、数えた行と一致しなければならない。
+   定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問（purposes に reason_breakdown）を登録する。
+7. 結論の案を kind: conclusion で登録する。どの結論でも、T1〜T5・T6c の判定を登録しておく。
    - 比較成立：T6a・T6bが否定され、T2（受注先の変化ではT5も）が否定か adjusted。
      T1・T3・T4がどれも支持されていなければ explanation_status は none。
    - 原因が分からないことだけでは保留にしない。
    - 保留の理由は、比較の条件（comparison）、原本照合の照合不能（source_check）、上限（limit）のどれか。
-8. 比較成立では、元の記載を確かめる質問（T6c）を必ず1件登録する。
+     保留では、足りない資料を照会する質問（purposes に missing_documents）を登録する。
+8. 比較成立では、元の記載を確かめる質問（T6c。purposes に verify_record）を必ず1件登録する。
 
 操作が拒否されたら、何をしようとして拒否されたかをそのまま記者に伝える。設定の変更、モードの切り替え、
 ! での実行など、権限を広げる方法や別の経路は案内しない。
