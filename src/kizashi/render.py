@@ -500,7 +500,8 @@ class _Memo:
         return lines
 
     def residual_detail(self, exp: dict) -> list[str]:
-        """残る差の比較対象と引き算の向き（金額の候補）、または対象の年度と行（金額以外の候補）。D-042③。"""
+        """残る差の比較対象と引き算の向き（金額の候補）、または残りの行（金額以外の候補。候補の行から根拠で説明できる
+        行を除いた残り。D-046）。D-042③。"""
         residual = self.calc(exp["residual_calc_id"]) or {}
         if residual.get("kind") == "derived":
             args = json.loads(residual["request_json"]).get("args") or []
@@ -515,7 +516,7 @@ class _Memo:
             return []
         if residual.get("kind") == "base":
             rows = "・".join(json.loads(residual["row_refs_json"] or "[]")) or "なし"
-            return [f"    - 条件をそろえた後に残る行：{rows}（単位：{residual['unit']}）"]
+            return [f"    - 説明できる行を除いた残りの行：{rows}（単位：{residual['unit']}）"]
         return []
 
     def section5(self) -> list[str]:

@@ -249,6 +249,69 @@ def test_inspect_lead_shows_residual_and_reflected_conditions(repo: Path, filled
     ) == (None, None, None)
 
 
+def _drop_explanation_columns(repo: Path, run_id: str, columns: tuple[str, ...]) -> None:
+    """explanations の表を、columns の列のない古い版の形に作り直す（residual_calc_id は版10、
+    reflected_conditions_json は版12で足した列）。外部キーのある列は DROP COLUMN できないので作り直す。"""
+    conn = ledger_of(repo, run_id)
+    keep = [r[1] for r in conn.execute("PRAGMA table_info(explanations)") if r[1] not in columns]
+    names = ", ".join(keep)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(f"CREATE TABLE explanations_old AS SELECT {names} FROM explanations")
+    conn.execute("DROP TABLE explanations")
+    conn.execute("ALTER TABLE explanations_old RENAME TO explanations")
+    conn.execute(
+        "UPDATE runs SET rule_versions_json = json_set(rule_versions_json, '$.rules_version', '11')"
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [("reflected_conditions_json",), ("residual_calc_id", "reflected_conditions_json")],
+    ids=["v11", "v9"],
+)
+def test_inspect_old_ledger_shows_missing_columns_as_unrecorded(
+    repo: Path, filled: dict, columns: tuple[str, ...]
+) -> None:
+    """4.3（D-047）：判定の表示に足した列（D-045③）のない古い版の台帳でも、inspect は失敗せず、その項目を未記録
+    （値は null、unrecorded に項目の名前）として出す。台帳は書き換えない。版の違う台帳への check は、これとは別に
+    E_RULE_VERSION で拒否する。"""
+    from kizashi import check
+
+    run_id, lid = filled["run_id"], filled["lead"]
+    rec(
+        repo,
+        run_id,
+        {
+            "kind": "explanation",
+            "lead_id": lid,
+            "type": "T1",
+            "judgment": "unknown",
+            "evidence": [],
+            "searched": "公表元の告知を探した。",
+        },
+    )
+    _drop_explanation_columns(repo, run_id, columns)
+    before = all_text_in_ledger(ledger_of(repo, run_id))
+    names = {
+        "residual_calc_id": "residual_calc_id",
+        "reflected_conditions_json": "reflected_conditions",
+    }
+
+    [t1] = show(repo, lid, run_id)["explanations"]
+    assert (t1["type"], t1["judgment"], t1["recalc_calc_id"]) == ("T1", "unknown", None)
+    assert t1["unrecorded"] == [names[c] for c in columns]
+    assert all(t1[names[c]] is None for c in columns)
+    conn = ledger_of(repo, run_id)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(explanations)")}
+    assert not cols & set(columns)  # 列を足して書き換えていない
+    assert all_text_in_ledger(conn) == before
+    with pytest.raises(KizashiError) as info:
+        check.run_check(repo, run_id, lid)
+    assert (info.value.code, info.value.exit_code) == ("E_RULE_VERSION", 3)
+
+
 def test_inspect_source_row_calc_claim_match(repo: Path, filled: dict) -> None:
     """4.3 資料ID・row_ref（take のキーと見出し、正規化した値、照合の結果）・計算ID・主張ID・対応ID。"""
     run_id = filled["run_id"]
