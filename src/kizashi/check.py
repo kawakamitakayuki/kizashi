@@ -986,7 +986,8 @@ def _residual_ok(conn: sqlite3.Connection, adapter: Adapter, lead: dict, exp: di
         if any(recalc_id == o or same_aggregation(conn, recalc_id, o) for o in originals):
             return False
         return residual_comparison(conn, lead, exp) is not None
-    # 金額以外の候補：条件をそろえた後に残る行の件数を、説明を反映した値と残る差の両方にする（D-043①）
+    # 金額以外の候補：候補の行から根拠で説明できる行を除いた残りの件数を、説明を反映した値と残る差の両方にする
+    # （D-043①・D-046）。check は形だけを確かめ、0件でも説明の状況を決めない（根拠との対応は記者が確かめる）
     if recalc_id != residual_id:
         return False
     residual = _comp(conn, residual_id)
@@ -1077,7 +1078,7 @@ def _v8_explanation_status(
             "V8_EXPLANATION_STATUS",
             "説明の状況が「全部」「一部」なのに、支持の T1・T3・T4（根拠付き）に、説明を反映した値（recalc_calc_id。"
             "比べる年度・系列と同じ集計は不可）と、規則に合う残る差（residual_calc_id。金額の候補は比較対象との diff、"
-            "金額以外の候補は条件をそろえた後に残る候補の行の件数）がない（実装仕様9章）。",
+            "金額以外の候補は、候補の行から根拠で説明できる行を除いた残りの件数）がない（実装仕様9章。D-046）。",
             [lead["lead_id"]],
         )
     if status == "unknown" and not _has_purpose(questions, "reason_breakdown"):

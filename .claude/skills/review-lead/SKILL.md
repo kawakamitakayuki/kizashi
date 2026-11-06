@@ -48,10 +48,12 @@ argument-hint: "[lead_id] [run_id]"
    再計算し、判定に根拠と、説明を反映した値（recalc_calc_id）と残る差（residual_calc_id）を書く。
    - 金額の候補：説明を反映した値は、比べる年度・系列と同じ集計にしない。残る差は、それと比較対象
      （候補の calc_from か calc_to）の diff だけ。
-   - 数量に表れない変化（方式・理由）：比べる年度の1つの候補の行のうち、説明を当てても変化を示したまま残る行を
-     数えた count を、説明を反映した値と残る差の両方にする。説明によって足した条件を reflected_conditions に書く
-     （fiscal_year・record_id・group_key・method_family は足した条件にできない）。候補の行にその条件だけを
-     当てた行が、数えた行と一致しなければならない。
+   - 数量に表れない変化（方式・理由）：比べる年度の1つの候補の行から、根拠で説明できる行を除いた残りを数えた
+     count を、説明を反映した値と残る差の両方にする。reflected_conditions にはその残りを選ぶ条件を書く
+     （fiscal_year・record_id・group_key・method_family は使えない）。候補の行にその条件だけを当てた行が、
+     数えた行と一致しなければならない。条件の列が空の行は残りから外れるので、候補の行に空の行がある列
+     （競争入札の行の reason_category など）では残りを選ばない。0件でも「全部」と決めつけず、残りを選ぶ条件が
+     根拠の説明する範囲と合うかを確かめ、記者に伝える。
    定量化できなければ scope を unknown にし、理由と内訳を尋ねる質問（purposes に reason_breakdown）を登録する。
 7. 結論の案を kind: conclusion で登録する。どの結論でも、T1〜T5・T6c の判定を登録しておく。
    - 比較成立：T6a・T6bが否定され、T2（受注先の変化ではT5も）が否定か adjusted。

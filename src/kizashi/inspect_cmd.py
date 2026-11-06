@@ -216,6 +216,37 @@ def _inspect_run(conn: sqlite3.Connection, run_id: str, page: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# 判定の表の、後の版で足した列 → 表示の名前（residual_calc_id は D-041 の版10、reflected_conditions_json は
+# D-043 の版12）。古い版の台帳にはないので、未記録として出す（台帳は書き換えない。D-047）
+_LATER_EXPLANATION_COLUMNS = {
+    "residual_calc_id": "residual_calc_id",
+    "reflected_conditions_json": "reflected_conditions",
+}
+
+
+def _explanation_view(e: sqlite3.Row) -> dict:
+    columns = set(e.keys())
+    unrecorded = [name for col, name in _LATER_EXPLANATION_COLUMNS.items() if col not in columns]
+    reflected = e["reflected_conditions_json"] if "reflected_conditions_json" in columns else None
+    view = {
+        "type": e["type"],
+        "judgment": e["judgment"],
+        "scope": e["scope"],
+        "searched": _excerpt(e["searched"]),
+        "evidence": json.loads(e["evidence_json"]),
+        "recalc_calc_id": e["recalc_calc_id"],
+        # 残る差と説明によって足した・変えた条件（review-lead が V8_EXPLANATION_STATUS の条件と、根拠と
+        # 条件の意味の対応を inspect で点検できるように出す。D-045③）
+        "residual_calc_id": e["residual_calc_id"] if "residual_calc_id" in columns else None,
+        "reflected_conditions": None if reflected is None else json.loads(reflected),
+        "no_quant_reason": _excerpt(e["no_quant_reason"]),
+        "context": e["context"],
+    }
+    if unrecorded:  # この台帳の版にない項目（値は null。登録して空だったのとは別）
+        view["unrecorded"] = unrecorded
+    return view
+
+
 def _inspect_lead(conn: sqlite3.Connection, lead_id: str, run_id: str, page: int) -> dict:
     lead = _row(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
     if lead is None:
@@ -265,27 +296,7 @@ def _inspect_lead(conn: sqlite3.Connection, lead_id: str, run_id: str, page: int
             "withdraw_if": _excerpt(lead["withdraw_if"]),
             "result": lead["hypothesis_result"],
         },
-        "explanations": [
-            {
-                "type": e["type"],
-                "judgment": e["judgment"],
-                "scope": e["scope"],
-                "searched": _excerpt(e["searched"]),
-                "evidence": json.loads(e["evidence_json"]),
-                "recalc_calc_id": e["recalc_calc_id"],
-                # 残る差と説明によって足した・変えた条件（review-lead が V8_EXPLANATION_STATUS の条件と、根拠と
-                # 条件の意味の対応を inspect で点検できるように出す。D-045③）
-                "residual_calc_id": e["residual_calc_id"],
-                "reflected_conditions": (
-                    None
-                    if e["reflected_conditions_json"] is None
-                    else json.loads(e["reflected_conditions_json"])
-                ),
-                "no_quant_reason": _excerpt(e["no_quant_reason"]),
-                "context": e["context"],
-            }
-            for e in explanations
-        ],
+        "explanations": [_explanation_view(e) for e in explanations],
         "claims": [
             {
                 "claim_id": c["claim_id"],

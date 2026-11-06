@@ -436,7 +436,7 @@ def test_kn2_all_examples_can_be_recorded(
         encoding="utf-8"
     )
     assert "説明によって足した・変えた条件：reason_category != planning_competition" in memo
-    assert "条件をそろえた後に残る行：なし（単位：件）" in memo
+    assert "説明できる行を除いた残りの行：なし（単位：件）" in memo
 
     # inspect（実行ID、候補ID、資料ID、row_ref、計算ID、主張ID）
     run = cli_inspect(run_id, run_id, capsys)

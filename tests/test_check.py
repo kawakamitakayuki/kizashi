@@ -1279,8 +1279,12 @@ def zuikei_count(repo: Path, run_id: str, year: int, group: str, **extra) -> str
     )["id"]
 
 
+# 金額以外の候補の残る行（D-046）：候補の対象行から、根拠によって説明できる行を除いた残り。reflected_conditions は
+# その残りを選ぶ条件。合成の根拠は2つ：企画競争への変更（企画競争の行を説明する）と、不調の扱い（不調の行を説明する）
 RULE_TEXT = "令和7年度から、調査研究の委託は企画競争により相手方を選ぶこととした。"
-PLANNING = {"col": "reason_category", "op": "=", "value": "planning_competition"}
+FAILED_TENDER_TEXT = "令和7年度から、入札が不調となった案件は随意契約により相手方を選ぶこととした。"
+NOT_PLANNING = {"col": "reason_category", "op": "!=", "value": "planning_competition"}
+NOT_FAILED_TENDER = {"col": "reason_category", "op": "!=", "value": "failed_tender"}
 
 
 def count_2025(repo: Path, run_id: str, filters: list[dict]) -> str:
@@ -1292,33 +1296,41 @@ def count_2025(repo: Path, run_id: str, filters: list[dict]) -> str:
             "op": "count",
             "table": "procurement_contracts",
             "filter": filters,
-            "label": "説明を反映した条件で残る行の件数",
+            "label": "根拠で説明できる行を除いた残りの行の件数",
             "unit": "件",
         },
     )["id"]
 
 
-def rule_change_evidence(repo: Path, run_id: str) -> dict:
-    """条件の変更（企画競争）を裏付ける合成の追加資料（取得の経路で data/raw に保存する）。"""
-    sid = fetch_html_evidence(repo, run_id, RULE_TEXT)
-    return {"source_id": sid, "position": {"page": 1}, "quote": RULE_TEXT, "role": "support"}
+def rule_change_evidence(repo: Path, run_id: str, text: str = RULE_TEXT) -> dict:
+    """条件の変更を裏付ける合成の追加資料（取得の経路で data/raw に保存する）。"""
+    sid = fetch_html_evidence(repo, run_id, text)
+    return {"source_id": sid, "position": {"page": 1}, "quote": text, "role": "support"}
+
+
+def _render_text(repo: Path, run_id: str, lead_id: str) -> str:
+    from kizashi import render
+
+    return (repo / render.render_lead(repo, run_id, lead_id)["memo"]).read_text(encoding="utf-8")
 
 
 def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str) -> None:
-    """V8（D-042③・D-043①②）：金額以外の候補（S3「調査研究委託」。令和6年度は公募、令和7年度は企画競争）では、
-    条件をそろえた後に残る行の件数を、説明を反映した値と残る差の両方にできる。条件は fiscal_year = 2025・
-    group_key・説明によって足した reason_category = planning_competition（S007:000001 だけ。候補の行の部分集合）。
-    根拠は企画競争への変更を書いた合成の追加資料。合格し、メモの4節に足した条件が出る。"""
+    """V8（D-042③・D-043①②・D-044①・D-046）：金額以外の候補（S3「調査研究委託」。令和6年度は公募、令和7年度は企画競争）
+    では、候補の行から根拠で説明できる行を除いた残りの件数を、説明を反映した値と残る差の両方にできる。根拠は
+    企画競争への変更で、令和7年度の候補の行（S007:000001。企画競争）を説明するので、残りを選ぶ条件は
+    reason_category != planning_competition、残りは0件（正当に0件になる例）。合格し、メモの4節に足した条件と
+    「残りの行：なし」が出る。0件でも、説明の状況（ここでは「一部」）を check が「全部」に決めることはない
+    （根拠との対応は記者が確かめる）。"""
     lead = s3_lead(repo, synthetic_run)
     lid = lead["lead"]
     evidence = rule_change_evidence(repo, synthetic_run)
-    good = count_2025(
+    remainder = count_2025(
         repo,
         synthetic_run,
         [
             {"col": "fiscal_year", "op": "=", "value": 2025},
             {"col": "group_key", "op": "=", "value": "調査研究委託"},
-            PLANNING,
+            NOT_PLANNING,
         ],
     )
     rec(
@@ -1329,19 +1341,148 @@ def test_d042_count_residual_for_non_amount_lead(repo: Path, synthetic_run: str)
             "T1",
             "support",
             scope="part",
-            recalc_calc_id=good,
-            residual_calc_id=good,
-            reflected_conditions=[PLANNING],
+            recalc_calc_id=remainder,
+            residual_calc_id=remainder,
+            reflected_conditions=[NOT_PLANNING],
             evidence=[evidence],
             searched="公表元の告知を確かめた。",
         ),
     )
     assert check.run_check(repo, synthetic_run, lid)["passed"] is True
-    from kizashi import render
+    conn = ledger_of(repo, synthetic_run)
+    (value,) = conn.execute(
+        "SELECT value FROM computations WHERE calc_id = ?", (remainder,)
+    ).fetchone()
+    (status,) = conn.execute(
+        "SELECT explanation_status FROM leads WHERE lead_id = ?", (lid,)
+    ).fetchone()
+    conn.close()
+    assert (value, status) == ("0", "part")
+    text = _render_text(repo, synthetic_run, lid)
+    assert "説明によって足した・変えた条件：reason_category != planning_competition" in text
+    assert "説明できる行を除いた残りの行：なし（単位：件）" in text
 
-    text = (repo / render.render_lead(repo, synthetic_run, lid)["memo"]).read_text(encoding="utf-8")
-    assert "説明によって足した・変えた条件：reason_category = planning_competition" in text
-    assert "条件をそろえた後に残る行：S007:000001" in text
+
+def test_d046_remainder_unchanged_when_evidence_explains_no_row(
+    repo: Path, synthetic_run: str
+) -> None:
+    """V8（D-046）：件数が変わらない例。根拠（不調の扱い）が説明するのは不調の行で、S3 の令和7年度の候補の行
+    （S007:000001）は企画競争なので説明できない。残りを選ぶ条件 reason_category != failed_tender で、残りは候補の行の
+    すべて（1件）。check は合格し（形だけを確かめる）、メモの4節に残りの行が出る。"""
+    lead = s3_lead(repo, synthetic_run)
+    lid = lead["lead"]
+    evidence = rule_change_evidence(repo, synthetic_run, FAILED_TENDER_TEXT)
+    remainder = count_2025(
+        repo,
+        synthetic_run,
+        [
+            {"col": "fiscal_year", "op": "=", "value": 2025},
+            {"col": "group_key", "op": "=", "value": "調査研究委託"},
+            NOT_FAILED_TENDER,
+        ],
+    )
+    rec(repo, synthetic_run, _support(lid, remainder, [NOT_FAILED_TENDER], evidence))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    text = _render_text(repo, synthetic_run, lid)
+    assert "説明によって足した・変えた条件：reason_category != failed_tender" in text
+    assert "説明できる行を除いた残りの行：S007:000001（単位：件）" in text
+
+
+def test_d046_remainder_partly_left(repo: Path, synthetic_run: str) -> None:
+    """V8（D-046）：一部だけ残る例。探索の候補（随意契約の理由の変化）の令和7年度の候補の行を、調査研究委託
+    （S007:000001。企画競争）と職員研修業務（S007:000007。公募）の2行にする（令和6年度は S003:000001・S003:000008。
+    どちらも公募）。根拠（企画競争への変更）が説明するのは S007:000001 だけで、残りを選ぶ条件
+    reason_category != planning_competition の残りは S007:000007（1件）。合格し、メモの4節に残りの行が出る。"""
+    from conftest import COMPARISON
+
+    two_2024 = ["S003:000001", "S003:000008"]
+    two_2025 = ["S007:000001", "S007:000007"]
+    (repo / "inbox" / "q-reason.sql").write_text(
+        "SELECT record_id, fiscal_year, reason_category FROM procurement_contracts"
+        " WHERE method_family = 'zuikei'",
+        encoding="utf-8",
+    )
+    from kizashi import query
+
+    query.run_query(repo, synthetic_run, "inbox/q-reason.sql")
+    counts = {}
+    for year, refs in ((2024, two_2024), (2025, two_2025)):
+        counts[year] = rec(
+            repo,
+            synthetic_run,
+            {
+                "kind": "calc",
+                "op": "count",
+                "table": "procurement_contracts",
+                "filter": [
+                    {"col": "fiscal_year", "op": "=", "value": year},
+                    {"col": "record_id", "op": "in", "value": refs},
+                ],
+                "label": f"{year}年度の候補の行の件数",
+                "unit": "件",
+            },
+        )["id"]
+    lid = rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "lead",
+            "query_file": "q-reason.sql",
+            "lead_key": "調査研究委託と職員研修業務",
+            "change_category": "reason_changed",
+            "period_from": 2024,
+            "period_to": 2025,
+            "calc_from": counts[2024],
+            "calc_to": counts[2025],
+            "calc_ids": [],
+            "comparison": {**COMPARISON, "unit": "件", "formula": "年度ごとの随意契約の理由の分類"},
+            "note": "探索で、調査研究委託と職員研修業務の随意契約の理由をまとめて見た",
+        },
+    )["id"]
+    conn = ledger_of(repo, synthetic_run)
+    row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lid,)).fetchone()
+    conn.close()
+    prepare(repo, synthetic_run, lead=row, match="none", conclusion=False)
+    for left, right in zip(two_2024, two_2025, strict=True):
+        rec(
+            repo,
+            synthetic_run,
+            {
+                "kind": "match",
+                "lead_id": lid,
+                "left": [left],
+                "right": [right],
+                "relation": "1:1",
+                "reason": "件名と業務の内容が同じ。",
+                "evidence": [],
+                "status": "confirmed",
+            },
+        )
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lid,
+            "outcome": "change",
+            "comparison_state": "comparable",
+            "explanation_status": "part",
+        },
+    )
+    evidence = rule_change_evidence(repo, synthetic_run)
+    remainder = count_2025(
+        repo,
+        synthetic_run,
+        [
+            {"col": "fiscal_year", "op": "=", "value": 2025},
+            {"col": "record_id", "op": "in", "value": two_2025},
+            NOT_PLANNING,
+        ],
+    )
+    rec(repo, synthetic_run, _support(lid, remainder, [NOT_PLANNING], evidence))
+    assert check.run_check(repo, synthetic_run, lid)["passed"] is True
+    text = _render_text(repo, synthetic_run, lid)
+    assert "説明できる行を除いた残りの行：S007:000007（単位：件）" in text
 
 
 def test_d043_non_amount_residual_rejects_rewrites_and_unrelated(
@@ -1349,7 +1490,8 @@ def test_d043_non_amount_residual_rejects_rewrites_and_unrelated(
 ) -> None:
     """V8（D-043①②）：金額以外の候補で、説明を反映した値に無関係な業務の金額（翻訳業務の令和6年度の合計）を使う、
     元の fiscal_year の条件を重ねただけ、値が1つの in を = に書き換えただけ、候補を選び直すだけの group_key の条件、
-    残る件数の条件にない条件を足したと書く、足した条件を書かない、のどれも V8_EXPLANATION_STATUS。"""
+    残る件数の条件にない条件を足したと書く、足した条件を書かない、のどれも V8_EXPLANATION_STATUS。基準の残りは
+    D-046 の定義（企画競争への変更で説明できる行を除いた残り。reason_category != planning_competition）。"""
     from conftest import calc_sum
 
     lead = s3_lead(repo, synthetic_run)
@@ -1359,7 +1501,7 @@ def test_d043_non_amount_residual_rejects_rewrites_and_unrelated(
     good = count_2025(
         repo,
         synthetic_run,
-        [fy, {"col": "group_key", "op": "=", "value": "調査研究委託"}, PLANNING],
+        [fy, {"col": "group_key", "op": "=", "value": "調査研究委託"}, NOT_PLANNING],
     )
     unrelated = rec(repo, synthetic_run, calc_sum(GROUP, 2024, label="翻訳業務の令和6年度の合計"))[
         "id"
@@ -1375,7 +1517,7 @@ def test_d043_non_amount_residual_rejects_rewrites_and_unrelated(
     )
     open_call = {"col": "reason_category", "op": "=", "value": "open_call"}
     cases = [
-        (unrelated, good, [PLANNING]),
+        (unrelated, good, [NOT_PLANNING]),
         (doubled, doubled, [fy]),
         (rewritten, rewritten, [{"col": "record_id", "op": "=", "value": "S007:000001"}]),
         (regroup, regroup, [{"col": "group_key", "op": "=", "value": "調査研究委託"}]),
@@ -1474,38 +1616,20 @@ def _support(lid: str, residual: str, reflected: list, evidence: dict) -> dict:
 
 
 def test_d044_undeclared_condition_cannot_reduce_rows(repo: Path, synthetic_run: str) -> None:
-    """V8（D-044①）：宣言した条件（reason_category = planning_competition。令和7年度の候補の行 S007:000001 が残る）
-    のまま、残る件数の集計にだけ unit_price = 1 を足して0件にすると不合格（候補の行に宣言した条件だけを当てた行
-    の集まりと、残る件数の行が一致しない）。"""
+    """V8（D-044①・D-046）：宣言した条件（不調の扱いで説明できる行を除いた残りを選ぶ reason_category !=
+    failed_tender。令和7年度の候補の行 S007:000001 が残る）のまま、残る件数の集計にだけ unit_price = 1 を足して
+    0件にすると不合格（候補の行に宣言した条件だけを当てた行の集まりと、残る件数の行が一致しない）。"""
     lead = s3_lead(repo, synthetic_run)
-    evidence = rule_change_evidence(repo, synthetic_run)
+    evidence = rule_change_evidence(repo, synthetic_run, FAILED_TENDER_TEXT)
     fy = {"col": "fiscal_year", "op": "=", "value": 2025}
     group = {"col": "group_key", "op": "=", "value": "調査研究委託"}
     hidden = count_2025(
-        repo, synthetic_run, [fy, group, PLANNING, {"col": "unit_price", "op": "=", "value": 1}]
-    )
-    rec(repo, synthetic_run, _support(lead["lead"], hidden, [PLANNING], evidence))
-    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
-
-
-def test_d044_declared_condition_may_leave_zero_rows(repo: Path, synthetic_run: str) -> None:
-    """V8（D-044①）：宣言した条件で正当に0件になる場合（令和7年度の候補の行の理由の分類は企画競争なので、
-    reason_category = open_call では0件）は合格する。件数が変わらない場合（planning_competition で1件のまま）は
-    test_d042_count_residual_for_non_amount_lead で合格を確かめている。"""
-    lead = s3_lead(repo, synthetic_run)
-    evidence = rule_change_evidence(repo, synthetic_run)
-    open_call = {"col": "reason_category", "op": "=", "value": "open_call"}
-    zero = count_2025(
         repo,
         synthetic_run,
-        [
-            {"col": "fiscal_year", "op": "=", "value": 2025},
-            {"col": "group_key", "op": "=", "value": "調査研究委託"},
-            open_call,
-        ],
+        [fy, group, NOT_FAILED_TENDER, {"col": "unit_price", "op": "=", "value": 1}],
     )
-    rec(repo, synthetic_run, _support(lead["lead"], zero, [open_call], evidence))
-    assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+    rec(repo, synthetic_run, _support(lead["lead"], hidden, [NOT_FAILED_TENDER], evidence))
+    assert failing(repo, synthetic_run, lead["lead"]) == ["V8_EXPLANATION_STATUS"]
 
 
 @pytest.mark.parametrize("screen", ["s2", "s3"])
