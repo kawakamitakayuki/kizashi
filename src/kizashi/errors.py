@@ -84,7 +84,22 @@ _CHECK_CODES_9: tuple[str, ...] = (
     "V8_T6C_QUESTION",
 )
 
-EXIT_CODES: dict[str, int] = {**_EXIT_CODES_3_7, **{c: 1 for c in _CHECK_CODES_9}}
+# 12.2 の check --publish の P0 の4項目の不合格（終了コード1）。仕様はコードの名前を決めていない（D-053）。
+_PUBLISH_CODES_12: tuple[str, ...] = (
+    "P_MANIFEST_MISMATCH",
+    "P_DENYLIST_HASH",
+    "P_DENYLIST_NAME",
+    "P_PERSONAL_NAME",
+    "P_EXCLUDED_VALUE",
+    "P_COUNTERPARTY",
+    "P_CORP_NUMBER",
+)
+
+EXIT_CODES: dict[str, int] = {
+    **_EXIT_CODES_3_7,
+    **{c: 1 for c in _CHECK_CODES_9},
+    **{c: 1 for c in _PUBLISH_CODES_12},
+}
 
 EXIT_OK = 0
 

@@ -160,6 +160,71 @@ def name_list(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[tu
     return sorted(names)
 
 
+# 取り込まない列のうち、V7 と公開の検査で照らす列（0始まり。D-032）。担当官の所在地はセルを改行で分けた各行を、
+# 相手方の住所はセル全体と、改行と連続する空白を空白1つに替えた文字列を照らす（改行では分けない）。
+OFFICER_LOCATION_INDEX = 3
+COUNTERPARTY_ADDRESS_INDEX = 6
+_EMPTY_MARKS = frozenset({"", "-", "－", "―"})
+_SPACES_RE = re.compile(r"\s+")
+
+
+def excluded_cell_values(index: int, cell: str | None) -> list[str]:
+    """1つのセルから照らす値（D-032）。空欄と `-`・`－`・`―` は除く。"""
+    if index == OFFICER_LOCATION_INDEX:
+        values = [line.strip() for line in (cell or "").splitlines()]
+    elif index == COUNTERPARTY_ADDRESS_INDEX:
+        whole = (cell or "").strip()
+        values = [whole, _SPACES_RE.sub(" ", whole)]
+    else:
+        return []
+    return [v for v in dict.fromkeys(values) if v not in _EMPTY_MARKS]
+
+
+def excluded_values(conn: sqlite3.Connection, root: Path, adapter: Adapter) -> list[str]:
+    """実行の取得済みの CSV の原本から、取り込まない列の値（担当官の所在地と相手方の住所だけ。D-032）の一覧を
+    作る。氏名の一覧と同じく、検査のたびに作り、保存しない（実装仕様9章の V7_PERSONAL_NAME、12.2）。"""
+    rows = conn.execute(
+        "SELECT logical_key, sha256 FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
+        " AND logical_key LIKE '%|csv' ORDER BY source_id"
+    ).fetchall()
+    values: set[str] = set()
+    for logical_key, sha in rows:
+        _, year, family, _ = logical_key.split("|")
+        spec = adapter.file_spec(int(year), family)
+        if spec is None:
+            continue
+        columns = [
+            i for i in (OFFICER_LOCATION_INDEX, COUNTERPARTY_ADDRESS_INDEX) if i in spec.drop
+        ]
+        table = readers.read_rows(paths.raw_dir(root) / f"{sha}.csv", spec.encoding)
+        for _, cells in table.records:
+            for index in columns:
+                if index < len(cells):
+                    values.update(excluded_cell_values(index, cells[index]))
+    return sorted(values)
+
+
+def counterparty_names(conn: sqlite3.Connection) -> list[str]:
+    """実行の受注者名の一覧（procurement_contracts.counterparty_raw。セルを改行で分けた各行。12.1）。
+    最初に現れた行の順（record_id の順）に並べる（伏せ字の記号を実行の中で同じにするため）。"""
+    names: dict[str, None] = {}
+    for (value,) in conn.execute(
+        "SELECT counterparty_raw FROM procurement_contracts ORDER BY record_id"
+    ):
+        for line in (value or "").splitlines():
+            if line.strip() not in _EMPTY_MARKS:
+                names.setdefault(line.strip(), None)
+    return list(names)
+
+
+def corp_numbers(conn: sqlite3.Connection) -> list[str]:
+    """実行の法人番号（13桁）の一覧（procurement_contracts.corp_numbers_json）。"""
+    found: set[str] = set()
+    for (value,) in conn.execute("SELECT corp_numbers_json FROM procurement_contracts"):
+        found |= {n for n in json.loads(value or "[]") if isinstance(n, str) and len(n) == 13}
+    return sorted(found)
+
+
 # ---------------------------------------------------------------------------
 # 4.5 単価契約、4.7 方式と理由
 # ---------------------------------------------------------------------------

@@ -104,42 +104,31 @@ def test_cli1_e_cwd_before_argument_errors(tmp_path: Path, monkeypatch, capsys, 
     assert_error(payload, "E_CWD")
 
 
-# 4.1〜4.7 の書式どおりの呼び出し。仮の実装は {"ok": true, "data": {"stub": "<操作名>"}} を返す。
-# run <分野> --config は P0-2 で本実装にした（test_cli2_run_is_implemented と test_run.py）。
-# fetch（--recheck を除く）・inspect・query・record は P0-4、run --resume は P0-5 で本実装にした
-# （IMPLEMENTED_FORMS）。check <lead_id> と render <lead_id>（--public なし）は P0-6 で本実装にした。
-VALID_FORMS = [
-    ("fetch", ["fetch", "20261105-101500-a3f2", "--recheck", "S004"]),
-    (
+# 4.1〜4.7 の書式どおりの呼び出し。P0-8 で仮の実装（{"stub": ...}）はなくなった。check --publish は、補助資料の
+# 一覧（KIZASHI_DENYLIST）がなければ、ほかを読む前に E_DENYLIST_MISSING（終了コード3）を返す（12.2）。
+PUBLISH_FORMS = [
+    ["check", "--publish", "examples/publish.manifest", "--run", "20261105-101500-a3f2"],
+    [
         "check",
-        ["check", "--publish", "examples/publish.manifest", "--run", "20261105-101500-a3f2"],
-    ),
-    (
-        "check",
-        [
-            "check",
-            "--publish",
-            "examples/publish.manifest",
-            "--run",
-            "20261105-101500-a3f2",
-            "--run",
-            "20261106-090000-b7c1",
-        ],
-    ),
-    ("render", ["render", "L0001", "--run", "20261105-101500-a3f2", "--public"]),
-    ("render", ["render", "20261105-101500-a3f2"]),
-    ("render", ["render", "20261105-101500-a3f2", "--public"]),
+        "--publish",
+        "examples/publish.manifest",
+        "--run",
+        "20261105-101500-a3f2",
+        "--run",
+        "20261106-090000-b7c1",
+    ],
 ]
 
 
-@pytest.mark.parametrize(("operation", "argv"), VALID_FORMS)
-def test_cli1_stub_accepts_documented_forms(
-    repo_root: Path, capsys, new_sqlite, operation: str, argv: list[str]
+@pytest.mark.parametrize("argv", PUBLISH_FORMS)
+def test_cli1_publish_forms_need_denylist(
+    repo_root: Path, capsys, new_sqlite, monkeypatch, argv: list[str]
 ) -> None:
-    """CLI-1：リポジトリ直下では、仕様の書式の呼び出しが1つのJSONと終了コード0を返す（仮の実装）。"""
+    """CLI-1：check --publish の書式は引数の検査を通り、一覧がなければ E_DENYLIST_MISSING で合格にしない。"""
+    monkeypatch.delenv("KIZASHI_DENYLIST", raising=False)
     code, payload, _ = run_cli(argv, capsys)
-    assert code == 0
-    assert payload == {"ok": True, "data": {"stub": operation}}
+    assert code == 3
+    assert payload["error"]["code"] == "E_DENYLIST_MISSING"
 
 
 # P0-4・P0-5 で本実装にした操作の書式。最小のフォルダー（台帳も inbox/ もない）では、引数の誤り（E_USAGE・
@@ -149,6 +138,7 @@ IMPLEMENTED_FORMS = [
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/x.pdf"],
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/", "--index"],
     ["fetch", "20261105-101500-a3f2", "https://www.cao.go.jp/y.html", "--definition"],
+    ["fetch", "20261105-101500-a3f2", "--recheck", "S004"],
     ["inspect", "20261105-000000-test"],
     ["inspect", "20261105-000000-test", "--page", "2"],
     ["inspect", "L0001", "--run", "20261105-000000-test"],
@@ -157,6 +147,9 @@ IMPLEMENTED_FORMS = [
     ["record", "20261105-101500-a3f2", "inbox/calc-001.json"],
     ["check", "L0001", "--run", "20261105-101500-a3f2"],
     ["render", "L0001", "--run", "20261105-101500-a3f2"],
+    ["render", "L0001", "--run", "20261105-101500-a3f2", "--public"],
+    ["render", "20261105-101500-a3f2"],
+    ["render", "20261105-101500-a3f2", "--public"],
 ]
 
 
@@ -327,10 +320,23 @@ SPEC_9_CHECK_CODES = [
 ]
 
 
+PUBLISH_CODES_D053 = (
+    "P_MANIFEST_MISMATCH",
+    "P_DENYLIST_HASH",
+    "P_DENYLIST_NAME",
+    "P_PERSONAL_NAME",
+    "P_EXCLUDED_VALUE",
+    "P_COUNTERPARTY",
+    "P_CORP_NUMBER",
+)
+
+
 def test_cli1_exit_codes_match_spec() -> None:
-    """CLI-1：エラーコードと終了コードの対応が 3.7 の表と9章のとおり。表にないコードはない。"""
+    """CLI-1：エラーコードと終了コードの対応が 3.7 の表と9章のとおり。表にないコードはない。12.2 の
+    check --publish の不合格は終了コード1で、コードの名前は仕様にないため仮に決めた（D-053）。"""
     expected = dict(SPEC_3_7_EXIT_CODES)
     expected.update({c: 1 for c in SPEC_9_CHECK_CODES})
+    expected.update({c: 1 for c in PUBLISH_CODES_D053})
     assert errors.EXIT_CODES == expected
 
 
@@ -343,7 +349,8 @@ def test_cli1_unknown_error_code_is_rejected() -> None:
 
 
 def test_cli1_console_script(tmp_path: Path) -> None:
-    """CLI-1：導入した kizashi コマンドの終了コードが main の値と同じ（E_CWD は3、成功は0）。"""
+    """CLI-1：導入した kizashi コマンドの終了コードが main の値と同じ（E_CWD は3。起動時の検査を通った後の
+    操作の型付きのエラーは、そのコードの終了コード）。"""
     exe = Path(sys.executable).with_name("kizashi")
     if not exe.exists():
         pytest.skip("kizashi コマンドが導入されていない（uv sync の後に実行する）")
@@ -368,15 +375,15 @@ def test_cli1_console_script(tmp_path: Path) -> None:
     (fake_repo / "pyproject.toml").write_text("", encoding="utf-8")
     (fake_repo / "datasets").mkdir()
     proc = subprocess.run(
-        [str(exe), "render", "20261105-000000-test"],  # 実行の概要は P0-8 まで仮の実装
+        [str(exe), "render", "20261105-000000-test"],  # 台帳のない実行の概要
         cwd=fake_repo,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
     )
-    assert proc.returncode == 0
-    assert json.loads(proc.stdout) == {"ok": True, "data": {"stub": "render"}}
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout)["error"]["code"] == "E_REF_NOT_FOUND"
 
 
 # ---------------------------------------------------------------------------
@@ -397,11 +404,12 @@ def test_cli3_old_sqlite_is_e_usage(repo_root: Path, monkeypatch, capsys, versio
 
 @pytest.mark.parametrize("version", ["3.44.0", "3.45.1", "3.100.0", "4.0.0"])
 def test_cli3_new_sqlite_passes(repo_root: Path, monkeypatch, capsys, version: str) -> None:
-    """CLI-3：3.44以上は止めない。3.100.0 のように、文字列の比較では誤って止める版も通す。"""
+    """CLI-3：3.44以上は止めない。3.100.0 のように、文字列の比較では誤って止める版も通す（起動時の検査を通り、
+    操作の型付きのエラー（台帳がない）まで進む）。"""
     monkeypatch.setattr(sqlite3, "sqlite_version", version)
     code, payload, _ = run_cli(["render", "20261105-000000-test"], capsys)
-    assert code == 0
-    assert payload == {"ok": True, "data": {"stub": "render"}}
+    assert code == 1
+    assert payload["error"]["code"] == "E_REF_NOT_FOUND"
 
 
 # ---------------------------------------------------------------------------

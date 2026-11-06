@@ -177,7 +177,9 @@ def _source(conn: sqlite3.Connection, source_id: str) -> tuple:
 def _csv_of_pdf(conn: sqlite3.Connection, logical_key: str) -> str | None:
     csv_key = logical_key[: -len("|pdf")] + "|csv"
     row = conn.execute(
-        "SELECT source_id FROM sources WHERE logical_key = ? AND kind = 'dataset'", (csv_key,)
+        "SELECT source_id FROM sources WHERE logical_key = ? AND kind = 'dataset'"
+        " AND supersedes IS NULL",
+        (csv_key,),
     ).fetchone()
     return None if row is None else row[0]
 
