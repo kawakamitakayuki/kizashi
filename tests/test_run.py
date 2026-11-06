@@ -115,7 +115,7 @@ def test_run_completed_with_synthetic_data(
     # 8：D-040 で実行設定の全文の保存を氏名の検査の後にし、探索SQL の結果とエラーの文も検査した。
     # 9：P0-6 で check（V1〜V4・V8）と render（候補のメモ）を足した。10：D-041 の修正。11：D-042 の修正。
     # 12：D-043 の修正。13：D-044 の修正
-    assert (versions["rules_version"], versions["parser_version"]) == ("22", "cao-procurement/1")
+    assert (versions["rules_version"], versions["parser_version"]) == ("23", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
@@ -622,3 +622,35 @@ def test_cf1_unknown_format_stops_before_saving_config(repo: Path, site: Site) -
         data = file.read_bytes()
         for word in ("架空", "太郎"):
             assert word.encode("utf-8") not in data, (file.name, word)
+
+
+def test_ft2_duplicate_dataset_links_reason_lists_no_urls(repo: Path, site: Site) -> None:
+    """FT-2（D-074）：公表ページに同じ論理資料のリンクが2つ以上あるとき、取得の失敗の理由には、資料ID・論理資料の
+    キー・候補の数だけを書き、候補の URL を書かない（初回の run では氏名の一覧がまだなく、URL を氏名で照らせない
+    ため）。原因は保存した公表ページの原本で確かめる。令和7年度の競争入札の CSV（S005）に、架空の担当官名を
+    % で符号化したリンクを足して2つにする。"""
+    from urllib.parse import quote, unquote
+
+    from conftest import WEB
+
+    page = (WEB / "kohyo.html").read_text(encoding="utf-8")
+    named = URL["k25_csv"].replace("20260512-02", quote("架空太郎"))
+    page = page.replace("</body>", f'<a href="{named}">別の合成資料</a></body>')
+    site.routes[PAGE] = httpx.Response(
+        200, headers={"content-type": "text/html; charset=UTF-8"}, content=page.encode()
+    )
+    result = runner.start_run(repo, "cao-procurement", write_config(repo), transport=site.transport)
+    assert result["state"] == "partial"
+    conn = ledger_of(repo, result["run_id"])
+    row = conn.execute(
+        "SELECT source_id, status, failure_reason FROM sources"
+        " WHERE logical_key = 'cao-procurement|2025|kyoso|csv'"
+    ).fetchone()
+    dump = "\n".join(conn.iterdump())
+    conn.close()
+    assert (row["source_id"], row["status"]) == ("S005", "failed")
+    assert "cao-procurement|2025|kyoso|csv" in row["failure_reason"]
+    assert "S005" in row["failure_reason"] and "候補2個" in row["failure_reason"]
+    assert "https://" not in row["failure_reason"]
+    assert "架空太郎" not in unquote(dump)
+    assert named not in site.requests

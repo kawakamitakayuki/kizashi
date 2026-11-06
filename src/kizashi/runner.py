@@ -482,9 +482,14 @@ def _fetch_datasets(
                 None,
             )
         elif len(urls) > 1:
+            # 候補の URL は書かない。初回の run では氏名の一覧がまだなく、URL を氏名で照らせないため（D-074）。
+            # 原因は保存した公表ページの原本で確かめる
             failure = (
                 "failed",
-                "公表ページに同じ論理資料のリンクが2つ以上ある：" + "、".join(urls),
+                (
+                    f"公表ページに同じ論理資料（{source_id}・{logical_key}）のリンクが候補{len(urls)}個ある"
+                    "（候補の URL は書かない。保存した公表ページの原本で確かめる）"
+                ),
                 None,
             )
         else:
