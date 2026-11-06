@@ -72,6 +72,43 @@ def test_hs1_any_hashed_row_makes_memo_stale(
     assert "check と render をやり直す" in after["note"]
 
 
+@pytest.mark.parametrize(
+    "columns",
+    [("reflected_conditions_json",), ("residual_calc_id", "reflected_conditions_json")],
+    ids=["v11", "v9"],
+)
+def test_hs1_old_ledger_memo_status_without_later_columns(
+    repo: Path, synthetic_run: str, rendered: dict, columns: tuple[str, ...]
+) -> None:
+    """HS-1（D-047）：判定の表に後の版で足した列（residual_calc_id は版10、reflected_conditions_json は版12）の
+    ない古い版の台帳でも、inspect の失効の表示は失敗せず、台帳を書き換えない。台帳の形と規則の版を変えたので
+    記録したハッシュとは違い「失効」。その台帳でメモを書いた状態（記録したハッシュ＝その台帳のハッシュ）なら
+    「有効」で、主張を変えると「失効」。"""
+    from test_inspect import _drop_explanation_columns
+
+    lead = rendered["lead"]
+    _drop_explanation_columns(repo, synthetic_run, columns)
+    conn = ledger_of(repo, synthetic_run)
+    before = list(conn.iterdump())
+    conn.close()
+
+    shown = memo_of(repo, synthetic_run, lead)
+    assert shown["status"] == "失効" and shown["check_hash"] != shown["current_hash"]
+    conn = ledger_of(repo, synthetic_run)
+    assert list(conn.iterdump()) == before  # 列を足して書き換えていない
+    conn.close()
+
+    tamper(
+        repo,
+        synthetic_run,
+        "UPDATE leads SET memo_hash = ? WHERE lead_id = ?",
+        (shown["current_hash"], lead),
+    )
+    assert memo_of(repo, synthetic_run, lead)["status"] == "有効"
+    tamper(repo, synthetic_run, HASHED["主張"], {"lead": lead})
+    assert memo_of(repo, synthetic_run, lead)["status"] == "失効"
+
+
 def test_hs1_excluded_columns_do_not_make_memo_stale(
     repo: Path, synthetic_run: str, rendered: dict
 ) -> None:

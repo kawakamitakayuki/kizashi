@@ -124,12 +124,11 @@ def direct_calc_ids(conn: sqlite3.Connection, lead_id: str) -> list[str]:
         (lead_id,),
     ):
         ids += json.loads(claim["calc_ids_json"])
+    # residual_calc_id は版10で足した列。inspect の失効の表示は版9以前の台帳も読む（D-047）ので、名指しで選ばない
     for exp in dict_rows(
-        conn,
-        "SELECT recalc_calc_id, residual_calc_id FROM explanations WHERE lead_id = ? ORDER BY type",
-        (lead_id,),
+        conn, "SELECT * FROM explanations WHERE lead_id = ? ORDER BY type", (lead_id,)
     ):
-        ids += [exp["recalc_calc_id"], exp["residual_calc_id"]]
+        ids += [exp["recalc_calc_id"], exp.get("residual_calc_id")]
     if lead["adjustment_json"]:
         adjustment = json.loads(lead["adjustment_json"])
         ids += [adjustment.get("before"), adjustment.get("after")]
