@@ -1,0 +1,85 @@
+# NITE の PRTR 個別事業所データ（化管法の届出の排出量・移動量）。骨組み（P1-c）。
+# 仕様：docs/adapter_prtr.md。作るのは、この設定、型付きの表と対応表（tables.sql）、検出SQL 1本、合成のテスト用データだけ。
+# CLI の分野にはまだ登録していない（kizashi run prtr は E_USAGE）。取得・正規化・品質検査・照合・メモの書き出しは未実装。
+domain: prtr
+status: skeleton
+parser_version: prtr/0
+source:
+  page: https://www.nite.go.jp/chem/prtr/prtr-kaizi.html
+  structure: https://www.nite.go.jp/data/000008604.pdf     # 本紙・別紙・他業種のファイル構成について
+  link_pattern: 'chem/prtr/data/prtrdata(?P<year>\d{4})fy\((?P<date>\d{8})(?:disclosure|update)\)_(?P<family>honshi|besshi)\.zip$'
+  archive: zip                 # ZIP の中は フォルダー/本紙.txt などの1ファイル（展開の安全はP1のSF-2）
+  members: {honshi: 本紙/本紙.txt, besshi: 別紙/別紙.txt}
+  terms_note: "利用条件は確かめていない（docs/adapter_prtr.md 13章）"
+fetch:
+  allowed_hosts: ["*.go.jp"]
+text_format:                   # 2章【確認済み】
+  encoding: cp932
+  delimiter: ","
+  quote: '"'
+  line_end: "\r\n"
+  header_rows: 0               # 見出しの行はない。列は構成の説明の番号で特定する
+files:                         # 排出年度 → 把握年度のファイル（同じ時点で取得した版に固定する）
+  2023: {honshi: "prtrdata2023fy(20260227update)_honshi.zip", besshi: "prtrdata2023fy(20260227update)_besshi.zip"}
+  2024: {honshi: "prtrdata2024fy(20260227disclosure)_honshi.zip", besshi: "prtrdata2024fy(20260227disclosure)_besshi.zip"}
+column_sets:                   # 列の番号は1から（3章）
+  honshi:
+    columns: 23
+    take:
+      seiri_no:          {index: 1}
+      fiscal_year_raw:   {index: 2}
+      corp_number_raw:   {index: 12}
+      pref:              {index: 17}
+      city:              {index: 18}
+      industry_name:     {index: 21}
+      industry_code:     {index: 22}
+      substance_count:   {index: 23}
+    personal: [5, 6, 7, 8, 9, 10]   # 届出者の氏名・代表者の氏名・住所。取り込まない（4章）
+    names: [11, 13, 14, 15]         # 事業者・事業所の名称。個人の氏名を含みうるので、骨組みでは取り込まない（13章の2）
+  besshi:
+    columns: 41
+    take:
+      seiri_no:          {index: 1}
+      sheet_no:          {index: 2}
+      substance_name:    {index: 3}
+      substance_code:    {index: 4}
+      unit_raw:          {index: 5}
+      air:               {index: 6}
+      water:             {index: 7}
+      soil:              {index: 9}
+      landfill:          {index: 10}
+      sewer:             {index: 14}
+      offsite:           {index: 16}
+units: {"1": kg, "2": mg-TEQ}
+release_columns: [air, water, soil, landfill]   # 環境への排出
+transfer_columns: [sewer, offsite]              # 移動。排出と合算しない
+substance_list_revision_year: 2023              # 対象物質の見直し後の最初の排出年度（5章）
+facility_key: [corp_number, pref, city, industry_code]   # 年度間の事業所の対応のキー（6章）。整理番号では結ばない
+first_scope:                   # 最初の範囲（設計書8.4）。結果を見る前に記者が決めて書く。決まるまで空
+  pref: null
+  substance_code: null
+  medium: air
+screens:
+  s1_air_release_change: {requires: [honshi, besshi], params: [pref, substance_code]}
+defaults:
+  compare_years: [2023, 2024]
+reconcile:
+  source_check: not_applicable   # 別の形式（PDF）がない。再集計と本紙・別紙の対応の検査で行う（9章）
+  fields_by_category:
+    air_release_up: []
+    air_release_down: []
+    air_release_incomparable: []
+comparison_defaults:
+  s1_air_release_change:
+    population: NITE が公表した PRTR 個別事業所データのうち、最初の範囲の都道府県・物質で、法人番号・都道府県・市区町村・主たる業種コードの組が両年度ともちょうど1つの事業所に当たるもの
+    row_meaning: 別紙の1行（1事業所・1物質・1年度の届出）
+    period: 排出年度
+    unit: kg または mg-TEQ（届出の単位ごとに分け、混ぜない）
+    entity_mapping: 法人番号・都道府県・市区町村・主たる業種コードの組（整理番号では結ばない。対応の確定は対応表）
+    formula: 大気への排出量（別紙6列）の両年度の値
+forbidden_inferences:          # 7章、設計書8.4
+  - 排出量の変化から、健康被害、実際の曝露、違法性を推定しない（届出の値の変化として書く）
+  - 毒性の異なる物質を重さで合計しない。kg と mg-TEQ を混ぜない
+  - 下水道・事業所の外への移動を、環境への排出と合算しない
+  - 片方の年度にだけある事業所・物質を「新規」「廃止」と書かない
+catalog_refs: [D249, D250, C173, M09]
