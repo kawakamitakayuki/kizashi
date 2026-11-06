@@ -782,8 +782,12 @@ claude --permission-mode dontAsk --setting-sources project \
       "Edit(/eval/**)", "Edit(/examples/**)", "Edit(/.claude/**)", "Edit(/.venv/**)",
       "Edit(/CLAUDE.md)", "Edit(/investigate.settings.json)", "Edit(/pyproject.toml)", "Edit(/uv.lock)",
       "Edit(/docs/**)", "Edit(/README.md)", "Edit(/.gitignore)", "Edit(/.python-version)",
+      "Edit(/.git/**)", "Edit(/inbox/*/**)",
       "NotebookEdit", "WebFetch", "Agent", "mcp__*",
-      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)", "Bash(jq *)"
+      "Bash(python *)", "Bash(python3 *)", "Bash(uv *)", "Bash(sqlite3 *)", "Bash(jq *)",
+      "Bash(mkdir *)", "Bash(touch *)", "Bash(cp *)", "Bash(mv *)", "Bash(rm *)", "Bash(rmdir *)",
+      "Bash(ln *)", "Bash(tee *)", "Bash(sed *)", "Bash(chmod *)", "Bash(truncate *)", "Bash(dd *)",
+      "Bash(install *)"
     ]
   }
 }

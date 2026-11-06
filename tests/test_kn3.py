@@ -47,3 +47,50 @@ def test_kn3_fence_is_not_used_inside() -> None:
         fence = lines[opening][: len(lines[opening]) - len(lines[opening].lstrip("`"))]
         body = (REPO / name).read_text(encoding="utf-8").split("\n")
         assert fence not in body, (name, fence)
+
+
+# 調査のセッションで書き込みのできる Bash のコマンドと、拒否の規則のなかった書き込み先（D-071）。accept edits に
+# 切り替えると、拒否の規則のないパスへのファイル操作が確認なしで動いた（mkdir inbox/sub）ため、拒否の一覧に足す
+WRITE_COMMANDS = (
+    "mkdir",
+    "touch",
+    "cp",
+    "mv",
+    "rm",
+    "rmdir",
+    "ln",
+    "tee",
+    "sed",
+    "chmod",
+    "truncate",
+    "dd",
+    "install",
+)
+EXTRA_EDIT_DENY = ("Edit(/.git/**)", "Edit(/inbox/*/**)")
+
+
+def investigate_settings() -> dict:
+    import json
+
+    return json.loads((REPO / "investigate.settings.json").read_text(encoding="utf-8"))
+
+
+def test_kn3_investigate_settings_doc_matches_file() -> None:
+    """KN-3：docs/claude_code_config.md の2節（investigate.settings.json）の囲みの中身が、実ファイルと同じ
+    （JSON として比べる）。"""
+    import json
+
+    lines = DOC.read_text(encoding="utf-8").split("\n")
+    assert json.loads(fenced_body(lines, "## 2. ")) == investigate_settings()
+
+
+def test_kn3_investigate_settings_deny_write_commands() -> None:
+    """KN-3（D-071）：調査用の設定の拒否の一覧に、書き込みのできる Bash のコマンドと、`.git/` と `inbox/` の下の
+    フォルダーへの書き込みがある。`inbox/` 直下の .json・.sql の許可はそのまま。"""
+    permissions = investigate_settings()["permissions"]
+    deny = set(permissions["deny"])
+    for command in WRITE_COMMANDS:
+        assert f"Bash({command} *)" in deny, command
+    for rule in EXTRA_EDIT_DENY:
+        assert rule in deny, rule
+    assert {"Edit(/inbox/*.json)", "Edit(/inbox/*.sql)"} <= set(permissions["allow"])
