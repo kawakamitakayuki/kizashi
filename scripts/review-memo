@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# 候補のメモを、読み取り専用の別セッションで読み直す（P1。設計書9.3、実装仕様13章）。開発には使わない。
+# 記者が kizashi render の後に起動する。同じモデルによる読み直しで、独立した検証ではない。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+usage="使い方：scripts/review-memo <run_id> <lead_id>（例：scripts/review-memo 20261105-101500-a3f2 L0007）"
+# 実装仕様3.3の書式。地域の設定で範囲の意味が変わらないよう、文字を列挙する。
+digit='[0123456789]'
+alnum='[abcdefghijklmnopqrstuvwxyz0123456789]'
+run_re="^${digit}{8}-${digit}{6}-${alnum}{4}$"
+lead_re="^L${digit}{4}$"
+
+if [[ $# -ne 2 ]]; then
+  echo "引数の数が違う。$usage" >&2
+  exit 2
+fi
+run_id=$1
+lead_id=$2
+if [[ ! $run_id =~ $run_re ]]; then
+  echo "実行IDの書式が違う（YYYYMMDD-HHMMSS-英小文字と数字4桁）。$usage" >&2
+  exit 2
+fi
+if [[ ! $lead_id =~ $lead_re ]]; then
+  echo "候補IDの書式が違う（L＋4桁）。$usage" >&2
+  exit 2
+fi
+
+run_dir="data/runs/$run_id"
+if [[ ! -d $run_dir ]]; then
+  echo "実行 $run_id のフォルダー（$run_dir）がない。実行IDを確かめ、kizashi render $lead_id --run $run_id でメモを書いてから起動する。" >&2
+  exit 3
+fi
+
+# 最新のメモ（memos/<lead_id>.v<n>.md の n が最大のもの。番号は数で比べる）。
+latest=0
+for memo in "$run_dir/memos/$lead_id".v*.md; do
+  n=${memo##*.v}
+  n=${n%.md}
+  if [[ -f $memo && $n =~ ^[123456789]${digit}*$ ]] && ((10#$n > latest)); then
+    latest=$((10#$n))
+  fi
+done
+if ((latest == 0)); then
+  echo "候補 $lead_id のメモが $run_dir/memos/ にない。kizashi render $lead_id --run $run_id でメモを書いてから起動する。" >&2
+  exit 3
+fi
+memo_path="$run_dir/memos/$lead_id.v$latest.md"
+
+if [[ -d $run_dir/evidence ]]; then
+  pages="- 資料のページ別テキスト：\`$run_dir/evidence/<資料ID>/pages/<ページ番号>.txt\`（メモの「S004 の 5ページ」なら \`$run_dir/evidence/S004/pages/5.txt\`）"
+else
+  pages="- 資料のページ別テキスト：この実行には、追加資料のページ別テキストはない"
+fi
+
+prompt="$(
+  cat <<EOF
+KIZASHI の候補のメモを読み直す（実行 $run_id、候補 $lead_id、メモの番号 $latest）。このセッションは、調査とは別の、読み取り専用のセッションである。同じモデルによる読み直しで、独立した検証ではない。
+
+- メモ：\`$memo_path\`
+$pages
+- パスは、作業フォルダー（リポジトリの直下）からの相対パス。
+
+メモと、メモが根拠に挙げた資料のページ別テキストを読み、否定の根拠が支えになっていない箇所、言い過ぎ、根拠の位置が主張を支えていない箇所を挙げる。書き込みはしない。
+指摘ごとに、メモの節、主張ID（C＋4桁）か型（T1〜T6c）、根拠の資料IDとページを書く。ページ別テキストのない根拠（公表一覧の CSV の行など）は、このセッションでは確かめられないので、確かめられなかったと書く。指摘がなければ、読んだメモと資料のページを挙げて「指摘なし」と書く。
+EOF
+)"
+
+# --tools と --disallowedTools は値を複数取るので、最初の指示の前に -- を置く（ないと指示が道具の名前として読まれる）。
+exec claude --permission-mode dontAsk --setting-sources project \
+  --tools "Read,Grep,Glob" --disallowedTools "mcp__*" -- "$prompt"
