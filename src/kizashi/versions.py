@@ -57,7 +57,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     作る前に原本の様式を確かめる、check でも文書値を引用の数値と照らす（V3D）、引用したページ別テキストを原本から
 #     抽出し直して比べる（V4_PAGE_TEXT_MISMATCH）、追加資料のページ別テキストの既知の氏名を伏せる、比較成立は
 #     comparable・adjusted に限る（V5_CHANGE_NOT_COMPARABLE））。check・render・run・fetch の結果が変わる。
-RULES_VERSION = "18"
+# 19：D-064〜D-066（係数の手がかりに引用した取得資料も V4 の引用と抽出し直しの対象にする、文書値の位置が受注先の列を
+#     引くときも受注先を扱うとする、UTF-8 として壊れたページ別テキストを V4_PAGE_TEXT_MISMATCH・E_QUOTE_NOT_FOUND に
+#     する）。check・render・record の結果が変わる。
+RULES_VERSION = "19"
 
 
 def code_version() -> str:

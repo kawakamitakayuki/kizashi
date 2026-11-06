@@ -203,3 +203,89 @@ def test_ft4_known_officer_names_are_masked_in_page_text(repo: Path, synthetic_r
         repo, synthetic_run, lead["lead"], source["source_id"], "（氏名）は架空の会議に出席した。"
     )
     assert check.run_check(repo, synthetic_run, lead["lead"])["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# D-064 係数の手がかり、D-066 壊れたページ別テキスト
+# ---------------------------------------------------------------------------
+
+
+def declined_coefficient(lead_id: str, basis: list) -> dict:
+    return {
+        "kind": "coefficient",
+        "lead_id": lead_id,
+        "key": "review_basis",
+        "value": "1",
+        "meaning": "架空の補正の案",
+        "why_needed": "架空の説明を調べるため",
+        "apply_to": "検討の対象",
+        "basis": basis,
+        "status": "declined",
+        "reporter_note": "補正は要らないと記者が判断した。",
+    }
+
+
+def test_qt1_coefficient_basis_page_text_is_rechecked(repo: Path, synthetic_run: str) -> None:
+    """QT-1・CK-1（D-064）：係数の手がかり（basis）に引用した追加資料のページも、check で引用を照らし、原本から
+    抽出し直して比べる。ページ別テキストだけを原本にない文に変えて手がかりにすると V4_PAGE_TEXT_MISMATCH
+    （係数が declined でも、メモに出るので）。"""
+    lead = prepare(repo, synthetic_run)
+    source = fetch_html(repo, synthetic_run, "これは架空の原資料である。")
+    invented = "原本にはない架空の補正の理由である。"
+    page_of(repo, source).write_text(invented, encoding="utf-8")
+    basis = [
+        {
+            "source_id": source["source_id"],
+            "position": {"page": 1},
+            "quote": invented,
+            "role": "support",
+        }
+    ]
+    rec(repo, synthetic_run, declined_coefficient(lead["lead"], basis))
+    for call in (check.run_check, render.render_lead):
+        assert "V4_PAGE_TEXT_MISMATCH" in failing_codes(call, repo, synthetic_run, lead["lead"])
+
+
+def test_qt1_corrupt_page_text_is_a_typed_failure(repo: Path, synthetic_run: str, capsys) -> None:
+    """QT-1・CK-1（D-066）：引用したページ別テキストが UTF-8 として壊れていても、想定外のエラー（E_INTERNAL）に
+    せず、check は V4_PAGE_TEXT_MISMATCH（終了コード1）。壊れたページへの引用の record は E_QUOTE_NOT_FOUND。"""
+    import json
+
+    from kizashi import cli, record
+
+    lead = prepare(repo, synthetic_run)
+    source = fetch_html(repo, synthetic_run, "これは架空の原資料である。")
+    record_claim(
+        repo, synthetic_run, lead["lead"], source["source_id"], "これは架空の原資料である。"
+    )
+    page_of(repo, source).write_bytes(b"\xff")
+    code = cli.main(["check", lead["lead"], "--run", synthetic_run])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert "V4_PAGE_TEXT_MISMATCH" in [f["code"] for f in payload["error"]["failures"]]
+    proposal = repo / "inbox" / "again.json"
+    proposal.write_text(
+        json.dumps(
+            {
+                "kind": "claim",
+                "lead_id": lead["lead"],
+                "type": "record",
+                "fiscal_year": 2025,
+                "text": "公表元の資料に記載がある。",
+                "calc_ids": [],
+                "evidence": [
+                    {
+                        "source_id": source["source_id"],
+                        "position": {"page": 1},
+                        "quote": "これは架空の原資料である。",
+                        "role": "support",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(KizashiError) as info:
+        record.record(repo, synthetic_run, "inbox/again.json")
+    assert info.value.code == "E_QUOTE_NOT_FOUND" and info.value.exit_code == 1
