@@ -66,7 +66,9 @@ WRITE_COMMANDS = (
     "dd",
     "install",
 )
-EXTRA_EDIT_DENY = ("Edit(/.git/**)", "Edit(/inbox/*/**)")
+# `inbox/` の下のフォルダーへの書き込みは `Edit(/inbox/*/*)` で止める。`Edit(/inbox/*/**)` は `inbox/` 直下の
+# ファイルにも当たり、許可した .json・.sql の書き込みまで拒否した（D-084。v2.1.319 で再現）
+EXTRA_EDIT_DENY = ("Edit(/.git/**)", "Edit(/inbox/*/*)")
 
 
 def investigate_settings() -> dict:
@@ -94,3 +96,6 @@ def test_kn3_investigate_settings_deny_write_commands() -> None:
     for rule in EXTRA_EDIT_DENY:
         assert rule in deny, rule
     assert {"Edit(/inbox/*.json)", "Edit(/inbox/*.sql)"} <= set(permissions["allow"])
+    # 回帰（D-084）：inbox/ 直下のファイルに当たる拒否を置かない
+    assert "Edit(/inbox/*/**)" not in deny
+    assert "Edit(/inbox/**)" not in deny
