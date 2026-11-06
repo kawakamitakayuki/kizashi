@@ -60,6 +60,11 @@ def test_rd3_summary_sections_and_counts(repo: Path, synthetic_run: str) -> None
     assert "| s2_method_change | 実行済み | 17 | 0 | 2 |" in detect_part
     assert "| s3_reason_change | 実行済み | 5 | 0 | 1 |" in detect_part
     assert "- 検出の候補の総数：16件" in detect_part
+    # 比較できない理由の付いた候補の数は、同種業務の対応の確認待ちや記者の確認未了と分ける（D-053⑥）
+    assert (
+        "同種業務の対応の確認待ちや、記者の原本の確認が終わっていないこととは別の数" in detect_part
+    )
+    assert "確認待ち）" not in detect_part
     assert "該当なし" not in detect_part and "候補なし" not in text
     assert "- 母集団の絞り込み：なし" in section(text, "処理の範囲")
     assert "調べずに残した候補：16件" in section(text, "候補")

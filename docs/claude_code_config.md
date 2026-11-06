@@ -209,7 +209,10 @@ argument-hint: "[分野] | [run_id]"
 - /review-lead <lead_id> <run_id> を使い、反証の手順と結論の案（kind: conclusion）を整える。
 - kizashi check <lead_id> --run <run_id> を実行する。不合格なら、error の failures（不合格のすべて）を読んで直す。
   合格するまで言い換える反復はしない。直せなければ保留にする。warnings（強い語）は表現を見直す。
-- E_ROUNDS_EXCEEDED（修正2巡の上限）が返ったら、結論を強めず保留の結論の案（hold_reason: limit）を登録して render する。
+- E_ROUNDS_EXCEEDED（修正2巡の上限）が check でも render でも返ったら、結論を強めず保留の結論の案（hold_reason: limit）を
+  登録して render する。上限に達した後に直した中身は、render の中の検査に合格しても比較成立・見かけの変化のメモにならない。
+- check の不合格が「検証が依存する資料に新しい版がある」（V2_STALE_OR_WITHDRAWN）なら、追加資料は新しい版を読み直して
+  根拠を登録し直す。公表一覧の新しい版なら、この実行では直せないので、記者に新しい実行が要ることを伝える。
 
 ## 5. 書き出し
 - kizashi render <lead_id> --run <run_id> で候補のメモを、kizashi render <run_id> で実行の概要を書く。
@@ -448,6 +451,8 @@ argument-hint: "[lead_id] [run_id]"
    - 補正すると変化が消える、または比べられないと確定したら、見かけの変化。
    - 比べられるかを確定できなければ、保留（hold_reason: comparison）。comparison_state を unresolved にするなら、
      両年度を比べる主張は取り下げ、各年度の値は別々の主張にする（V5_UNRESOLVED_COMPARISON）。
+     check が見つけるのは2つ以上の年度の計算を参照する主張だけなので、1つの年度の値だけを参照して文で比べる主張
+     （「前年度より増え」など）も、ここで読んで取り下げるか、その年度の値の記載に直す。メモの7節で記者も確かめる。
    - 同種業務の対応が confirmed でない、または比べる行の一部しか覆っていなければ、比較成立にしない（V8_MATCH_UNCONFIRMED）。
    - 規1（税込か税抜か、単位、範囲）の違いを補正するのに資料にない係数が要るなら、計算せずに kind: coefficient で
      提案し、記者に伝える。提案が proposed・accepted のまま残れば比較成立にしない（V8_COEFFICIENT_PENDING）。

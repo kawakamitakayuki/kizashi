@@ -925,6 +925,19 @@ def dependent_claims(conn: sqlite3.Connection, source_id: str) -> list[str]:
     return [c["claim_id"] for c in rows if source_id in _claim_sources(conn, c)]
 
 
+def dependent_leads(conn: sqlite3.Connection, adapter: Adapter, source_id: str) -> list[str]:
+    """検証が資料に依存する候補（9章の「検証が依存する資料」。調べている候補・結論の案かメモのある候補だけ）。
+    主張が古い版を根拠にしていなくても、判定・対応の根拠や該当する行のない依存する CSV で依存する（D-056①）。"""
+    leads = [
+        r[0]
+        for r in conn.execute(
+            "SELECT lead_id FROM leads WHERE state <> 'candidate' OR proposed_outcome IS NOT NULL"
+            " OR memo_no > 0 ORDER BY lead_id"
+        )
+    ]
+    return [lid for lid in leads if source_id in hashing.dependency_sources(conn, lid, adapter)]
+
+
 def recheck_source(
     root: Path,
     run_id: str,
@@ -937,7 +950,8 @@ def recheck_source(
     - 公表一覧の資料（kind='dataset'）は、公表ページから同じ論理資料のリンクをたどり直す。それ以外は元の URL で
       取り直す（公表一覧のデータの URL・中身は取得しない。D-021）。
     - ハッシュが同じなら何もしない（通信は数える）。違えば新しい資料IDで登録し（supersedes に古い資料ID）、
-      古い資料に依存する主張を stale にし、events に recheck を記録する。
+      古い資料に依存する主張を stale にし、events に recheck を記録する。検証が古い版に依存する候補
+      （affected_leads）は、メモが失効と表示され、check を V2_STALE_OR_WITHDRAWN で通らない（D-056①）。
     - 通信の上限には数え、追加資料の上限には数えない。新しい版の公表一覧の資料は正規化しない（新しい版で
       調べ直すには、同じ設定で新しい実行を作る。設計書4.2）。
     """
@@ -1000,6 +1014,7 @@ def recheck_source(
         changed = new_sha != source["sha256"]
         new_id: str | None = None
         stale: list[str] = []
+        affected: list[str] = []
         with ledger.transaction(conn):
             if changed:
                 if dl is not None:
@@ -1032,6 +1047,7 @@ def recheck_source(
                         ),
                     )
                 stale = dependent_claims(conn, source_id)
+                affected = dependent_leads(conn, adapter, source_id)
                 for claim_id in stale:
                     conn.execute(
                         "UPDATE claims SET state = 'stale' WHERE claim_id = ?", (claim_id,)
@@ -1048,7 +1064,12 @@ def recheck_source(
                     source_id,
                     "recheck",
                     before={"source_id": source_id, "sha256": source["sha256"]},
-                    after={"source_id": new_id, "sha256": new_sha, "stale_claims": stale},
+                    after={
+                        "source_id": new_id,
+                        "sha256": new_sha,
+                        "stale_claims": stale,
+                        "affected_leads": affected,
+                    },
                 )
             _save_budget(conn, run_id, budget)
     except BaseException:
@@ -1059,13 +1080,26 @@ def recheck_source(
         conn.close()
     if not changed:
         message = "原本のハッシュが前と同じだった。台帳は変えていない。"
-    elif stale:
-        message = (
-            f"新しい版 {new_id} を登録し、古い版に依存する主張を stale にした。stale の主張を含む候補は"
-            " check を通らない。新しい版で調べ直すには、同じ設定で新しい実行を作る。"
-        )
     else:
-        message = f"新しい版 {new_id} を登録した。古い版に依存する主張はなかった。"
+        parts = [f"新しい版 {new_id} を登録した。"]
+        parts.append(
+            f"古い版に依存する主張（{'・'.join(stale)}）を stale にした。"
+            if stale
+            else "古い版を根拠にした主張はなかった。"
+        )
+        if affected:
+            parts.append(
+                f"検証が古い版に依存する候補（{'・'.join(affected)}）は、メモが失効と表示され、check を"
+                " 通らない。"
+                + (
+                    "公表一覧の新しい版で調べ直すには、同じ設定で新しい実行を作る。"
+                    if source["kind"] == "dataset"
+                    else "新しい版を根拠に登録し直す。"
+                )
+            )
+        else:
+            parts.append("検証が古い版に依存する候補はなかった。")
+        message = "".join(parts)
     return {
         "run_id": run_id,
         "source_id": source_id,
@@ -1074,6 +1108,7 @@ def recheck_source(
         "sha256_before": source["sha256"],
         "sha256_after": new_sha,
         "stale_claims": stale,
+        "affected_leads": affected,
         "counted_as_evidence": False,
         "limits": _limits_view(budget),
         "message": message,

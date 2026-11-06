@@ -571,6 +571,18 @@ class _Memo:
             lines.append("### 記者が判断すること（補正の係数の提案。推論・未適用）")
             lines += [f"- {c['key']}：{c['value']}（{c['meaning']}）を使うか" for c in coefs]
             lines.append("")
+        if (
+            lead["comparison_state"] == "unresolved"
+        ):  # V5 の機械の検査と記者の意味の確認の境界（D-056④）
+            lines += [
+                "### 比較の条件を確定できない（unresolved）候補の主張",
+                (
+                    "- 主張の文が年度間の比較（増減や変化の向き・大きさ）を述べていないかを確かめる。CLI の検査"
+                    "（V5_UNRESOLVED_COMPARISON）が見つけるのは、2つ以上の年度の計算を参照する主張と比較成立の結論の"
+                    "案だけで、1つの年度の値だけを参照して文で比べる主張は見つけない。"
+                ),
+                "",
+            ]
         fields = list(
             ((self.adapter.config.get("reconcile") or {}).get("fields_by_category") or {}).get(
                 lead["change_category"]
@@ -748,6 +760,7 @@ def render_lead(root: Path, run_id: str, lead_id: str, *, public: bool = False) 
             )
             assert lead is not None
             check.mark_checked(conn, v.memo_claims)
+            check.enforce_rounds_at_render(conn, adapter, lead_id, STAGE)
             if lead["state"] != lead["proposed_outcome"]:
                 conn.execute(
                     "UPDATE leads SET state = ? WHERE lead_id = ?",
@@ -1148,7 +1161,8 @@ class _RunSummary:
             f"- 探索で登録した候補：{len(explore)}件",
             (
                 "- 比較できない理由の付いた候補は、比べられた組の候補だが、単価契約・年度途中・重複などの理由が"
-                "付いており、比較の前に確かめる必要がある（確認待ち）。"
+                "付いており、比較の前に確かめる必要がある。同種業務の対応の確認待ちや、記者の原本の確認が"
+                "終わっていないこととは別の数である。"
             ),
             "- 最も大きな差が出たことだけで、統計的に意味があるとは言えない。候補の並び順は取材価値の順ではない。",
             "",
@@ -1365,17 +1379,16 @@ def _letters(n: int) -> str:
 def redaction_terms(
     conn: sqlite3.Connection, adapter: Adapter, allow: set[str]
 ) -> tuple[list[tuple[str, str]], dict[str, str]]:
-    """伏せる語（受注者名と法人番号）と、key → 置き換える文字列。disclosure.allow の名前は伏せない。"""
+    """伏せる語（受注者名と法人番号）と、key → 置き換える文字列。記号は disclosure.allow の名前も含めて実行の中で
+    最初に現れた順に割り当て、allow の名前は伏せない（allow を変えても、同じ実行の中でほかの受注者の記号が
+    変わらない。D-056⑤）。"""
     terms: list[tuple[str, str]] = []
     labels: dict[str, str] = {}
-    index = 0
-    for name in adapter.module.counterparty_names(conn):
-        if nfkc(name) in allow:
-            continue
+    for index, name in enumerate(adapter.module.counterparty_names(conn)):
         key = f"name:{name}"
         labels[key] = f"受注者{_letters(index)}"
-        index += 1
-        terms.append((name, key))
+        if nfkc(name) not in allow:
+            terms.append((name, key))
     for number in adapter.module.corp_numbers(conn):
         if number in allow:
             continue

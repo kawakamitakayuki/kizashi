@@ -38,6 +38,7 @@ STAGE = "check"
 EXAMPLES = "examples"
 DENYLIST_ENV = "KIZASHI_DENYLIST"
 MAX_TEXT_BYTES = 5 * 1024 * 1024
+AUX_DOCUMENTS = 4  # 12.2 の「補助資料4点」。一覧はその4点を1行ずつ持つ（D-056③）
 _DENY_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$")
 
 # 検査ごとの不合格のコード（12.2 の表の P0 の4行。仕様はコードの名前を決めていない。D-053）
@@ -77,11 +78,14 @@ def _norm_name(name: str) -> str:
 
 def load_denylist() -> Denylist:
     """KIZASHI_DENYLIST のファイル。1行に `<SHA-256> <ファイル名>`（sha256sum の出力の形）。空行と # で始まる行は
-    読まない。形の誤った行があれば合格にしない（E_DENYLIST_MISSING）。"""
+    読まない。補助資料4点（12.2）のそれぞれを1行ずつ書く。形の誤った行がある、行が4つでない、ハッシュか名前
+    （パスの最後の名前を NFC にし、大文字と小文字を区別しない）が重なる一覧は、4点がそろったと確かめられない
+    ので合格にしない（E_DENYLIST_MISSING。D-056③）。不合格の文に補助資料の名前を書かない。"""
     where = os.environ.get(DENYLIST_ENV)
     hint = (
-        f"補助資料のファイル名とハッシュの一覧（publish_denylist.txt。リポジトリの外に置く）のパスを、環境変数"
-        f" {DENYLIST_ENV} に入れる。1行に「SHA-256 ファイル名」（sha256sum の出力の形）で書く。"
+        f"補助資料{AUX_DOCUMENTS}点のファイル名とハッシュの一覧（publish_denylist.txt。リポジトリの外に置く）の"
+        f"パスを、環境変数 {DENYLIST_ENV} に入れる。1行に「SHA-256 ファイル名」（sha256sum の出力の形）で、"
+        f"{AUX_DOCUMENTS}点を1行ずつ書く。"
     )
     if not where:
         raise _err("E_DENYLIST_MISSING", f"環境変数 {DENYLIST_ENV} がない。", next_action=hint)
@@ -93,8 +97,7 @@ def load_denylist() -> Denylist:
             f"{DENYLIST_ENV} のファイルを読めない（{type(exc).__name__}）。",
             next_action=hint,
         ) from None
-    hashes: set[str] = set()
-    names: set[str] = set()
+    entries: list[tuple[str, str]] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -105,11 +108,17 @@ def load_denylist() -> Denylist:
                 f"{DENYLIST_ENV} のファイルの {number} 行目の形が誤っている。",
                 next_action=hint,
             )
-        hashes.add(match.group(1).lower())
-        names.add(_norm_name(PurePosixPath(match.group(2).replace("\\", "/")).name))
-    if not hashes:
+        name = _norm_name(PurePosixPath(match.group(2).replace("\\", "/")).name)
+        entries.append((match.group(1).lower(), name))
+    hashes = {h for h, _ in entries}
+    names = {n for _, n in entries}
+    if len(entries) != AUX_DOCUMENTS or len(hashes) != AUX_DOCUMENTS or len(names) != AUX_DOCUMENTS:
         raise _err(
-            "E_DENYLIST_MISSING", f"{DENYLIST_ENV} のファイルに補助資料がない。", next_action=hint
+            "E_DENYLIST_MISSING",
+            f"{DENYLIST_ENV} のファイルで、補助資料{AUX_DOCUMENTS}点がそろったと確かめられない"
+            f"（行 {len(entries)}、異なるハッシュ {len(hashes)}、異なる名前 {len(names)}。"
+            f"どれも {AUX_DOCUMENTS} であること）。",
+            next_action=hint,
         )
     return Denylist(frozenset(hashes), frozenset(names))
 

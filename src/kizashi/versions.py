@@ -49,7 +49,11 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     限る）。check・render の結果が変わる。
 # 16：P0-8（check の V5・V6 と check の時点の V7、V7 の取り込まない列の値（D-032。record と check）、巡回数の
 #     上限（E_ROUNDS_EXCEEDED。record の結論の案と check））。check・render・record の結果が変わる。
-RULES_VERSION = "16"
+# 17：D-056（検証が依存する資料に fetch --recheck の新しい版があれば、メモを失効と表示し check を
+#     V2_STALE_OR_WITHDRAWN にする。上限に達した候補の render は、最後に数えた check に合格した中身だけを書く。
+#     保留のメモを書いた候補だけに1巡を足す。補助資料の一覧は4点をそろえる。伏せ字の記号を allow の名前も含めて
+#     割り当てる）。check・render・record・fetch --recheck・check --publish の結果が変わる。
+RULES_VERSION = "17"
 
 
 def code_version() -> str:
