@@ -41,7 +41,9 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     結果が変わる。
 # 12：D-043（金額以外の候補の残る差を説明を反映した値と同じ件数に限り、説明によって足した条件を記録して照らす、
 #     条件の単純な同値の表現をそろえる、git のパスを NUL 区切りで読む）。check・render・record・run の結果が変わる。
-RULES_VERSION = "12"
+# 13：D-044（候補の行に宣言した条件だけを当てた行と残る件数の行の一致を求める、method_family を説明の条件に
+#     しない）。check・render の結果が変わる。
+RULES_VERSION = "13"
 
 
 def code_version() -> str:
