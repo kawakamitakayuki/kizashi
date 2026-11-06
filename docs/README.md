@@ -8,7 +8,7 @@
 
 | 資料 | ファイル | 中身 | 使う人 |
 | --- | --- | --- | --- |
-| 統合設計書 | `harness_design_m_v06.md` | 目的、構成、判断の理由、P0・P1・将来の区分 | 全員（既存） |
+| 統合設計書 | `harness_design_m_v06.md` | 目的、構成、判断の理由、P0・P1・将来の区分 | 全員（ほかの資料より前の2026年11月4日に作成。開催期間の中） |
 | 実装仕様書 | `implementation_spec.md` | 詳細設計とプログラム設計を1本にまとめたもの。モジュール構成、CLIの各操作、台帳のDDL、提案ファイル（inbox）の書式、検証V1〜V8の判定とエラーコード、メモの書式、失効のハッシュ、公開の検査 | 実装するClaude Code、レビューする人 |
 | 内閣府アダプタ仕様 | `adapter_cao_procurement.md` | 手元のCSV 8本から起こした列の対応と見出しの文字列、正規化の規則、品質検査、原本照合、同種業務のまとめ方、検出SQL、`dataset.yaml` の案 | 実装するClaude Code |
 | Claude Codeの構成 | `claude_code_config.md` | 共通設定、調査用の設定、起動スクリプト、CLAUDE.md、Skill 2本の原案 | 実装するClaude Code、記者 |
