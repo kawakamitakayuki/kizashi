@@ -1,0 +1,6 @@
+# 公開するファイルの一覧（実装仕様12.2。記者が書く。書き方は examples/README.md）
+# 1行に1つのパス（リポジトリの直下から、examples/ の中だけ）。空行と # で始まる行は読まない。
+# この一覧のファイル自身は書かなくても一覧に入る。examples/ にコミットするファイルはすべて書く。
+# 記者が選んだ公開の例を足したら、その行を足す（例：examples/L0405.v2.public.md）。
+# disclosure.allow を置いてコミットするなら、examples/disclosure.allow を足す。
+examples/README.md
