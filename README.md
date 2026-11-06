@@ -31,7 +31,7 @@
 - OS：macOS・Linux・WSL2（ネイティブの Windows は確かめていない。設計書11.2の U5）。この開発は WSL2 で行った。
 - Python 3.13（リポジトリの `.python-version`）。標準の `sqlite3` の SQLite が 3.44 以上であること。3.44 未満なら、`kizashi` は起動時に `E_USAGE` で止まり、版を示す（実装仕様1章、D-016）。
 - [uv](https://docs.astral.sh/uv/)（依存は `pyproject.toml` と `uv.lock` で固定）
-- Claude Code（調査のセッション）。権限の設定を確かめた版は v2.1.318（D-001）。ほかの版では、起動のモードと権限の規則が同じように効くかを確かめてから使う。
+- Claude Code（調査のセッション）。入れてログインし、`claude --version` で版を確かめておく（起動スクリプトが版を実行の記録に残す）。権限の設定を確かめた版は v2.1.318（D-001）。ほかの版では、起動のモードと権限の規則が同じように効くかを確かめてから使う。
 - 通信：取得は許可リストのホスト（`*.go.jp`、`*.lg.jp`）の HTTPS だけ。
 
 ## 導入
@@ -122,7 +122,7 @@ scripts/investigate
 - 一覧（`examples/README.md` と一覧のファイル自身）と、ステージ・最新のコミットの `examples/` の一覧が一致するか。
 - `KIZASHI_DENYLIST` の4点の中身の SHA-256 が、作業フォルダーの一覧のファイル・ステージ・履歴のどの中身とも一致しないか。4点のファイル名が、ステージと履歴のパスにないか。
 - `--run` で指定した実行の原本と台帳から作った氏名・取り込まない列の値・受注者名・法人番号が、ステージと履歴のテキストにないか。この中には `docs/`、`references/` の知識ファイル、テストも入る。
-- 2026-11-07 時点では、知識ファイル `references/investigative_open_data_catalog_v13.0.md` の19行が、P0-7 の実行の受注者名と同じ文字列で `P_COUNTERPARTY` になる（D-054）。記者が名前と掲載の文脈を確かめ、公開を認めたものを `examples/disclosure.allow` に書くまで、合格しない。
+- 2026-11-06 時点では、知識ファイル `references/investigative_open_data_catalog_v13.0.md` の19行が、P0-7 の実行の受注者名と同じ文字列で `P_COUNTERPARTY` になる（D-054）。記者が名前と掲載の文脈を確かめ、公開を認めたものを `examples/disclosure.allow` に書くまで、合格しない。
 
 公開するものと、公開しないもの（設計書9.12）：
 
