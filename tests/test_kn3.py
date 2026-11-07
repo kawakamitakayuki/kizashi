@@ -115,5 +115,8 @@ def test_kn3_d086_table_quote_guidance() -> None:
     引用の決まり（文末まで）は変えない。"""
     text = (REPO / ".claude" / "skills" / "investigate" / "SKILL.md").read_text(encoding="utf-8")
     assert "改行を文末とみなさない" in text
-    assert "資料ID・ページ・契約件名" in text
     assert "どの部分が判定を支えるか" in text
+    # 回帰（D-087）：ページは根拠の position.page に置き、本文には書かせない（V7。D-051）
+    assert "position.page" in text
+    assert "資料ID・契約件名" in text
+    assert "資料ID・ページ・契約件名" not in text
