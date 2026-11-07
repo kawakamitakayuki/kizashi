@@ -5,7 +5,7 @@
 ## 置き方
 
 1. 調査の後、`kizashi render <lead_id> --run <run_id> --public`（候補のメモ）か `kizashi render <run_id> --public`（実行の概要）で、伏せた写しを `data/runs/<run_id>/public/` に書く。受注者名は「受注者A」などに、法人番号は「法人番号（伏せ字）」に替わる。
-2. 記者が写しを読み、公開するものを選んで `examples/` に写す（実行のフォルダーを丸ごと写さない）。
+2. 記者が写しを読み、公開するものを選んで `examples/` に写す（実行のフォルダーを丸ごと写さない）。引用には、候補と関係のない受注者名や法人番号が入ることがある（一覧表のページの引用は、文末までの決まりで長くなる。D-086）。伏せ字と `check --publish` が当てるのは、その実行の公表一覧にある受注者名・法人番号と同じ文字列だけなので、表記の違う名前や公表一覧にない名前は伏せられない。公開する写しとデモ動画では、引用の中の名前も記者が確かめる。
 3. 写したファイルを `examples/publish.manifest` に1行ずつ書く。
 4. 公開用のコミットを手元で作る（`git add` と `git commit`。まだ push しない）。検査は、一覧と、ステージと、最新のコミットの `examples/` の一覧が一致することを求めるので、コミットの前は `P_MANIFEST_MISMATCH` になる。
 5. そのコミットで `kizashi check --publish examples/publish.manifest --run <run_id>` を通す（下の「公開の検査」）。
