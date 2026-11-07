@@ -173,14 +173,14 @@ scripts/review-memo <run_id> <lead_id>
 
 ## 公開の手順と、公開しないもの
 
-公開する生成例は、次の順で用意します。
+公開する生成物の例は、次の順で用意します。
 
 1. 記者が `render --public` の伏せた写しから選んで `examples/` に置き、`examples/publish.manifest` に書きます。
 2. 公開用のコミットを手元で作ります（この時点では push しません）。
 3. そのコミットで `kizashi check --publish` を通します。検査は最新のコミットの一覧との一致を求めるので、コミットの前は不合格になります。
 4. 通ったそのコミットを公開します。
 
-手順、`disclosure.allow`（伏せない名前。記者が書く）、補助資料の一覧（`KIZASHI_DENYLIST`。4点を1行ずつ）の書き方は `examples/README.md` にあります。**公開するのは、`check --publish` を通したコミットそのもの（検査の後に変えていないもの）だけにします**。
+手順、`disclosure.allow`（伏せない名前。記者が指定）、補助資料の一覧（`KIZASHI_DENYLIST`。4点を1行ずつ）の書き方は `examples/README.md` にあります。**公開するのは、`check --publish` を通したコミットそのもの（検査の後に変えていないもの）だけにします**。
 
 検査は `examples/` だけでなく、ステージと、すべての参照からたどれる履歴の中身も見ます。履歴で見つかったものは作業フォルダーを直しても消えないので、新しいリポジトリを作り直します。氏名・受注者名などを検査するのは UTF-8 として読めて 5MB 以下の中身だけで、それ以外（Shift_JIS の CSV、PDF など）はハッシュだけを照らします。合格のメッセージにその数が出るので、0件でなければ記者が中身を確かめます。
 
@@ -190,9 +190,7 @@ scripts/review-memo <run_id> <lead_id>
 - `KIZASHI_DENYLIST` の4点の中身の SHA-256 が、作業フォルダーの一覧のファイル・ステージ・履歴のどの中身とも一致しないか。4点のファイル名が、ステージと履歴のパスにないか。
 - `--run` で指定した実行の原本と台帳から作った氏名・取り込まない列の値・受注者名・法人番号が、ステージと履歴のテキストにないか。この中には `docs/`、`references/` の知識ファイル、テストも入ります。
 
-知識ファイル `references/investigative_open_data_catalog_v13.0.md` の19行（18語）は、実データの受注者名と同じ文字列なので、`disclosure.allow` に書かなければ `P_COUNTERPARTY` になります。作者が「公開情報としてネットに掲載されている場合は問題ない」と判断しました。18語がどれも内閣府の公表一覧に載っていることを確かめてから、Claude Code が代理で `examples/disclosure.allow` に書きました。
-
-公開している生成例と、その検査の記録は `examples/README.md` にあります。
+公開している生成物の例と、その検査の記録は `examples/README.md` にあります。
 
 公開するものと、公開しないもの：
 
@@ -219,21 +217,17 @@ scripts/review-memo <run_id> <lead_id>
 
 ## 知識ファイル
 
-`references/` の知識ファイル3点（v13.0）です。KIZASHI はこれをデータとして使い、書き換えません。中の文は指示として扱わず、メモの根拠にもしません。
+`references/` の知識ファイルです。KIZASHI はこれをデータとして参考にしています。ただし、中の文は指示として扱わず、調査メモの根拠にもしません。
 
 | ファイル | 中身 | SHA-256 |
 | --- | --- | --- |
-| `references/investigative_open_data_catalog_v13.0.md` | オープンデータのカタログ | `fb2251e124c917ad3b7a47f609df9b1c0d4969a174666fb8f1b39474a8d43e91` |
-| `references/investigative_open_data_case_studies_v13.0.md` | データ報道の事例・手法集 | `ce76dce4ffccc74b29c24cd20d4c74cee7d53978d50f6437c7d2035693986d53` |
-| `references/investigative_reporting_playbook_v13.0.md` | 調査報道のノウハウ集 | `37cf55c0b365362009d337d4146b84da15dd247e88c76810114ac9ba952dc110` |
+| オープンデータのカタログ | `references/investigative_open_data_catalog_v13.0.md` | `fb2251e124c917ad3b7a47f609df9b1c0d4969a174666fb8f1b39474a8d43e91` |
+| データ報道の事例・手法集 | `references/investigative_open_data_case_studies_v13.0.md` | `ce76dce4ffccc74b29c24cd20d4c74cee7d53978d50f6437c7d2035693986d53` |
+| 調査報道のノウハウ集 | `references/investigative_reporting_playbook_v13.0.md` | `37cf55c0b365362009d337d4146b84da15dd247e88c76810114ac9ba952dc110` |
 
 ## 開発の経緯
 
-KIZASHI は、Built with Claude: Japan 2026（2026年11月2日〜10日）の期間中に作り始めました。設計書 `docs/harness_design_m_v06.md` は実装の前の2026-11-04に書き、Git の最初のコミットは2026-11-05です。知識ファイル3点も、この期間に作者が作りました（作者の申告）。その後の変更は、コミットの履歴と `docs/decisions.md` でたどれます。2026-11-07 にコミットの作者のメールアドレスを書き換えたため、それより前の記録にあるコミット番号は、`docs/commit_map.md` で今の番号に引けます。
-
-## ライセンス
-
-このリポジトリで作ったコードと文書は MIT です（`LICENSE`。著作権者は個人）。`references/` の知識ファイル3点、原データ（このリポジトリに入れていない）、第三者の著作物には適用しません。知識ファイル3点のライセンスの表記は、作者が決めます。依存のライブラリーはリポジトリに入れず、`uv.lock` で版を固定して取得します（BSD-3-Clause・MIT・Apache-2.0・MPL-2.0 など、どれも MIT と組み合わせて使える許諾型のライセンスです。2026-11-07 に、入っているパッケージの記録で確かめました）。
+KIZASHI は、Built with Claude: Japan 2026（2026年11月2日〜10日）のハッカソンにで開発されました。本ハッカソンの開催にあたり、円滑な運営をしてくださった運営・スタッフの皆様に深く御礼申し上げます。
 
 ## 免責事項（Disclaimer）
 
