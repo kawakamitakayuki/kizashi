@@ -20,16 +20,16 @@ from kizashi.hashing import canonical_json
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 LEDGER_NAME = "ledger.sqlite"
 
-# 3.3 の ID の書式。
-RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-z0-9]{4}$")
+# 3.3 の ID の書式。数字は ASCII の 0〜9 だけ（re.ASCII。\d は全角などの数字にも合うため。1-4）。
+RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-z0-9]{4}$", re.ASCII)
 ID_PATTERNS: dict[str, re.Pattern[str]] = {
     "run": RUN_ID_RE,
-    "source": re.compile(r"^S\d{3}$"),
-    "record": re.compile(r"^S\d{3}:\d{6}$"),
-    "calc": re.compile(r"^K\d{4}$"),
-    "lead": re.compile(r"^L\d{4}$"),
-    "claim": re.compile(r"^C\d{4}$"),
-    "match": re.compile(r"^M\d{3}$"),
+    "source": re.compile(r"^S\d{3}$", re.ASCII),
+    "record": re.compile(r"^S\d{3}:\d{6}$", re.ASCII),
+    "calc": re.compile(r"^K\d{4}$", re.ASCII),
+    "lead": re.compile(r"^L\d{4}$", re.ASCII),
+    "claim": re.compile(r"^C\d{4}$", re.ASCII),
+    "match": re.compile(r"^M\d{3}$", re.ASCII),
 }
 
 # 採番する ID の接頭辞 → (表, 列, 桁数)。

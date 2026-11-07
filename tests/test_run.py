@@ -116,7 +116,8 @@ def test_run_completed_with_synthetic_data(
     # 9：P0-6 で check（V1〜V4・V8）と render（候補のメモ）を足した。10：D-041 の修正。11：D-042 の修正。
     # 12：D-043 の修正。13：D-044 の修正。24：P1-b（D-077）で原本照合に法人番号の補完を足した。
     # 25：D-080・D-083 で、補完の有効桁の検査が受け付ける指数の範囲を変えた
-    assert (versions["rules_version"], versions["parser_version"]) == ("25", "cao-procurement/1")
+    # 26：bf1bede の実装レビューの修正（D-090・D-091）
+    assert (versions["rules_version"], versions["parser_version"]) == ("26", "cao-procurement/1")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）
