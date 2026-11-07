@@ -99,3 +99,21 @@ def test_kn3_investigate_settings_deny_write_commands() -> None:
     # 回帰（D-084）：inbox/ 直下のファイルに当たる拒否を置かない
     assert "Edit(/inbox/*/**)" not in deny
     assert "Edit(/inbox/**)" not in deny
+
+
+def test_kn3_d085_reporting_language() -> None:
+    """KN-3（D-085）：CLAUDE.md に、記者への質問・途中の説明・最終報告を日本語で書く指示がある。"""
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert (
+        "- 記者への質問・途中の説明・最終報告は日本語で書く。"
+        "引用、コード、識別子、エラー原文は原表記を保つ。"
+    ) in text
+
+
+def test_kn3_d086_table_quote_guidance() -> None:
+    """KN-3（D-086）：investigate の Skill に、表のページの引用で対象の行と支える部分を示す指示がある。
+    引用の決まり（文末まで）は変えない。"""
+    text = (REPO / ".claude" / "skills" / "investigate" / "SKILL.md").read_text(encoding="utf-8")
+    assert "改行を文末とみなさない" in text
+    assert "資料ID・ページ・契約件名" in text
+    assert "どの部分が判定を支えるか" in text
