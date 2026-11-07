@@ -104,7 +104,7 @@ scripts/investigate
 4. `review-lead`（Skill）で点検し、結論の案を登録して `kizashi check <lead_id> --run <run_id>` を通します。
 5. `kizashi render <lead_id> --run <run_id>` で候補のメモを、`kizashi render <run_id>` で実行の概要を書きます。
 
-記録はすべて `data/runs/<run_id>/` にあります：台帳 `ledger.sqlite`、品質レポート `quality_report.md`、登録した提案 `accepted/`、追加資料のページ別テキスト `evidence/`、メモ `memos/`、伏せた写し `public/`。取得した原本は `data/raw/<sha256>.<拡張子>` に保存し、書き換えません。
+記録はすべて `data/runs/<run_id>/` にあります：台帳 `ledger.sqlite`、品質レポート `quality_report.md`、登録した提案 `accepted/`、追加資料のページ別テキスト `evidence/`、メモ `memos/`、（一部内容を伏せた）写し `public/`。取得した原本は `data/raw/<sha256>.<拡張子>` に保存し、書き換えません。
 
 ## メモの読み方
 
