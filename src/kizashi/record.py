@@ -398,7 +398,13 @@ def _do_lead(ctx: Ctx) -> Result:
     calc_ids = _calc_list(ctx, "calc_ids")
     owned = [data["calc_from"], data["calc_to"], *calc_ids]
     for cid in owned:
-        owner = _calc(ctx, cid, "calc_ids")[2]
+        _, calc_kind, owner, _, _ = _calc(ctx, cid, "calc_ids")
+        if calc_kind == "reconcile":
+            # 照合の計算は run が資料ごとに作り、候補の間で共有する。候補に所属させない（D-090⑬）
+            raise _schema(
+                f"計算 {cid} は照合の計算（reconcile）なので、候補に所属させない。",
+                next_action="calc_ids には、この候補のために登録した計算だけを書く。",
+            )
         if owner is not None:
             raise _schema(f"計算 {cid} は別の候補（{owner}）のものである。")
     comparison = data.get("comparison")
