@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import sqlite3
 import time
@@ -239,7 +240,8 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     accepted = (
         inbox.accepted_dir(root, run_id) if ledger.ledger_path(root, run_id).is_file() else None
     )
-    if accepted is not None and (accepted / name).exists():
+    # 同じ名前のファイルがあるか、外の未作成のファイルへのリンクでもあるとき（exists() は偽）は、写さない（D-095①）
+    if accepted is not None and ((accepted / name).exists() or (accepted / name).is_symlink()):
         raise _rejected(
             f"accepted/ に同じ名前の探索SQL（{name}）がある。",
             next_action="別の名前（inbox/q-<番号>.sql）で書く。",
@@ -251,6 +253,7 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     hits = result_name_hits(columns, rows, names or [])  # 切る前の全文に当てる（D-090⑩）
     if hits:  # 保存・events・返却の前（D-040②）
         raise _name_error("探索SQL の結果", hits)
+    _refuse_non_finite(rows)  # 保存・events・返却の前（標準の JSON にできないため。3.2。D-095②）
     rows, shortened = shorten_cells(rows)
 
     queries = paths.run_dir(root, run_id) / "queries"
@@ -268,8 +271,8 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
         "citable": False,
         "at": at,
     }
-    shutil.copy2(path, sql_copy)
-    result_file.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    _copy_new(path, sql_copy)
+    _write_new(result_file, json.dumps(result, ensure_ascii=False, indent=1, allow_nan=False))
     conn = ledger.open_rw(root, run_id)
     try:
         with ledger.transaction(conn):
@@ -286,7 +289,7 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
             )
     finally:
         conn.close()
-    shutil.copy2(path, accepted / name)
+    _copy_new(path, accepted / name)
     path.unlink()
     return {
         "run_id": run_id,
@@ -310,6 +313,29 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
             else ""
         ),
     }
+
+
+def _refuse_non_finite(rows: list[list]) -> None:
+    """結果に有限でない数（無限大・NaN）があれば拒否する。位置だけを書く（D-095②）。"""
+    for i, row in enumerate(rows, 1):
+        for j, value in enumerate(row, 1):
+            if isinstance(value, float) and not math.isfinite(value):
+                raise _rejected(
+                    f"結果に有限でない数（無限大・NaN）がある：結果の{i}行目・{j}列目。標準の JSON にできないので、"
+                    "保存も返却もしない。",
+                    next_action="SQL で値を絞るか、printf などで文字列にして返す。",
+                )
+
+
+def _copy_new(src: Path, dst: Path) -> None:
+    """新しいファイルとして写す（同じ名前のファイルやリンクがあれば書かない。D-095①）。"""
+    with src.open("rb") as fin, dst.open("xb") as fout:
+        shutil.copyfileobj(fin, fout)
+
+
+def _write_new(path: Path, text: str) -> None:
+    with path.open("x", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 def shorten_cells(rows: list[list]) -> tuple[list[list], list[dict]]:

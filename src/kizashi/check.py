@@ -26,6 +26,8 @@ from dataclasses import field as dc_field
 from decimal import Decimal
 from pathlib import Path
 
+import yaml
+
 from kizashi import calc, hashing, independent_reader, ledger, limits, paths, quotes, versions
 from kizashi.adapters import Adapter, load_adapter
 from kizashi.errors import KizashiError
@@ -503,13 +505,25 @@ def check_rule_versions(conn: sqlite3.Connection, root: Path, run_id: str, stage
     """規則の版を照らす（3.5）。違えば E_RULE_VERSION（終了コード3）。
 
     dataset.yaml がない・読めないときも、規則の版を照らせないので E_RULE_VERSION にする（D-091①）。"""
-    domain, recorded = conn.execute("SELECT domain, rule_versions_json FROM runs").fetchone()
+    row = conn.execute("SELECT domain, rule_versions_json FROM runs").fetchone()
+    if row is None:
+        # 台帳を作った直後に止まった実行など。想定外のエラーにせず、実行の記録がないとする（record・inspect と同じ）
+        raise KizashiError(
+            "E_REF_NOT_FOUND",
+            stage,
+            f"実行の記録（runs の行）がない：{run_id}",
+            affected_ids=[run_id],
+            next_action="実行IDを確かめる。台帳を作った直後に止まった実行なら、新しい実行を作る。",
+        )
+    domain, recorded = row
     yaml_path = paths.dataset_dir(root, domain) / "dataset.yaml"
     try:
         if yaml_path.is_symlink() or not yaml_path.is_file():
             raise FileNotFoundError(yaml_path)
         drift = versions.drift(json.loads(recorded), root, domain)
-    except OSError:
+    except (OSError, yaml.YAMLError, KeyError, TypeError):
+        # ない・読めない・YAML として壊れている・parser_version がない dataset.yaml は、規則の版を照らせない
+        # （D-091①・D-095④）
         raise KizashiError(
             "E_RULE_VERSION",
             stage,

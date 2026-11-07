@@ -146,6 +146,8 @@ def _validate_scope(scope: object, adapter: Adapter) -> None:
     for item in filters:
         if not isinstance(item, dict) or set(item) != {"field", "op", "value"}:
             raise _schema("scope の filters の要素は field・op・value の3つの項目にする")
+        if not all(isinstance(item[k], str) for k in ("field", "op")):
+            raise _schema("scope の filters の field と op は文字列で書く")  # D-095③
         if item["field"] not in fields:
             raise _schema(
                 f"scope の field が scope_fields にない：{item['field']!r}（使えるのは {', '.join(fields)}）"
