@@ -1022,9 +1022,9 @@ def _accept_on_resume(ctx: RunContext) -> str:
             path = None
         if path is not None and _same_config(path, ctx.config):
             return _relative(ctx.root, inbox.accept(ctx.root, ctx.run_id, path, "run_config"))
-    directory = inbox.accepted_dir(ctx.root, ctx.run_id)
-    target = directory / f"{inbox.next_serial(directory):04d}-run_config.json"
-    target.write_text(json.dumps(ctx.config, ensure_ascii=False, indent=2), encoding="utf-8")
+    target = inbox.write_accepted(
+        ctx.root, ctx.run_id, "run_config", json.dumps(ctx.config, ensure_ascii=False, indent=2)
+    )
     return _relative(ctx.root, target)
 
 

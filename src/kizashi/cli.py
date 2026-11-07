@@ -338,8 +338,22 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {
 
 
 def _emit(payload: dict) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    _write(json.dumps(payload, ensure_ascii=False))
+
+
+def _write(text: str) -> None:
+    sys.stdout.write(text + "\n")
     sys.stdout.flush()
+
+
+def _success_text(data: object) -> str:
+    """成功の出力の JSON の文字列。警告（W7_STRONG_WORD など）は data の外に置く。警告がなければ warnings を
+    出さない（3.2。D-015）。JSON にできない値があれば、書く前にここで例外になる（1-17）。"""
+    warnings = data.pop("warnings", None) if isinstance(data, dict) else None
+    payload: dict = {"ok": True, "data": data}
+    if warnings:
+        payload["warnings"] = warnings
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -355,6 +369,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage = args.command
         _check_ids(args)
         data = HANDLERS[args.command](args)
+        # 成功の出力も、JSON にしてから書く。JSON にできなければ下の想定外のエラーにする（3.2。1-17）
+        text = _success_text(data)
     except KizashiError as exc:
         _emit({"ok": False, "error": exc.to_dict()})
         return exc.exit_code
@@ -370,10 +386,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _emit({"ok": False, "error": internal.to_dict()})
         return internal.exit_code
-    # 警告（W7_STRONG_WORD など）は data の外に置く。警告がなければ warnings を出さない（3.2。D-015）。
-    warnings = data.pop("warnings", None) if isinstance(data, dict) else None
-    payload: dict = {"ok": True, "data": data}
-    if warnings:
-        payload["warnings"] = warnings
-    _emit(payload)
+    _write(text)
     return EXIT_OK

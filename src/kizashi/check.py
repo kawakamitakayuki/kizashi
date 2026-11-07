@@ -386,9 +386,25 @@ def rule_version_error(run_id: str, drift: list[str], stage: str) -> KizashiErro
 
 
 def check_rule_versions(conn: sqlite3.Connection, root: Path, run_id: str, stage: str) -> None:
-    """規則の版を照らす（3.5）。違えば E_RULE_VERSION（終了コード3）。"""
+    """規則の版を照らす（3.5）。違えば E_RULE_VERSION（終了コード3）。
+
+    dataset.yaml がない・読めないときも、規則の版を照らせないので E_RULE_VERSION にする（D-091①）。"""
     domain, recorded = conn.execute("SELECT domain, rule_versions_json FROM runs").fetchone()
-    drift = versions.drift(json.loads(recorded), root, domain)
+    yaml_path = paths.dataset_dir(root, domain) / "dataset.yaml"
+    try:
+        if yaml_path.is_symlink() or not yaml_path.is_file():
+            raise FileNotFoundError(yaml_path)
+        drift = versions.drift(json.loads(recorded), root, domain)
+    except OSError:
+        raise KizashiError(
+            "E_RULE_VERSION",
+            stage,
+            f"分野の規則のファイル datasets/{domain}/dataset.yaml がない、または読めないので、規則の版を"
+            "照らせない。",
+            affected_ids=[run_id],
+            next_action=f"datasets/{domain}/dataset.yaml を元に戻す（git の作業フォルダーを確かめる）。"
+            "リポジトリの直下で実行しているかも確かめる。",
+        ) from None
     if drift:
         raise rule_version_error(run_id, drift, stage)
 

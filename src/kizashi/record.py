@@ -943,14 +943,15 @@ def _domain(conn: sqlite3.Connection, run_id: str) -> str:
 
 def record(root: Path, run_id: str, arg: str) -> dict:
     """kizashi record <run_id> inbox/<名前>.json"""
-    proposal = inbox.load_proposal(root, arg)
-    kind = check_fields(proposal.data)
     conn = ledger.open_rw(root, run_id)
     accepted: Path | None = None
     try:
         domain = _domain(conn, run_id)
-        # 版の違う台帳には登録しない（check・render ができず、表の形も違いうる。D-042⑤）
+        # 最初に規則の版を照らす。版の違う台帳には登録しない（check・render ができず、表の形も違いうる。
+        # D-042⑤）。提案の場所・形の検査より先に行い、提案を直しても通らないことを先に知らせる（D-090⑨）
         check.check_rule_versions(conn, root, run_id, STAGE)
+        proposal = inbox.load_proposal(root, arg)
+        kind = check_fields(proposal.data)
         adapter = load_adapter(root, domain)
         ctx = Ctx(root=root, run_id=run_id, conn=conn, adapter=adapter, data=proposal.data)
         with ledger.transaction(conn):

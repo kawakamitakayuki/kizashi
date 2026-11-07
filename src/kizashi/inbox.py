@@ -18,7 +18,8 @@ from pathlib import Path
 from kizashi import paths
 from kizashi.errors import KizashiError
 
-_SERIAL_RE = re.compile(r"^(\d{4})-")
+# 連番は4桁で書き始めるが、桁を限らずに読む（10000 の次が 10000 にならないように。1-15）
+_SERIAL_RE = re.compile(r"^([0-9]+)-")
 
 
 @dataclass(frozen=True)
@@ -80,11 +81,41 @@ def next_serial(directory: Path) -> int:
     return max(numbers, default=0) + 1
 
 
+def _exclusive_target(directory: Path, label: str) -> Path:
+    return directory / f"{next_serial(directory):04d}-{label}.json"
+
+
+def _taken(target: Path) -> KizashiError:
+    return KizashiError(
+        "E_INTERNAL",
+        "cli",
+        f"accepted/ に同じ名前のファイルがすでにある（上書きしない）：{target.name}",
+        next_action="開発側で原因を調べる（accepted/ の連番）。提案は inbox/ に残っている。",
+    )
+
+
 def copy_to_accepted(root: Path, run_id: str, path: Path, label: str) -> Path:
-    """提案を accepted/<連番>-<label>.json に写す（inbox/ の元のファイルは残す）。"""
-    directory = accepted_dir(root, run_id)
-    target = directory / f"{next_serial(directory):04d}-{label}.json"
-    shutil.copy2(path, target)
+    """提案を accepted/<連番>-<label>.json に写す（inbox/ の元のファイルは残す）。
+
+    同じ名前のファイルがあれば上書きせずに E_INTERNAL にする（新しく作るときだけ書く。1-15）。"""
+    target = _exclusive_target(accepted_dir(root, run_id), label)
+    try:
+        with path.open("rb") as src, target.open("xb") as dst:
+            shutil.copyfileobj(src, dst)
+    except FileExistsError:
+        raise _taken(target) from None
+    shutil.copystat(path, target)
+    return target
+
+
+def write_accepted(root: Path, run_id: str, label: str, content: str) -> Path:
+    """中身を accepted/<連番>-<label>.json に新しく書く。同じ名前のファイルがあれば上書きしない（1-15）。"""
+    target = _exclusive_target(accepted_dir(root, run_id), label)
+    try:
+        with target.open("x", encoding="utf-8") as fh:
+            fh.write(content)
+    except FileExistsError:
+        raise _taken(target) from None
     return target
 
 

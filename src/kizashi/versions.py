@@ -69,7 +69,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     fetch --recheck の結果が変わる。
 # 23：D-074（初回の run で、公表ページに同じ論理資料のリンクが2つ以上あるときの取得の失敗の理由に、候補の URL を
 #     書かず、資料ID・論理資料のキー・候補の数だけを書く）。run の結果（取得の失敗の記録）が変わる。
-RULES_VERSION = "25"
+# 26：bf1bede の実装レビューの修正（D-090・D-091。decisions.md の「bf1bede の実装レビューの記録」の 1-1〜1-17）。
+#     ID の書式の数字を ASCII に限る、record は提案の形より先に規則の版を照らす、dataset.yaml がなければ
+#     E_RULE_VERSION、accepted/ を上書きしない ほか。run・record・check・render・query・fetch の結果が変わる。
+RULES_VERSION = "26"
 
 
 def code_version() -> str:
