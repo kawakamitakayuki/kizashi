@@ -276,8 +276,12 @@ def _q10(result: SourceResult, contracts: list[sqlite3.Row]) -> None:
 
 def _q11(result: SourceResult, contracts: list[sqlite3.Row]) -> None:
     counts = Counter(r["amount_note"] for r in contracts if r["amount_note"] is not None)
-    order = ("missing", "foreign_currency", "unit_price_text", "non_numeric")
+    order = ("missing", "foreign_currency", "unit_price_text", "non_numeric", "out_of_range")
     detail = "、".join(f"{k} {counts.get(k, 0)}" for k in order)
+    if counts.get("out_of_range"):
+        detail += (
+            "（out_of_range は整数の形だが台帳の整数の範囲（2^63−1）を超える金額。合計から除いた）"
+        )
     result.set("Q11", "report", detail, counts={k: counts.get(k, 0) for k in order})
 
 

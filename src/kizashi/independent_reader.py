@@ -28,6 +28,8 @@ HEADER_ROWS = 2
 _SPACE_RE = re.compile(r"\s+")
 # アダプタ仕様4.4：`^\d{1,3}(,\d{3})*$` または `^\d+$`
 _AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})*|\d+")
+# 台帳の整数（SQLite の INTEGER）に入れられる最大の値。正規化の経路と同じ上限を、ここでも独立に書く（D-091③）
+_MAX_STORABLE_YEN = 9223372036854775807
 
 
 def squash(text: str | None) -> str:
@@ -36,11 +38,13 @@ def squash(text: str | None) -> str:
 
 
 def parse_amount_yen(raw: str | None) -> int | None:
-    """金額の元の値を整数の円にする。NFKC と前後の空白の除去の後に、4.4 の形でなければ None。"""
+    """金額の元の値を整数の円にする。NFKC と前後の空白の除去の後に、4.4 の形でなければ None。台帳の整数に
+    入れられる範囲（2^63−1 まで）を超えても None（D-091③）。"""
     text = unicodedata.normalize("NFKC", raw or "").strip()
     if _AMOUNT_RE.fullmatch(text) is None:
         return None
-    return int(text.replace(",", ""))
+    value = int(text.replace(",", ""))
+    return value if value <= _MAX_STORABLE_YEN else None
 
 
 @dataclass(frozen=True)

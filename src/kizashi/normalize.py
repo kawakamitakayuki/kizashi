@@ -74,6 +74,8 @@ def fiscal_year_of(iso_date: str) -> int:
 
 AMOUNT_RE = re.compile(r"\d{1,3}(,\d{3})*|\d+")
 FOREIGN_CURRENCY_WORDS = ("ドル", "USD", "EUR", "ポンド", "ウォン", "ユーロ")
+# 分野の表の amount_yen（SQLite の INTEGER）に入れられる最大の整数。超えれば out_of_range（D-091③）
+AMOUNT_YEN_MAX = 2**63 - 1
 
 
 def parse_amount(raw: str | None) -> tuple[int | None, str | None]:
@@ -82,10 +84,13 @@ def parse_amount(raw: str | None) -> tuple[int | None, str | None]:
     `^\\d{1,3}(,\\d{3})*$` か `^\\d+$` なら整数の円。それ以外は None と種類：
     空欄・-・－ は missing、外貨は foreign_currency、`単価` を含むものは unit_price_text、
     それ以外は non_numeric。数値の判定は NFKC と前後の空白の除去の後に行う（中の空白は除かない）。
+    整数の形でも AMOUNT_YEN_MAX（2^63−1）を超えれば None と out_of_range（数値なので non_numeric にしない。
+    合計から除く。D-091③）。
     """
     text = nfkc(raw or "").strip()
     if AMOUNT_RE.fullmatch(text):
-        return int(text.replace(",", "")), None
+        value = int(text.replace(",", ""))
+        return (value, None) if value <= AMOUNT_YEN_MAX else (None, "out_of_range")
     key = key_text(raw)
     if key in MISSING_VALUES:
         return None, "missing"
