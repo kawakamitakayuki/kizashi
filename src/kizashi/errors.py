@@ -127,6 +127,7 @@ class KizashiError(Exception):
         retryable: bool = False,
         next_action: str = "",
         failures: Iterable[dict] | None = None,
+        warnings: Iterable[dict] | None = None,
     ) -> None:
         self.exit_code = exit_code_for(code)
         super().__init__(f"{code}: {message}")
@@ -138,6 +139,8 @@ class KizashiError(Exception):
         self.next_action = next_action
         # check の不合格は、すべてを集めて返す（4.6）。code は最初の不合格のコード
         self.failures = None if failures is None else [dict(f) for f in failures]
+        # 不合格でも得られた警告（W7_STRONG_WORD など）。CLI は error の外の最上位の warnings に置く（3.2。D-090④）
+        self.warnings = [dict(w) for w in warnings or ()]
 
     def to_dict(self) -> dict:
         data = {

@@ -411,6 +411,49 @@ TYPE_NAMES = {
     "T6c": "元の記載の誤り",
 }
 COUNTED_OUTCOMES = ("change", "artifact")  # 巡回数に数える結論の案（保留は数えない。4.6）
+# 9章の表の順（3.2 の failures の並び。D-041①）
+FAILURE_ORDER = (
+    "V1_INPUT_EMPTY",
+    "V1_QUALITY_NOT_RUN",
+    "V1_RUN_FAILED",
+    "V2_REF_MISSING",
+    "V2_HASH_MISMATCH",
+    "V2_STALE_OR_WITHDRAWN",
+    "V2_BAD_EVIDENCE_SOURCE",
+    "V3A_RECALC_MISMATCH",
+    "V3B_REAGG_MISMATCH",
+    "V3B_HEADER_UNRESOLVED",
+    "V3D_DOC_VALUE_MISMATCH",
+    "V3C_DERIVE_MISMATCH",
+    "V3_UNCITED_NUMBER",
+    "V3_NO_MEANING",
+    "V4_QUOTE_NOT_FOUND",
+    "V4_QUOTE_TRUNCATED",
+    "V4_QUOTE_YEAR",
+    "V4_PAGE_TEXT_MISMATCH",
+    "V5_CONDITION_MISSING",
+    "V5_UNRESOLVED_COMPARISON",
+    "V5_ADJUSTED_NO_VALUES",
+    "V5_BAD_RATE",
+    "V5_CHANGE_NOT_COMPARABLE",
+    "V5_PARTIAL_YEAR",
+    "V6_TYPE_MISSING",
+    "V6_NO_EVIDENCE",
+    "V6_SELF_EVIDENCE",
+    "V6_NO_SEARCH_SCOPE",
+    "V7_RAW_NUMBER",
+    "V7_PERSONAL_NAME",
+    "V8_REQUIRED_MISSING",
+    "V8_MATCH_UNCONFIRMED",
+    "V8_COEFFICIENT_PENDING",
+    "V8_CHANGE_NOT_NEGATED",
+    "V8_ARTIFACT_NO_FACTOR",
+    "V8_EXPLANATION_STATUS",
+    "V8_NO_WITHDRAW_RESULT",
+    "V8_HOLD_REASON",
+    "V8_T6C_QUESTION",
+)
+_FAILURE_RANK = {code: i for i, code in enumerate(FAILURE_ORDER)}
 _QUOTE_CODES = {
     "E_QUOTE_NOT_FOUND": "V4_QUOTE_NOT_FOUND",
     "E_QUOTE_TRUNCATED": "V4_QUOTE_TRUNCATED",
@@ -477,24 +520,39 @@ def _one(conn: sqlite3.Connection, sql: str, params: tuple) -> dict | None:
 
 
 def candidate_rows(conn: sqlite3.Connection, lead_id: str) -> list[str]:
-    """候補の行（5.5・9章）：メモに出る基礎集計の row_refs のうち、率（ratio）の分母だけに使う計算の行を除いたもの。"""
+    """候補の行（5.5・9章）：メモに出る基礎集計の row_refs のうち、率（ratio）の分母にしか使わない計算の行を
+    除いたもの（D-090③）。
+
+    除くのは、メモに直接出ず、メモに出る派生計算での使い方がすべて ratio の第2引数（分母）である基礎集計だけ。
+    派生計算を通じて別の用途（diff・rate・sum・product の引数、ratio の第1引数）にも使う計算と、rate の基準の
+    行は残す。除いた行も、依存する資料の検査と検証記録のハッシュには含める（hashing.memo_calc_ids による）。"""
     direct = set(hashing.direct_calc_ids(conn, lead_id))
     comps = {
         c: row
         for c in hashing.memo_calc_ids(conn, lead_id)
         if (row := _one(conn, "SELECT * FROM computations WHERE calc_id = ?", (c,))) is not None
     }
-    denominators = set()
+    uses: dict[str, list[tuple[object, int]]] = {}
     for row in comps.values():
         if row["kind"] == "derived":
             request = json.loads(row["request_json"])
-            if request.get("op") == "ratio" and len(request.get("args", [])) == 2:
-                denominators.add(request["args"][1])
+            for position, arg in enumerate(request.get("args") or []):
+                if isinstance(arg, str):
+                    uses.setdefault(arg, []).append((request.get("op"), position))
+
+    def denominator_only(calc_id: str) -> bool:
+        found = uses.get(calc_id, [])
+        return (
+            calc_id not in direct
+            and bool(found)
+            and all(op == "ratio" and position == 1 for op, position in found)
+        )
+
     refs: set[str] = set()
     for calc_id, row in comps.items():
         if row["kind"] != "base" or row["state"] != "active":
             continue
-        if calc_id in denominators and calc_id not in direct:
+        if denominator_only(calc_id):
             continue
         refs |= set(json.loads(row["row_refs_json"] or "[]"))
     return sorted(refs)
@@ -2098,6 +2156,8 @@ def verify(
     _v6(conn, lead, v)
     _v7(conn, root, adapter, lead, v)
     _v8(conn, adapter, lead, claims, matches, v)
+    # failures は9章の表の順に並べる（同じコードの中は見つけた順。3.2。D-041①。1-1）
+    v.failures.sort(key=lambda f: _FAILURE_RANK.get(f["code"], len(FAILURE_ORDER)))
     return v
 
 
@@ -2112,6 +2172,7 @@ def failure_error(v: Verification, stage: str) -> KizashiError:
         affected_ids=list(dict.fromkeys([v.lead_id, *ids])),
         next_action="failures を1件ずつ直す（record で足す・取り下げる）。直せないものは保留の結論の案にする。",
         failures=v.failures,
+        warnings=v.warnings,  # 不合格でも、得られた強い語の警告を返す（D-090④）
     )
 
 
