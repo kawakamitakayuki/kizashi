@@ -5,5 +5,5 @@
 # disclosure.allow を置いてコミットするなら、examples/disclosure.allow を足す。
 examples/README.md
 examples/L0400.v3.public.md
-examples/run_summary.v2.public.md
+examples/run_summary.v3.public.md
 examples/disclosure.allow

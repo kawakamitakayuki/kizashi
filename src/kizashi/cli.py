@@ -338,7 +338,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], dict]] = {
 
 
 def _emit(payload: dict) -> None:
-    _write(json.dumps(payload, ensure_ascii=False))
+    _write(json.dumps(payload, ensure_ascii=False, allow_nan=False))
 
 
 def _write(text: str) -> None:
@@ -353,7 +353,8 @@ def _success_text(data: object) -> str:
     payload: dict = {"ok": True, "data": data}
     if warnings:
         payload["warnings"] = warnings
-    return json.dumps(payload, ensure_ascii=False)
+    # 標準の JSON に限る（Infinity・NaN を書かない。3.2。D-095②）
+    return json.dumps(payload, ensure_ascii=False, allow_nan=False)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

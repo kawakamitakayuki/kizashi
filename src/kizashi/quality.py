@@ -516,6 +516,15 @@ def _render(
 def write_report(root: Path, run_id: str, markdown: str) -> Path:
     path = paths.run_dir(root, run_id) / REPORT_NAME
     paths.ensure_in_data(root, path.parent)
+    if path.is_symlink():
+        # ファイルそのものがリンクなら、たどった先（data/ の外のこともある）に書かない（実装仕様3.4。D-095①）
+        raise KizashiError(
+            "E_INTERNAL",
+            "quality",
+            f"品質レポートの書き込み先がシンボリックリンクになっている：{REPORT_NAME}",
+            next_action="開発側で実行のフォルダーを確かめる（リンクを消してから新しい実行を作る）。",
+        )
+    paths.ensure_in_data(root, path)
     path.write_text(markdown, encoding="utf-8")
     return path
 

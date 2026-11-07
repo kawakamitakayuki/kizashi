@@ -89,7 +89,7 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 | 4 | 通信の問題（`retryable` が true のことがある） |
 | 5 | 想定外のエラー（バグ。スタックトレースは標準エラー出力に出し、JSONには要約だけ） |
 
-1回の出力の上限：`inspect` は1ページ20件、`query` は50行、本文の抜粋は1件2,000字。超えた分は `next_page` を返す。
+1回の出力の上限：`inspect` は1ページ20件で、超えた分は `next_page` を返す（候補の主張と取材質問。4.3）。本文の抜粋は1件2,000字（`inspect` の本文の欄と取材質問の各欄、`query` の結果のセル）。`query` は50行で切って `truncated` を返し、`next_page` は返さない（続きは SQL で範囲を絞る。4.4。D-090⑩）。出力は標準の JSON とし、無限大・NaN を書かない（D-095②）。
 
 ### 3.3 ID
 
@@ -112,7 +112,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 - `data/raw/<sha256>.<拡張子>`：原本。上書きしない。
 - `data/runs/<run_id>/`：`ledger.sqlite`、`accepted/`、`queries/`、`evidence/<source_id>/pages/<n>.txt`、`memos/<lead_id>.v<n>.md`、`memos/run_summary.v<n>.md`、`public/`、`quality_report.md`。
 - `inbox/`：Claudeが書く提案。CLIは `inbox/` 直下の `*.json` と `*.sql` だけを読む。サブフォルダー、他の拡張子、1MBを超えるファイル、シンボリックリンクは `E_INBOX_PATH` で拒否する。ファイル名は英数字と `-`・`_`・`.` だけ（先頭は英数字）とし、ほかの文字を含む名前も `E_INBOX_PATH` にする（英数字以外を含む指定は不合格の文に書かない）。探索SQLの名前は `queries/`・`accepted/`・`events` に、実行設定の名前は `events` に残るため、氏名（日本語）がファイル名から保存される経路をなくす（D-067）。
-- CLIの書き込み先は、実際のパスを解決したうえで、`data/` の中に限る。フォルダーは、`data/` の中であることを確かめてから作る（実行のフォルダーなどが外へのリンクでも、外にフォルダーを作らない。D-092⑥）。
+- CLIの書き込み先は、実際のパスを解決したうえで、`data/` の中に限る。書き込み先のファイルそのものがシンボリックリンクなら書かない（たどった先が `data/` の外のことがある。品質レポート、`accepted/`・`queries/` の写しなど。新しく作るファイルは、同じ名前のファイルやリンクがあれば作らない。D-095①）。フォルダーは、`data/` の中であることを確かめてから作る（実行のフォルダーなどが外へのリンクでも、外にフォルダーを作らない。D-092⑥）。
 
 ### 3.5 版の記録
 
@@ -174,7 +174,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 | `E_FORMAT_CHANGED` | 3 | 見出し・列の数が期待と違う（未知の様式）。開発側で直す |
 | `E_QUERY_REJECTED`・`E_QUERY_TIMEOUT` | 1 | 探索SQLの拒否、時間切れ |
 | `E_NOT_RESUMABLE`・`E_INPUT_CHANGED` | 3 | 再開できない状態、入力の変化（新しい実行を作る） |
-| `E_RULE_VERSION` | 3 | 規則の版の食い違い（新しい実行を作る）。`check`・`record`・`render` で `dataset.yaml` がない・読めず、版を照らせないときも（ファイルがないことと、元に戻すことを書く。D-091①） |
+| `E_RULE_VERSION` | 3 | 規則の版の食い違い（新しい実行を作る）。`check`・`record`・`render` で `dataset.yaml` がない・読めない・YAML として壊れているなど、版を照らせないときも（ファイルがないことと、元に戻すことを書く。D-091①・D-095④） |
 | `E_DENYLIST_MISSING` | 3 | 公開の検査に要る一覧がない、読めない、形が誤っている、補助資料4点がそろったと確かめられない（12.2。D-056③） |
 | `P_MANIFEST_MISMATCH`・`P_DENYLIST_HASH`・`P_DENYLIST_NAME`・`P_PERSONAL_NAME`・`P_EXCLUDED_VALUE`・`P_COUNTERPARTY`・`P_CORP_NUMBER` | 1 | `check --publish` の不合格（12.2 の P0 の4項目。D-053①） |
 | `E_INTERNAL` | 5 | 想定外のエラー |
@@ -262,7 +262,7 @@ IDは実行ごとの台帳の中でだけ一意なので、実行ID以外を見�
 | 対象 | 表示 |
 | --- | --- |
 | 実行ID | 問い、状態、工程の状態、件数、上限の消費、候補の一覧（区分ごとに差の絶対値の大きい順、1ページ20件、総数と未調査の件数）、次の作業 |
-| 候補ID | 比較の単位、区分、計算（値・意味・単位）、年度の系列、同じ区分のほかの件数（同じ実行の検出の候補の数。探索の候補は数えない。4.8）、比較の条件、比較できない理由、仮説、判定（判定ごとの説明を反映した値 `recalc_calc_id`・残る差 `residual_calc_id`・説明によって足した条件 `reflected_conditions` を含む。`review-lead` が `V8_EXPLANATION_STATUS` の条件と、根拠と条件の意味の対応を点検できるように出す。D-045③。これらの列のない古い版の台帳では、台帳を書き換えずに未記録（null と `unrecorded`）として出す。D-047）、主張、取材質問、状態、巡回数、メモの番号と失効の有無、同種業務の対応（matches）、係数の提案（coefficients）。対応と係数の提案は、`review-lead` が1回の `inspect` で `V8_MATCH_UNCONFIRMED` と `V8_COEFFICIENT_PENDING` に当たる状態を確かめられるように出す（D-023） |
+| 候補ID | 比較の単位、区分、計算（値・意味・単位）、年度の系列、同じ区分のほかの件数（同じ実行の検出の候補の数。探索の候補は数えない。4.8）、比較の条件、比較できない理由、仮説、判定（判定ごとの説明を反映した値 `recalc_calc_id`・残る差 `residual_calc_id`・説明によって足した条件 `reflected_conditions` を含む。`review-lead` が `V8_EXPLANATION_STATUS` の条件と、根拠と条件の意味の対応を点検できるように出す。D-045③。これらの列のない古い版の台帳では、台帳を書き換えずに未記録（null と `unrecorded`）として出す。D-047）、主張、取材質問（主張と同じく1ページ20件、各欄は2,000字で切る。D-095⑤）、状態、巡回数、メモの番号と失効の有無、同種業務の対応（matches）、係数の提案（coefficients）。対応と係数の提案は、`review-lead` が1回の `inspect` で `V8_MATCH_UNCONFIRMED` と `V8_COEFFICIENT_PENDING` に当たる状態を確かめられるように出す（D-023） |
 | 資料ID | URL、取得日時、SHA-256、状態、新しい版の有無、ページ数 |
 | レコード（`row_ref`） | 元のセルの値（`cells_json`。キーは `take` のキーで、見出しを添える。氏名を除いた後）、分野の表の正規化した値、照合の結果 |
 | 計算ID | 種類、依頼、結果、`row_refs` の件数とハッシュ（一覧はページ分け） |
@@ -281,6 +281,7 @@ kizashi query <run_id> inbox/<名前>.sql
 - 1つの文だけを実行する。`sqlite3.complete_statement` と文の区切りの検査で、複数の文を拒否する。
 - 実行の前に、SQLの全文（文字列とコメントを含む）に V7 の氏名の検査（9章。取り込まない列の値を含む。D-090①。原本がなければ検査を飛ばさず `E_V7`。1-6）を当て、当たれば `E_V7` で拒否する。`queries/` にも `accepted/` にも保存せず、提案は `inbox/` に残す（D-037）。
 - 実行の後、`queries/` への保存・`events` の記録・結果の返却の前に、結果の列名と文字列のセルに同じ検査を当てる。SQLiteのエラーの文（`E_QUERY_REJECTED` に書く文）にも当てる。当たれば `E_V7` とし、元の結果もエラーの文も出さず、位置（`結果の3行目・2列目`、`列名の2列目`、`SQLite のエラーの文` と文字の位置）だけを書く。保存しないこと、提案を `inbox/` に残すことは本文の検査と同じ（文字列の結合などで本文の検査を通った氏名を出さないため。D-040②）。
+- 結果に有限でない数（無限大・NaN）があれば、保存・`events`・返却の前に `E_QUERY_REJECTED` で拒否し、位置だけを書く（標準の JSON にできないため。D-095②）。
 - 結果は最大50行。超えたら50行で切って `truncated` を true にする（`next_page` は返さない。続きは SQL で範囲を絞って書き直す。D-090⑩）。文字列のセルは2,000字までにし、切ったセルは「…（以下略。全N字）」と `cells_shortened`（行・列・元の字数）で示す。氏名などの検査は切る前の全文に当てる（D-090⑩）。実行時間が10秒を超えたら中断する（`set_progress_handler`）。
 - SQLと結果を `queries/` に保存し、`events` に記録する。返すJSONに `"citable": false` を付ける。
 - 成功したらSQLファイルを `accepted/` に写して消す。
@@ -562,7 +563,7 @@ CREATE TABLE events (
           "filters": [{"field": "officer_unit", "op": "contains", "value": "食品安全委員会"}]}
 ```
 
-- `field` は `dataset.yaml` の `scope_fields` にあるものだけ、`op` は `contains`・`not_contains`・`equals`・`not_equals` だけ。比べる前に両方をNFKCにし空白を除く。条件はすべてを満たす行を残す（AND）。`scope_fields` で `kind: json_array` の項目（所属の配列など）は、どれかの要素が `contains`・`equals` を満たせば満たすとし、`not_contains`・`not_equals` はどの要素も満たさないときに満たすとする。`instruction` が空、知らない `field`・`op` は `E_SCHEMA`。
+- `field`・`op`・`value` は文字列で書く（配列などは `E_SCHEMA`。D-095③）。`field` は `dataset.yaml` の `scope_fields` にあるものだけ、`op` は `contains`・`not_contains`・`equals`・`not_equals` だけ。比べる前に両方をNFKCにし空白を除く。条件はすべてを満たす行を残す（AND）。`scope_fields` で `kind: json_array` の項目（所属の配列など）は、どれかの要素が `contains`・`equals` を満たせば満たすとし、`not_contains`・`not_equals` はどの要素も満たさないときに満たすとする。`instruction` が空、知らない `field`・`op` は `E_SCHEMA`。
 - `normalize` の後に適用する。条件に合わない行は、`records.status='excluded'`（`status_reason='out_of_scope'`）と分野の表の `record_status='excluded'` にする。行は消さない。品質検査と、取り込みの照合・原本照合（T6a・T6b）は全行で行う（絞り込みで検査を省かない）。
 - 検出SQLと母集団のSQLは `record_status='adopted'` の行だけを読むので、絞り込みは検出・比べた組の数・基礎集計に自動で効く（7.1）。
 - 候補の比較の条件の「母集団」に、CLIが「（記者の指示で絞り込み：<instruction>。条件：…）」を書き足す。検出の候補、探索の候補（`record` の `kind: lead`）、結論（`kind: conclusion`）で比較の条件を変えたときのどれにも、同じ処理（`detect.scope_population`）で書き足す。結論で母集団を書き換えても実行時の絞り込みは消えない（同じ書き足しがすでにあれば重ねない。D-038⑮）。実行の概要の「処理の範囲」に、指示、条件、資料ごとの除いた行の数を書く。

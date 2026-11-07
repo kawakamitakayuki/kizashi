@@ -906,6 +906,8 @@ def render_lead(root: Path, run_id: str, lead_id: str, *, public: bool = False) 
     if public_path is not None:
         result["public"] = public_path.relative_to(root).as_posix()
         result["message"] += "伏せた写しを public/ に書いた（公開するかは記者が決める）。"
+    if v.warnings:  # 合格しても、得られた強い語の警告は返す（CLI が最上位の warnings に置く。3.2）
+        result["warnings"] = v.warnings
     return result
 
 

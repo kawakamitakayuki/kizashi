@@ -362,7 +362,14 @@ def _terms(root: Path, run_ids: list[str]) -> _Terms:
     for run_id in run_ids:
         conn = ledger.open_ro(root, run_id)
         try:
-            (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
+            row = conn.execute("SELECT domain FROM runs").fetchone()
+            if row is None:
+                raise _err(
+                    "E_REF_NOT_FOUND",
+                    f"実行の記録（runs の行）がない：{run_id}",
+                    next_action="--run の実行IDを確かめる。",
+                )
+            (domain,) = row
             adapter = load_adapter(root, domain)
             module = adapter.module
             names |= set(check.name_variants(module.name_list(conn, root, adapter)))

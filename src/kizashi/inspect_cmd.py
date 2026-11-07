@@ -294,6 +294,9 @@ def _inspect_lead(
         "SELECT * FROM claims WHERE lead_id = ? ORDER BY claim_id", (lead_id,)
     ).fetchall()
     chunk, next_page = _page(claims, page)
+    # 取材質問も1ページ20件に分け、各欄を2,000字で切る（主張と同じ。3.2・4.3。D-095⑤）
+    question_chunk, question_next = _page(json.loads(lead["questions_json"]), page)
+    next_page = next_page or question_next
     explanations = conn.execute(
         "SELECT * FROM explanations WHERE lead_id = ? ORDER BY type", (lead_id,)
     ).fetchall()
@@ -347,7 +350,11 @@ def _inspect_lead(
             }
             for c in chunk
         ],
-        "questions": json.loads(lead["questions_json"]),
+        "questions": [
+            {k: _excerpt(v) if isinstance(v, str) else v for k, v in q.items()}
+            for q in question_chunk
+            if isinstance(q, dict)
+        ],
         "matches": [
             {
                 "match_id": m["match_id"],
