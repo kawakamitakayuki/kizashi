@@ -50,7 +50,7 @@ KIZASHIは、ニュースの「ネタ（タネ）」を当事者や関係者か�
 - Python 3.13（リポジトリの `.python-version`）。標準ライブラリーの `sqlite3` が使う SQLite は 3.44 以上が必要です。3.44 未満なら、`kizashi` は起動時に `E_USAGE` で止まり、バージョンを示します。
 - [uv](https://docs.astral.sh/uv/)（依存は `pyproject.toml` と `uv.lock` で固定）
 - Claude Code（調査のセッション）。インストールしてログインし、`claude --version` でバージョンを確かめておきます。権限の設定を確かめた版は v2.1.318 と v2.1.319 です。
-- 開発とテストで利用したモデルは Opus 5.5 を利用しました。
+- 開発とテストで利用したモデルは Opus 5.5 です。
 - 通信：取得は許可リストのホスト（`*.go.jp`、`*.lg.jp`）の HTTPS だけです。
 
 ## 導入
