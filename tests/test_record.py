@@ -718,3 +718,52 @@ def test_strong_words_in_comparison_warn(repo: Path, run: str, lead: dict) -> No
     )
     [warning] = result["warnings"]
     assert warning["code"] == "W7_STRONG_WORD" and "comparison.formula" in warning["message"]
+
+
+# ---------------------------------------------------------------------------
+# 回帰（D-087）：一覧表のページの長い引用は、ページを evidence の position.page に置き、本文には
+# 資料ID・契約件名・判定を支える箇所の説明を書く（investigate の Skill の案内。D-086）。本文に
+# ページの番号を書くと V7_RAW_NUMBER（位置の番号は例外にしない。D-051）
+# ---------------------------------------------------------------------------
+
+TABLE_PAGE = (
+    "番号 件名 契約担当官等 契約日 契約金額 契約方式\n"
+    "1 架空の資料作成業務 （氏名） 令和7年4月1日 1,000,000 随意契約（性質）\n"
+    "2 見本の調査業務 （氏名） 令和7年5月1日 2,000,000 一般競争\n"
+    "令和８年５月下旬頃公表予定"
+)
+
+
+def test_d087_table_quote_guidance_can_be_recorded(repo: Path, run: str, lead: dict) -> None:
+    """IN-2・KN-3 回帰（D-087）：案内どおりの主張と判定は登録できる。本文に「3ページ」と書くと E_V7。"""
+    source = add_evidence(repo, run, ["表紙。", "目次。", TABLE_PAGE])
+    evidence = [
+        {"source_id": source, "position": {"page": 3}, "quote": TABLE_PAGE, "role": "support"}
+    ]
+    guided = (
+        f"{source} の一覧表で、件名が「架空の資料作成業務」の行の契約方式の欄が、随意契約（性質）と"
+        "記載している（引用のうちこの行の方式の欄が判定を支える）。"
+    )
+    claim = {
+        "kind": "claim",
+        "lead_id": lead["lead"],
+        "type": "publisher_explanation",
+        "text": guided,
+        "calc_ids": [],
+        "evidence": evidence,
+    }
+    explanation = {
+        "kind": "explanation",
+        "lead_id": lead["lead"],
+        "type": "T2",
+        "judgment": "refute",
+        "evidence": evidence,
+        "searched": guided,
+    }
+    rec(repo, run, claim, name="claim.json")
+    rec(repo, run, explanation, name="explanation.json")
+
+    with_page = f"{source} の3ページの「架空の資料作成業務」の行が根拠である。"
+    for data in ({**claim, "text": with_page}, {**explanation, "searched": with_page}):
+        err = fails(repo, run, data, "E_V7")
+        assert "V7_RAW_NUMBER" in err.message and "3" in err.message
