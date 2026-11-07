@@ -247,7 +247,7 @@ KIZASHI は、Built with Claude: Japan 2026（2026年11月2日〜10日）のハ�
 | `.claude/skills/` | Skill：`investigate`（調査の手順）、`review-lead`（反証と結論の点検） |
 | `scripts/investigate` | 調査のセッションの起動 |
 | `scripts/review-memo` | メモの読み直し（読み取り専用の別のセッション）の起動 |
-| `docs/` | 設計書、実装の仕様、決定記録 |
+| `docs/` | 開発者向けの資料（設計書、実装の仕様、分野アダプタの仕様、Claude Code の構成、テスト計画、決定記録）。利用には読まなくてかまいません |
 | `references/` | 知識ファイル3点（KIZASHI はデータとして使う。書き換えない） |
 | `eval/` | 評価の記録（AIによる確認を一部実施。人による確認は未実施） |
 | `examples/` | 公開する生成例（記者が置く） |
