@@ -102,7 +102,7 @@ def test_rv1_launches_read_only_session_with_latest_memo(repo: Path, tmp_path: P
     assert "<資料ID>/pages/<ページ番号>.txt" in prompt
     assert RUN_ID in prompt and LEAD_ID in prompt
     for ask in (
-        "否定の根拠が支えになっていない箇所",
+        "「否定」の判定を、提示された根拠が十分に支えていない箇所",
         "言い過ぎ",
         "根拠の位置が主張を支えていない箇所",
         "書き込みはしない",

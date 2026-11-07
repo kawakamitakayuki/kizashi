@@ -344,7 +344,7 @@ class _Memo:
         )
         peers = lead.get("peer_count")
         lines.append(
-            "- 同じ区分の変化のほかの件数："
+            "- 同じ変化区分に属する、ほかの候補の件数："
             + (
                 f"{peers}件（同じ実行の検出の候補）"
                 if peers is not None

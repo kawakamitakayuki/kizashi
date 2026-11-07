@@ -99,7 +99,7 @@ def test_rd1_memo_sections_and_expansions(repo: Path, synthetic_run: str) -> Non
     assert "- T2 集計範囲・期間の違い：否定" in text and "- T1 制度・定義の変更：未確認" in text
     assert "### C0001（観測）" in text and "### C0002（原資料の記載。2025年度）" in text
     assert "CSVとPDFの一致は元の記載の正しさを示さない。" in text.split("## 5 言えないこと")[1]
-    assert "- 同じ区分の変化のほかの件数：9件（同じ実行の検出の候補）" in text
+    assert "- 同じ変化区分に属する、ほかの候補の件数：9件（同じ実行の検出の候補）" in text
     assert "- 探索した比較の数：11組（検出SQL s1_amount_change）" in text
     checklist = text.split("## 7 記者の確認リスト")[1].split("## 8 再現情報")[0]
     assert (
