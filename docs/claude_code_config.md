@@ -65,7 +65,7 @@
 
 - このファイルは `--settings` で読み込むため、先頭の `/` はこのファイルのフォルダー（リポジトリ直下）を基準にする。
 - `Write(パス)` の形のルールは何にも一致しない。Writeツールの許可は `Edit(パス)` で決まる。初日の試験でWriteが拒否されても `Write(...)` を書き足さず、原因を調べる。
-- `permissions.disableAutoMode` と `permissions.disableBypassPermissionsMode` を `"disable"` にすると、セッションの途中でauto modeや権限の確認を省くモードに切り替えられなくなる。公式ドキュメントでは、どの設定ファイルに書いても効く（管理設定で使うと上書きされない）。`--settings` で読み込んだ場合も効くかは、初日の試験で確かめる（設計書U7、`day1_checklist.md` の1の17）。→ 効いた（D-001）。ただし、manual mode・accept edits・plan mode への切り替えは止めない。
+- `permissions.disableAutoMode` と `permissions.disableBypassPermissionsMode` を `"disable"` にすると、セッションの途中でauto modeや権限の確認を省くモードに切り替えられなくなる。公式ドキュメントでは、どの設定ファイルに書いても効く（管理設定で使うと上書きされない）。`--settings` で読み込んだ場合も効くかは、初日の試験で確かめる（設計書U7）。→ 効いた（D-001）。ただし、manual mode・accept edits・plan mode への切り替えは止めない。
 - 拒否の一覧は、記者が誤ってモードを切り替えた場合の備えでもある。そのため、`docs/` と直下のファイルも書き込みを拒否する。`jq` は、v2.1.318 の `dontAsk` で `kizashi inspect … | jq .` が許可されたため拒否する。調査で `jq` は要らず、`jq` を使うと kizashi の出力から合計などを計算できるためである（D-017）。
 - 公式ドキュメントでは、`dontAsk` でも、利用者が入れたmodは一部の呼び出しを承認できる。調査に使う端末ではmodを使わないか、初日に `/permissions` で有効なルールと出どころを確かめる。
 
