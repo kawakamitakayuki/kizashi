@@ -80,7 +80,7 @@ scripts/investigate
 - 使えるツール：Bash・Read・Grep・Glob・Skill・WebSearch・Write だけ
 - 足す設定：`investigate.settings.json`（調査用）
 
-このセッションの許可の一覧にあるのは、`inbox/` 直下の `.json` と `.sql` への書き込みと、Bash の `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）、Skill、WebSearch です。Skill は Claude に「Bash では kizashi だけを使い、ファイルを読むときは Read・Grep・Glob を使う」と指示しています（運用の指示。D-071）。
+このセッションの許可の一覧にあるのは、`inbox/` 直下の `.json` と `.sql` への書き込みと、Bash の `kizashi` の7つの操作（`run`・`fetch`・`inspect`・`query`・`record`・`check`・`render`）、Skill、WebSearch です。Skill は Claude に「Bash では kizashi だけを使い、ファイルを読むときは Read・Grep・Glob を使う」と指示しています。
 
 ただし、Skill の指示と、実行が機械的に拒否されることは別です。拒否を実機で確かめたのは次の範囲です（Claude Code v2.1.318・v2.1.319。`docs/decisions.md` の D-001・D-017・D-071）。
 
