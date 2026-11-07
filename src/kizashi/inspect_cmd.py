@@ -24,7 +24,7 @@ from kizashi.errors import KizashiError
 
 STAGE = "inspect"
 PAGE_SIZE = 20
-EXCERPT_CHARS = 2000
+EXCERPT_CHARS = limits.EXCERPT_CHARS
 
 
 def _not_found(what: str, target: str, run_id: str) -> KizashiError:

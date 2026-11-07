@@ -5,7 +5,9 @@
   許す。INSERT・UPDATE・DELETE・CREATE・DROP・ATTACH（VACUUM INTO を含む）・PRAGMA などは拒否する。
 - 1つの文だけを実行する。文字列とコメントを除いたうえで ; の区切りを数え、SELECT か WITH で始まる
   ことを確かめる。sqlite3 の execute も2つ目の文を拒否する。
-- 結果は最大50行。実行時間が10秒を超えたら中断する（set_progress_handler）。
+- 結果は最大50行（truncated。続きは SQL で範囲を絞って書き直す。next_page は返さない）。文字列のセルは2,000字
+  までにし、切ったセルは「…（以下略。全N字）」と cells_shortened で示す。氏名などの検査は切る前の全文に当てる
+  （3.2。D-090⑩）。実行時間が10秒を超えたら中断する（set_progress_handler）。
 - 成功したら SQL と結果を queries/ に保存し、events に記録し、SQL を accepted/<名前> に写して inbox/
   から消す。結果は citable: false（メモの数値に使えない）。
 - 実行の前に、SQL の全文（文字列・コメントを含む）に V7 の氏名の検査（取り込まない列の値を含む。D-032・
@@ -246,9 +248,10 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     _check_names(names, sql)
     columns, rows, truncated = execute_readonly(root, run_id, sql, names=names)
     assert accepted is not None
-    hits = result_name_hits(columns, rows, names or [])
+    hits = result_name_hits(columns, rows, names or [])  # 切る前の全文に当てる（D-090⑩）
     if hits:  # 保存・events・返却の前（D-040②）
         raise _name_error("探索SQL の結果", hits)
+    rows, shortened = shorten_cells(rows)
 
     queries = paths.run_dir(root, run_id) / "queries"
     queries.mkdir(exist_ok=True)
@@ -262,6 +265,7 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
         "rows": rows,
         "row_count": len(rows),
         "truncated": truncated,
+        "cells_shortened": shortened,
         "citable": False,
         "at": at,
     }
@@ -287,9 +291,41 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     path.unlink()
     return {
         "run_id": run_id,
-        **{k: result[k] for k in ("query_file", "columns", "rows", "row_count", "truncated")},
+        **{
+            k: result[k]
+            for k in ("query_file", "columns", "rows", "row_count", "truncated", "cells_shortened")
+        },
         "citable": False,
         "saved": result_file.relative_to(paths.run_dir(root, run_id)).as_posix(),
         "message": "探索の結果はメモの数値に使えない（citable: false）。見つけた変化は calc で計算し、"
-        "kind: lead で登録する（query_file に accepted/ の名前を書く）。",
+        "kind: lead で登録する（query_file に accepted/ の名前を書く）。"
+        + (
+            f"結果は{limits.QUERY_ROW_LIMIT}行で切った（truncated）。続きは WHERE・ORDER BY・LIMIT・OFFSET で"
+            "範囲を絞った SQL を書いて読む。"
+            if truncated
+            else ""
+        )
+        + (
+            f"{limits.EXCERPT_CHARS}字を超えるセルを切った（cells_shortened）。続きは substr などで範囲を絞って読む。"
+            if shortened
+            else ""
+        ),
     }
+
+
+def shorten_cells(rows: list[list]) -> tuple[list[list], list[dict]]:
+    """文字列のセルを EXCERPT_CHARS 字までにする。(切った後の行, 切ったセルの位置と元の字数)（3.2。D-090⑩）。
+
+    氏名などの検査は、呼び出す前に切る前の全文に当てておく。"""
+    limit = limits.EXCERPT_CHARS
+    shortened: list[dict] = []
+    out: list[list] = []
+    for i, row in enumerate(rows, 1):
+        cells = []
+        for j, value in enumerate(row, 1):
+            if isinstance(value, str) and len(value) > limit:
+                shortened.append({"row": i, "column": j, "chars": len(value)})
+                value = value[:limit] + f"…（以下略。全{len(value)}字）"
+            cells.append(value)
+        out.append(cells)
+    return out, shortened

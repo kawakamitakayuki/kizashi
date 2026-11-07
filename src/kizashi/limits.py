@@ -14,6 +14,8 @@ MAX_RETRIES = 2
 MAX_ROUNDS = 2
 QUERY_ROW_LIMIT = 50
 QUERY_TIMEOUT_SEC = 10
+# 3.2：本文の抜粋は1件2,000字（inspect の抜粋と、query の結果のセル。D-090⑩）。
+EXCERPT_CHARS = 2000
 
 # 4.2：リダイレクトは自動で追わず、1段ずつ許可リストで検査する（最大5段）。
 MAX_REDIRECTS = 5
