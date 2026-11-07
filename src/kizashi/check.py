@@ -254,6 +254,68 @@ def excluded_matcher(values: Iterable[str]) -> TermMatcher:
     return TermMatcher(((v, "excluded_value") for v in values), wildcard=True)
 
 
+EXCLUDED_NOTE = "（取り込まない列の値）"
+
+
+@dataclass(frozen=True)
+class SensitiveTerms:
+    """V7_PERSONAL_NAME で照らすもの：氏名の照らす形と、取り込まない列の値（9章。D-032）。"""
+
+    names: list[str]
+    excluded: TermMatcher
+
+    def hits(self, fields: Mapping[str, str]) -> list[str]:
+        """欄ごとの当たりを「V7_PERSONAL_NAME：<欄> の <始め>〜<終わり> 文字目」の形で返す。語は書かない
+        （D-037・D-040②）。取り込まない列の値の当たりには EXCLUDED_NOTE を添える（D-090①）。"""
+        found = name_hits(fields, self.names)
+        for field, text in fields.items():
+            for start, end, _ in self.excluded.spans(text):
+                found.append(
+                    f"V7_PERSONAL_NAME：{field} の {start + 1}〜{end} 文字目{EXCLUDED_NOTE}"
+                )
+        return found
+
+
+def fetched_csv_count(conn: sqlite3.Connection) -> int:
+    """実行が取得した公表一覧の CSV の数（氏名の一覧と取り込まない列の値を作る原本）。"""
+    (count,) = conn.execute(
+        "SELECT COUNT(*) FROM sources WHERE kind = 'dataset' AND status = 'fetched'"
+        " AND logical_key LIKE '%|csv'"
+    ).fetchone()
+    return int(count)
+
+
+def sensitive_terms(
+    conn: sqlite3.Connection, root: Path, adapter: Adapter, stage: str
+) -> SensitiveTerms:
+    """氏名の一覧と取り込まない列の値を、実行の原本から作る（検査のたびに作り、保存しない。9章の V7）。
+
+    取得済みの CSV が1本もない（原本がない）ときと、原本が data/raw にないときは、一覧を作れないので E_V7 に
+    する（検査を飛ばして通さない。D-090②・1-6）。原本を検査した結果、氏名が0件なら空の一覧を返す（原本が
+    ないことと区別する）。原本の様式が期待と違えば E_FORMAT_CHANGED（D-059）。"""
+    if fetched_csv_count(conn) == 0:
+        raise KizashiError(
+            "E_V7",
+            stage,
+            "氏名の一覧と取り込まない列の値を作る原本（公表一覧の CSV）を1本も取得していないため、氏名の検査が"
+            "できない（検査を飛ばして通さない）。",
+            next_action="公表一覧の CSV を取得できる状態で、新しい実行を作る。",
+        )
+    missing = _unreadable_csv(conn, root)
+    if missing:
+        raise KizashiError(
+            "E_V7",
+            stage,
+            f"氏名の一覧と取り込まない列の値を作る原本（{'・'.join(missing)}）が data/raw にないため、"
+            "氏名の検査ができない（検査を飛ばして通さない）。",
+            affected_ids=missing,
+            next_action="data/raw の原本を元に戻すか、新しい実行を作る。",
+        )
+    names = name_variants(adapter.module.name_list(conn, root, adapter))
+    excluded = excluded_matcher(adapter.module.excluded_values(conn, root, adapter))
+    return SensitiveTerms(names, excluded)
+
+
 def v7_hit_text(error: dict) -> str:
     """V7 の不合格の1件の説明（氏名・取り込まない列の値は位置だけで、語を書かない）。"""
     if error["code"] == "V7_PERSONAL_NAME":
@@ -1768,8 +1830,8 @@ def ledger_texts(
     """台帳にある、候補の Claude が書いた文字列を欄ごとに分ける（record の分け方。D-035・D-036）。
 
     (数値・氏名・強い語を当てる欄, 氏名だけの欄, 氏名と強い語の欄（比較の条件）, 照合済みの引用)。
-    CLI が書いた文字列（検出の候補の注記、T6a・T6b の判定、run の計算の意味）は、数値と強い語の対象にしない
-    （氏名と取り込まない列の値は当てる）。"""
+    CLI が書いた文字列（検出の候補の注記、T6a・T6b の判定、run の計算の意味・単位・依頼）は、数値と強い語の
+    対象にしない（氏名と取り込まない列の値は当てる。1-2）。"""
     (lead,) = dict_rows(conn, "SELECT * FROM leads WHERE lead_id = ?", (lead_id,))
     full: dict[str, str] = {}
     names_only: dict[str, str] = {}
@@ -1811,10 +1873,10 @@ def ledger_texts(
     for exp in dict_rows(conn, "SELECT * FROM explanations WHERE lead_id = ?", (lead_id,)):
         evidence = json.loads(exp["evidence_json"])
         quotes_ += _quotes_of(evidence)
-        if exp["context"] == "cli":
-            continue
-        put(full, f"{exp['type']}.searched", exp["searched"])
-        put(full, f"{exp['type']}.no_quant_reason", exp["no_quant_reason"])
+        # CLI が書いた T6a・T6b の判定は、数値と強い語を当てず、氏名と取り込まない列の値だけを当てる（1-2）
+        text_target = names_only if exp["context"] == "cli" else full
+        put(text_target, f"{exp['type']}.searched", exp["searched"])
+        put(text_target, f"{exp['type']}.no_quant_reason", exp["no_quant_reason"])
         for leaf_key, leaf in string_leaves(evidence, f"{exp['type']}.evidence"):
             put(names_only, leaf_key, leaf)
         for leaf_key, leaf in string_leaves(
@@ -1833,9 +1895,13 @@ def ledger_texts(
         for leaf_key, leaf in string_leaves(evidence, f"{match['match_id']}.evidence"):
             put(names_only, leaf_key, leaf)
     for comp in _calc_closure(conn, hashing.memo_calc_ids(conn, lead_id)):
-        if comp["origin"] != "record":
-            continue
-        put(full, f"{comp['calc_id']}.meaning", comp["meaning"])
+        # run が作った計算（CLI が書いた意味）は、数値と強い語を当てず、氏名と取り込まない列の値だけを当てる
+        # （9章の V7。D-053⑪。1-2）
+        put(
+            full if comp["origin"] == "record" else names_only,
+            f"{comp['calc_id']}.meaning",
+            comp["meaning"],
+        )
         put(names_only, f"{comp['calc_id']}.unit", comp["unit"])
         request = json.loads(comp["request_json"])
         if comp["kind"] == "doc_value" and isinstance(request.get("quote"), str):
