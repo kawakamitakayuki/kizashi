@@ -19,8 +19,7 @@
       "Edit(/data/**)",
       "Edit(/references/**)",
       "Bash(curl *)",
-      "Bash(wget *)",
-      "Bash(git push *)"
+      "Bash(wget *)"
     ]
   }
 }
