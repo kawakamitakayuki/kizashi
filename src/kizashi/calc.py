@@ -73,12 +73,20 @@ class BaseResult:
 INTEGER_COLUMNS = frozenset({"fiscal_year"})
 
 
+# SQLite の整数の範囲。外の整数は SQLite に渡せないので、型の誤り（E_SCHEMA）にする（1-14）
+SQLITE_INT_MIN, SQLITE_INT_MAX = -(2**63), 2**63 - 1
+
+
 def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and SQLITE_INT_MIN <= value <= SQLITE_INT_MAX
+    )
 
 
 def _scalar_ok(value: object) -> bool:
-    return isinstance(value, (str, int)) and not isinstance(value, bool)
+    return isinstance(value, str) or _is_int(value)
 
 
 def _allowlist(adapter: Adapter) -> dict[str, dict[str, tuple[str, ...]]]:
@@ -98,6 +106,8 @@ def build_query(
         raise _err("E_SCHEMA", f"基礎集計の op は {'・'.join(BASE_OPS)} のどれか：{op!r}")
     table = request.get("table")
     allowed = _allowlist(adapter)
+    if not isinstance(table, str):
+        raise _err("E_SCHEMA", f"table は表の名前の文字列で書く：{table!r}")
     if table not in allowed:
         raise _err(
             "E_NOT_ALLOWED_COLUMN",
@@ -158,12 +168,18 @@ def build_query(
                 or (not value and not allow_empty_in)
                 or not all(_scalar_ok(v) for v in value)
             ):
-                raise _err("E_SCHEMA", "in の value は、文字列か整数の空でない配列で書く。")
+                raise _err(
+                    "E_SCHEMA",
+                    "in の value は、文字列か整数（−2^63〜2^63−1）の空でない配列で書く。",
+                )
             where.append(f"{col} IN ({', '.join('?' for _ in value)})")
             params.extend(value)
         else:
             if not _scalar_ok(value):
-                raise _err("E_SCHEMA", f"{fop} の value は文字列か整数で書く：{value!r}")
+                raise _err(
+                    "E_SCHEMA",
+                    f"{fop} の value は文字列か整数（−2^63〜2^63−1）で書く：{value!r}",
+                )
             where.append(f"{col} {fop} ?")
             params.append(value)
     selected = "record_id" + (f", {column}" if op == "sum" else "")
@@ -408,8 +424,11 @@ def numbers_in_quote(quote: str) -> list[QuoteNumber]:
     text = nfkc(quote)
     found: list[QuoteNumber] = []
     for m in _DOC_NUMBER_RE.finditer(text):
+        # 並びの末尾の「.」（NFKC の後。全角の「．」を含む）は、直後が数字でないので小数点ではなく句点（8章。
+        # D-090⑪）。除いても数値にならない並び（1.2.3 など）は、これまでどおり取り出さない
+        digits = m.group().rstrip(".")
         try:
-            value = Decimal(m.group().replace(",", ""))
+            value = Decimal(digits.replace(",", ""))
         except decimal.InvalidOperation:
             continue
         prev, at = _char_before(text, m.start())
