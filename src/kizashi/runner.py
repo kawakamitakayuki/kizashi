@@ -583,10 +583,11 @@ def _check_config_names(ctx: RunContext) -> None:
     """実行設定の文字列（question、scope の指示と条件の値など）に氏名の検査を当てる（D-037）。
 
     氏名の一覧は取得した原本から作るので、取得の後・正規化の前に行う。当たれば E_V7 で正規化を止める。
+    取り込まない列の値（担当官の所在地・相手方の住所。D-032）も照らす（D-090①）。取得済みの CSV が1本もなく
+    一覧を作れなければ、検査済みにせず E_V7（D-090②）。
     """
-    adapter = ctx.adapter
-    names = check.name_variants(adapter.module.name_list(ctx.conn, ctx.root, adapter))
-    hits = check.name_hits(dict(check.string_leaves(ctx.config)), names)
+    terms = check.sensitive_terms(ctx.conn, ctx.root, ctx.adapter, "normalize")
+    hits = terms.hits(dict(check.string_leaves(ctx.config)))
     if hits:
         raise KizashiError(
             "E_V7",

@@ -892,17 +892,16 @@ def _v7(ctx: Ctx, target_id: str) -> list[dict]:
     words_only = {k: v for k, v in ctx.warn_texts.items() if v}
     if not texts and not names_only:
         return []
-    module = ctx.adapter.module
-    names = check.name_variants(module.name_list(ctx.conn, ctx.root, ctx.adapter))
-    # 取り込まない列の値（担当官の所在地と相手方の住所。D-032）も、氏名と同じ欄に当てる
-    excluded = check.excluded_matcher(module.excluded_values(ctx.conn, ctx.root, ctx.adapter))
+    # 取り込まない列の値（担当官の所在地と相手方の住所。D-032）も、氏名と同じ欄に当てる。原本がなく一覧を
+    # 作れなければ、検査を飛ばさず E_V7（1-6）
+    terms = check.sensitive_terms(ctx.conn, ctx.root, ctx.adapter, STAGE)
     errors, warnings = check.v7_findings(
         texts,
-        names=names,
+        names=terms.names,
         quotes=ctx.quotes,
         names_only=names_only,
         words_only=words_only,
-        excluded=excluded,
+        excluded=terms.excluded,
     )
     if errors:
         parts = [check.v7_hit_text(e) for e in errors]

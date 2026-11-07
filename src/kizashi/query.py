@@ -8,8 +8,9 @@
 - 結果は最大50行。実行時間が10秒を超えたら中断する（set_progress_handler）。
 - 成功したら SQL と結果を queries/ に保存し、events に記録し、SQL を accepted/<名前> に写して inbox/
   から消す。結果は citable: false（メモの数値に使えない）。
-- 実行の前に、SQL の全文（文字列・コメントを含む）に V7 の氏名の検査を当て、当たれば E_V7 で拒否する。
-  accepted/ にも queries/ にも保存しない（D-037）。
+- 実行の前に、SQL の全文（文字列・コメントを含む）に V7 の氏名の検査（取り込まない列の値を含む。D-032・
+  D-090①）を当て、当たれば E_V7 で拒否する。accepted/ にも queries/ にも保存しない（D-037）。氏名の一覧を
+  作る原本がなければ、検査を飛ばさず E_V7（1-6）。
 - 実行の後、保存・events・返却の前に、結果の列名と文字列のセルにも氏名の検査を当てる。SQLite のエラーの文にも
   当て、当たれば元の文を出さない。どちらも E_V7 で、位置（行・列の番号、文字の位置）だけを書く（文字列の結合で
   本文の検査をすり抜けた氏名を出さないため。D-040②）。
@@ -125,17 +126,26 @@ def _name_error(what: str, hits: list[str]) -> KizashiError:
     )
 
 
-def _db_error(exc: Exception, names: list[str] | None) -> KizashiError:
-    """SQLite のエラーの文。氏名があれば元の文を出さずに E_V7 にする（D-040②）。"""
+def _hits(fields: dict[str, str], terms: check.SensitiveTerms | list[str] | None) -> list[str]:
+    """氏名（と、SensitiveTerms なら取り込まない列の値。D-090①）の当たり（位置だけ）。"""
+    if isinstance(terms, check.SensitiveTerms):
+        return terms.hits(fields)
+    return check.name_hits(fields, terms or [])
+
+
+def _db_error(exc: Exception, terms: check.SensitiveTerms | list[str] | None) -> KizashiError:
+    """SQLite のエラーの文。氏名・取り込まない列の値があれば元の文を出さずに E_V7 にする（D-040②・D-090①）。"""
     message = str(exc)
-    hits = check.name_hits({"SQLite のエラーの文": message}, names or [])
+    hits = _hits({"SQLite のエラーの文": message}, terms)
     if hits:
         return _name_error("探索SQL の実行のエラーの文", hits)
     return _rejected(f"SQL を実行できない：{message}")
 
 
-def result_name_hits(columns: list, rows: list[list], names: list[str]) -> list[str]:
-    """結果の列名と文字列のセルの氏名の当たり（位置だけ。D-040②）。"""
+def result_name_hits(
+    columns: list, rows: list[list], terms: check.SensitiveTerms | list[str]
+) -> list[str]:
+    """結果の列名と文字列のセルの氏名（と取り込まない列の値）の当たり（位置だけ。D-040②・D-090①）。"""
     fields: dict[str, str] = {}
     for j, column in enumerate(columns, 1):
         if isinstance(column, str):
@@ -144,15 +154,19 @@ def result_name_hits(columns: list, rows: list[list], names: list[str]) -> list[
         for j, value in enumerate(row, 1):
             if isinstance(value, str):
                 fields[f"結果の{i}行目・{j}列目"] = value
-    return check.name_hits(fields, names)
+    return _hits(fields, terms)
 
 
 def execute_readonly(
-    root: Path, run_id: str, sql: str, *, names: list[str] | None = None
+    root: Path,
+    run_id: str,
+    sql: str,
+    *,
+    names: check.SensitiveTerms | list[str] | None = None,
 ) -> tuple[list[str], list[list], bool]:
     """読み取り専用で1つの SELECT を実行し、(列名, 行, 50行で切ったか) を返す。
 
-    names（氏名の照らす形）を渡すと、SQLite のエラーの文に氏名の検査を当てる。"""
+    names（氏名の照らす形か SensitiveTerms）を渡すと、SQLite のエラーの文に氏名の検査を当てる。"""
     check_single_select(sql)
     path = ledger.ledger_path(root, run_id)
     if not path.is_file():
@@ -186,22 +200,23 @@ def execute_readonly(
     return columns, [[_cell(v) for v in r] for r in rows[: limits.QUERY_ROW_LIMIT]], truncated
 
 
-def _names(root: Path, run_id: str) -> list[str] | None:
-    """氏名の照らす形。氏名の一覧は実行の原本から作り、保存しない。実行の記録がなければ None。"""
+def _names(root: Path, run_id: str) -> check.SensitiveTerms | None:
+    """氏名の照らす形と取り込まない列の値（D-090①）。実行の原本から作り、保存しない。実行の記録がなければ
+    None。原本がなければ E_V7（検査を飛ばさない。1-6・D-090②）。"""
     conn = ledger.open_ro(root, run_id)
     try:
         row = conn.execute("SELECT domain FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
             return None  # 実行の記録がなければ、execute_readonly が型付きのエラーにする
         adapter = load_adapter(root, row[0])
-        return check.name_variants(adapter.module.name_list(conn, root, adapter))
+        return check.sensitive_terms(conn, root, adapter, STAGE)
     finally:
         conn.close()
 
 
-def _check_names(names: list[str] | None, sql: str) -> None:
-    """SQL の全文に氏名の検査を当てる（D-037）。"""
-    hits = check.name_hits({"SQL": sql}, names or [])
+def _check_names(terms: check.SensitiveTerms | None, sql: str) -> None:
+    """SQL の全文に氏名と取り込まない列の値の検査を当てる（D-037・D-090①）。"""
+    hits = _hits({"SQL": sql}, terms)
     if hits:
         raise KizashiError(
             "E_V7",
