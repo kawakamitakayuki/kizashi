@@ -260,7 +260,7 @@ class _Memo:
                     f"{SOURCE_STATUS_NAMES.get(source['status'], source['status'])}。"
                     f"取得 {fetched}）"
                 )
-        stop = self.run.get("stop_reason")
+        stop = stop_summary(json.loads(self.run.get("stop_reason") or "null"))  # 1-12
         lines += [
             f"- 実行ID：{self.run_id}（{RUN_STATE_NAMES.get(self.run['state'], self.run['state'])}"
             + (f"。止まった・欠けたもの：{stop}" if stop else "。途中で止まっていない")
@@ -413,6 +413,42 @@ class _Memo:
         cells = json.loads(self.record(record_id).get("cells_json") or "{}")
         keys = ("title_raw", "contract_date_raw", "amount_raw", "counterparty_raw")
         return "／".join(str(cells.get(k, "")) for k in keys)
+
+    def quote_locations(self) -> list[str]:
+        """メモに出る引用の、資料ID・位置・掲載節の一覧（7節。D-090⑦）。引用の全文は書かない。"""
+        found: list[tuple[str, str, dict]] = []
+        for claim in self.claims:
+            if claim["state"] == "checked":
+                for e in json.loads(claim["evidence_json"]):
+                    found.append((claim["claim_id"], "3節", e))
+        for calc_id in hashing.memo_calc_ids(self.conn, self.lead["lead_id"]):
+            comp = self.calc(calc_id)
+            if comp is not None and comp["kind"] == "doc_value":
+                found.append((f"{calc_id}（文書値）", "3節", json.loads(comp["request_json"])))
+        for c in json.loads(self.lead["coefficients_json"]):
+            for b in c.get("basis", []):
+                if "source_id" in b:
+                    found.append((f"係数 {c.get('key')} の手がかり", "4節", b))
+        for t in check.TYPES:
+            exp = self.explanations.get(t)
+            if exp is not None:
+                for e in json.loads(exp["evidence_json"]):
+                    found.append((f"{t} の判定", "4節", e))
+        for m in self.matches:
+            for e in json.loads(m["evidence_json"]):
+                found.append((f"{m['match_id']} の対応", "7節", e))
+        lines = []
+        for who, where, e in found:
+            if "calc_id" in e or "source_id" not in e:
+                continue  # 照合の計算（T6a・T6b）は引用ではない
+            position = e.get("position") or {}
+            at = (
+                f"{position['page']}ページ"
+                if "page" in position
+                else f"{position.get('row_ref')} の {position.get('column')}"
+            )
+            lines.append(f"- {who}：{e['source_id']} の {at}（引用は{where}に掲載）")
+        return lines
 
     def row_line(self, record_id: str) -> str:
         source = self.source(record_id.split(":", 1)[0])
@@ -569,7 +605,10 @@ class _Memo:
         coefs = [c for c in json.loads(lead["coefficients_json"]) if c.get("status") != "declined"]
         if coefs:
             lines.append("### 記者が判断すること（補正の係数の提案。推論・未適用）")
-            lines += [f"- {c['key']}：{c['value']}（{c['meaning']}）を使うか" for c in coefs]
+            # 係数の提案の文字列も {calc:ID} を展開する（9章の「メモに出る計算」。1-10）
+            lines += [
+                f"- {c['key']}：{c['value']}（{self.expand(c['meaning'])}）を使うか" for c in coefs
+            ]
             lines.append("")
         if (
             lead["comparison_state"] == "unresolved"
@@ -599,6 +638,10 @@ class _Memo:
             lines.append("")
         lines.append("### 原本で確かめる行")
         lines += [self.check_line(ref, fields, pdf_fields) for ref in verified] or ["- なし"]
+        lines.append("")
+        # 引用は、資料ID・位置・掲載節で原本をたどる（長い全文は3節・4節にあり、ここでは再掲しない。D-090⑦）
+        lines.append("### 引用をたどる（資料ID・位置・掲載節）")
+        lines += self.quote_locations() or ["- 引用なし"]
         lines.append("")
         if self.matches:
             lines.append("### 同種業務の対応")
@@ -634,7 +677,7 @@ class _Memo:
         row_no = f"{HEADER_LINES + logical}行目（目安）" if logical is not None else "不明"
         return (
             f"- {ref}：{self.file_name(source)}（原本 data/raw/{source.get('sha256')}.csv）。"
-            f"NO {cells.get('no', '')}。表計算ソフトの行 {row_no}。"
+            f"NO {cells.get('no', '')}。複合キー {self.composite_key(ref)}。表計算ソフトの行 {row_no}。"
             f"PDF {pdf_source or '（なし）'} の{page if page is not None else '（対応なし）'}ページ。"
             f"確かめる項目：{'、'.join(items) if items else 'なし'}"
         )
@@ -823,7 +866,13 @@ def render_lead(root: Path, run_id: str, lead_id: str, *, public: bool = False) 
 
 SUMMARY_PREFIX = "run_summary"
 FAMILY_NAMES = {"kyoso": "競争入札", "zuikei": "随意契約"}
-QUALITY_STATE_NAMES = {"pass": "合格", "fail": "不合格", "report": "報告", "not_run": "未実行"}
+QUALITY_STATE_NAMES = {
+    "pass": "合格",
+    "fail": "不合格",
+    "report": "報告",
+    "needs_review": "要確認",  # 人が確かめる（Q05。合格と混同しない。D-091②）
+    "not_run": "未実行",
+}
 SOURCE_KIND_NAMES = {
     "dataset": "公表一覧",
     "index": "索引ページ",
@@ -1066,8 +1115,8 @@ class _RunSummary:
             ]
             return lines
         lines += [
-            _row("資料ID", "合格", "報告", "不合格", "未実行"),
-            _row("---", "---", "---", "---", "---"),
+            _row("資料ID", "合格", "報告", "要確認", "不合格", "未実行"),
+            _row("---", "---", "---", "---", "---", "---"),
         ]
         problems: list[str] = []
         for source_id in sorted(quality):
@@ -1077,14 +1126,21 @@ class _RunSummary:
                 for s in QUALITY_STATE_NAMES
             }
             lines.append(
-                _row(source_id, tally["pass"], tally["report"], tally["fail"], tally["not_run"])
+                _row(
+                    source_id,
+                    tally["pass"],
+                    tally["report"],
+                    tally["needs_review"],
+                    tally["fail"],
+                    tally["not_run"],
+                )
             )
             for qid in sorted(items):
                 item = items[qid]
                 text = f"- {source_id} {qid}（{QUALITY_STATE_NAMES.get(item.get('state'), item.get('state'))}）：{item.get('detail')}"
-                if item.get("state") in ("fail", "not_run"):
+                if item.get("state") in ("fail", "not_run", "needs_review"):
                     problems.append(text)
-        lines += ["", "不合格・未実行："]
+        lines += ["", "不合格・未実行・要確認："]
         lines += problems or ["- なし"]
         lines += [
             "",
@@ -1256,6 +1312,42 @@ class _RunSummary:
             *self.section_leads(),
         ]
         return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def stop_summary(reason: object) -> str | None:
+    """runs.stop_reason を日本語の1文にする（メモ1節。英字のキーと JSON の原文を出さない。1-12）。"""
+    if reason is None:
+        return None
+    if not isinstance(reason, dict):
+        return str(reason)
+    parts: list[str] = []
+    missing = reason.get("missing") or []
+    if missing:
+        parts.append(
+            "取得できなかった資料："
+            + "、".join(
+                f"{m.get('source_id')}（{m.get('logical_key')}。"
+                f"{SOURCE_STATUS_NAMES.get(m.get('status'), m.get('status'))}"
+                + (f"。{m['failure_reason']}" if m.get("failure_reason") else "")
+                + "）"
+                for m in missing
+                if isinstance(m, dict)
+            )
+        )
+    not_run = reason.get("screens_not_run") or []
+    if not_run:
+        parts.append(
+            "実行しなかった検出SQL："
+            + "、".join(
+                f"{n.get('screen')}（欠けた資料：{'・'.join(n.get('missing') or []) or '記録なし'}）"
+                for n in not_run
+                if isinstance(n, dict)
+            )
+        )
+    stage = _stop_text(reason)
+    if stage:
+        parts.append(f"止まった工程：{stage}")
+    return "。".join(parts) or None
 
 
 def _stop_text(reason: object) -> str | None:

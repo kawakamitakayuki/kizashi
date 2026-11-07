@@ -252,7 +252,16 @@ def memo_view(conn: sqlite3.Connection, root: Path, run_id: str, lead: sqlite3.R
     """候補のメモの番号と失効の有無（4.3 の末尾・10.2）。メモがなければ status は「メモなし」。"""
     memo_no, recorded = int(lead["memo_no"]), lead["memo_hash"]
     if memo_no == 0 or recorded is None:
-        return {"memo_no": memo_no, "file": None, "stale": None, "status": "メモなし"}
+        # 7項目をいつも出す（値がなければ null。4.3。1-13）
+        return {
+            "memo_no": memo_no,
+            "file": None,
+            "check_hash": None,
+            "current_hash": None,
+            "stale": None,
+            "status": "メモなし",
+            "note": None,
+        }
     (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
     current = hashing.check_hash(conn, lead["lead_id"], load_adapter(root, domain))
     stale = current != recorded
@@ -264,6 +273,7 @@ def memo_view(conn: sqlite3.Connection, root: Path, run_id: str, lead: sqlite3.R
         "current_hash": current,
         "stale": stale,
         "status": "失効" if stale else "有効",
+        "note": None,
     }
     if stale:
         view["note"] = (

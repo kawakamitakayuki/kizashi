@@ -335,9 +335,51 @@ def test_pb1_unlisted_file_and_aux_name(git_repo: Path, synthetic_run: str) -> N
     failures = publish_failures(git_repo, synthetic_run)
     messages = [f["message"] for f in failures if f["code"] == publish.MANIFEST_MISMATCH]
     assert any("一覧にない：examples/extra.md" in m for m in messages)
-    assert any(
-        f["code"] == publish.DENYLIST_NAME and f["path"] == f"docs/{AUX_NAME}" for f in failures
-    )
+    # D-090⑧：補助資料の名前を含むパスの全文は返さない。名前を伏せたパスと、場所の区分・blob・コミットで示す
+    hits = [f for f in failures if f["code"] == publish.DENYLIST_NAME]
+    assert hits
+    for f in hits:
+        assert AUX_NAME.casefold() not in json.dumps(f, ensure_ascii=False).casefold()
+        assert f["path"] == "docs/（補助資料の名前）" == f["location"]["path"]
+        assert f["location"]["where"] in ("staged", "history")
+    staged = next(f for f in hits if f["location"]["where"] == "staged")
+    assert staged["location"]["blob"]
+    history = next(f for f in hits if f["location"]["where"] == "history")
+    assert history["location"]["blob"] and history["location"]["commits"]
+
+
+def test_pb1_aux_name_only_in_history_is_located_without_the_name(
+    git_repo: Path, synthetic_run: str
+) -> None:
+    """PB-1（D-090⑧）：別名でコミットしてから消した補助資料の名前も、名前を書かずに、履歴の blob とそれを含む
+    コミットで示す。不合格の文（最上位の message を含む）に名前を書かない。"""
+    write(git_repo, f"docs/{AUX_NAME}", "名前だけ同じ別の中身\n")
+    commit(git_repo, "足した")
+    added = git(git_repo, "rev-parse", "HEAD").strip()
+    (git_repo / "docs" / AUX_NAME).unlink()
+    commit(git_repo, "消した")
+    with pytest.raises(KizashiError) as info:
+        publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    assert AUX_NAME.casefold() not in info.value.message.casefold()
+    hits = [f for f in info.value.failures if f["code"] == publish.DENYLIST_NAME]
+    assert [f["location"]["where"] for f in hits] == ["history"]
+    assert added in hits[0]["location"]["commits"]
+    assert AUX_NAME.casefold() not in json.dumps(hits, ensure_ascii=False).casefold()
+
+
+def test_pb1_aux_name_is_masked_in_every_failure(git_repo: Path, synthetic_run: str) -> None:
+    """PB-1（D-090⑧）：補助資料の名前のファイルを examples/ に置くと、一覧の食い違い・名前・中身（ハッシュ）の
+    どの不合格でも、文と構造化した欄に名前を書かない（伏せたパスで示す）。"""
+    write(git_repo, f"examples/{AUX_NAME}", AUX_CONTENT)
+    commit(git_repo, "補助資料を置いた")
+    with pytest.raises(KizashiError) as info:
+        publish.check_publish(git_repo, "examples/publish.manifest", [synthetic_run])
+    codes = {f["code"] for f in info.value.failures}
+    assert {publish.MANIFEST_MISMATCH, publish.DENYLIST_NAME, publish.DENYLIST_HASH} <= codes
+    assert AUX_NAME.casefold() not in info.value.message.casefold()
+    dumped = json.dumps(info.value.failures, ensure_ascii=False).casefold()
+    assert AUX_NAME.casefold() not in dumped
+    assert "examples/（補助資料の名前）" in dumped
 
 
 def test_pb1_names_and_counterparties_in_contents(git_repo: Path, synthetic_run: str) -> None:
