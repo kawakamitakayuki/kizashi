@@ -16,7 +16,7 @@
 | 依存（開発） | `pytest`、`ruff` | 設計書9.4 |
 | SQLite | Pythonに組み込まれた `sqlite3` の SQLite 3.44 以上 | 検出SQLが集約の中の `ORDER BY`（`group_concat(x, '\|' ORDER BY x)`）を使う（アダプタ仕様9章）。uv が入れる Python では通常満たす。満たさなければ起動時に `E_USAGE` で止め、版を案内する |
 | ビルド | `pyproject.toml` に `[build-system]`（`hatchling`）を書く | `[project.scripts]` の `kizashi` を `.venv/bin` に入れるため、パッケージとして導入する必要がある |
-| 使わないもの | pandas、DuckDB、ORM、テンプレートエンジン、非同期処理 | 小規模で、標準ライブラリで足りる。依存を増やすと再現と審査が重くなる |
+| 使わないもの | pandas、DuckDB、ORM、テンプレートエンジン、非同期処理 | 小規模で、標準ライブラリで足りる。依存を増やすと再現が重くなる |
 
 CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` に `kizashi = "kizashi.cli:main"` と書く。
 
