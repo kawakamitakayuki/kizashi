@@ -4,3 +4,5 @@
 # 記者が選んだ公開の例を足したら、その行を足す（例：examples/L0405.v2.public.md）。
 # disclosure.allow を置いてコミットするなら、examples/disclosure.allow を足す。
 examples/README.md
+examples/L0400.v3.public.md
+examples/run_summary.v2.public.md
