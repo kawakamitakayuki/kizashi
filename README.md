@@ -106,9 +106,9 @@ scripts/investigate
 
 記録はすべて `data/runs/<run_id>/` にあります：台帳 `ledger.sqlite`、品質レポート `quality_report.md`、登録した提案 `accepted/`、追加資料のページ別テキスト `evidence/`、メモ `memos/`、（一部内容を伏せた）写し `public/`。取得した原本は `data/raw/<sha256>.<拡張子>` に保存し、書き換えません。
 
-## メモの読み方
+## 調査メモの読み方
 
-候補のメモは `data/runs/<run_id>/memos/<候補ID>.v<番号>.md`、実行の概要は `memos/run_summary.v<番号>.md` です。番号は書き出すたびに増え、前のメモは上書きしません。
+調査メモの候補は `data/runs/<run_id>/memos/<候補ID>.v<番号>.md`、実行の概要は `memos/run_summary.v<番号>.md` です。番号は書き出すたびに増え、前のメモは上書きしません。
 
 冒頭の2行：
 
