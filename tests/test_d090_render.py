@@ -197,3 +197,49 @@ def test_inspect_memo_has_seven_keys_with_valid_memo(repo: Path, synthetic_run: 
     data = inspect_cmd.inspect(repo, lead["lead"], synthetic_run)
     assert set(data["memo"]) == MEMO_KEYS
     assert (data["memo"]["status"], data["memo"]["note"]) == ("有効", None)
+
+
+def test_rd1_match_evidence_is_shown_in_section7(repo: Path, synthetic_run: str) -> None:
+    """RD-1（D-090⑦の補い）：同種業務の対応の根拠の引用を、7節の対応の下に出す（引用をたどる一覧が
+    「引用は7節に掲載」と案内する先に、引用がある）。"""
+    lead = prepare(repo, synthetic_run, conclusion=False, match="none")
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "match",
+            "lead_id": lead["lead"],
+            "left": [ROW_FROM],
+            "right": [ROW_TO],
+            "relation": "1:1",
+            "reason": "件名と業務の内容が同じ。",
+            "evidence": [
+                {
+                    "source_id": "S005",
+                    "position": {"row_ref": ROW_TO, "column": "amount_raw"},
+                    "quote": "750,000",
+                    "role": "background",
+                }
+            ],
+            "status": "pending",
+        },
+    )
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": lead["lead"],
+            "outcome": "hold",
+            "comparison_state": "comparable",
+            "hold_reason": "comparison",
+        },
+    )
+    text = (repo / render.render_lead(repo, synthetic_run, lead["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    section7 = section(text, "## 7 記者の確認リスト", "## 8")
+    block = section7.split("### 同種業務の対応")[1]
+    assert f"根拠：S005 の {ROW_TO} の amount_raw「750,000」" in block
+    quotes = section(section7, "### 引用をたどる（資料ID・位置・掲載節）", "###")
+    assert "M001 の対応：S005 の" in quotes and "引用は7節に掲載" in quotes
