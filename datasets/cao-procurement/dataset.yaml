@@ -4,7 +4,7 @@
 # 令和5年度（2023）と令和8年度（2026。年度途中）は系列の参考として読めるようにする（P0 の完了条件に含めない）。
 # 必須か参考かで動作は変えない。取得予定の資料が1つでも取れなければ、実行は partial（実装仕様4.1）。
 domain: cao-procurement
-parser_version: cao-procurement/1
+parser_version: cao-procurement/2
 source:
   page: https://www.cao.go.jp/chotatsu/kohyo/kohyo.html
   link_pattern: 'tekiseika/(?P<reiwa>\d+)nendo/[^/]+_kohyo_(?P<family>kyoso|zuikei)\.(?P<format>csv|pdf)$'

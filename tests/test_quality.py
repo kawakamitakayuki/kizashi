@@ -40,7 +40,13 @@ EXPECTED = {
         "Q08": (0, 0),
         "Q09": (0, 0),
         "Q10": 4,
-        "Q11": {"missing": 0, "foreign_currency": 0, "unit_price_text": 1, "non_numeric": 0},
+        "Q11": {
+            "missing": 0,
+            "foreign_currency": 0,
+            "unit_price_text": 1,
+            "non_numeric": 0,
+            "out_of_range": 0,
+        },
         "Q12": ["S001:000009"],
         "Q13": (12, 12, 11, "24520000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (3, 1, 4),
@@ -52,7 +58,13 @@ EXPECTED = {
         "Q08": (0, 0),
         "Q09": (0, 0),
         "Q10": 1,
-        "Q11": {"missing": 0, "foreign_currency": 1, "unit_price_text": 1, "non_numeric": 1},
+        "Q11": {
+            "missing": 0,
+            "foreign_currency": 1,
+            "unit_price_text": 1,
+            "non_numeric": 1,
+            "out_of_range": 0,
+        },
         "Q12": [],
         "Q13": (9, 9, 6, "17490000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (5, 0, 5),
@@ -64,7 +76,13 @@ EXPECTED = {
         "Q08": (1, 2),
         "Q09": (1, 2),
         "Q10": 2,
-        "Q11": {"missing": 0, "foreign_currency": 0, "unit_price_text": 0, "non_numeric": 0},
+        "Q11": {
+            "missing": 0,
+            "foreign_currency": 0,
+            "unit_price_text": 0,
+            "non_numeric": 0,
+            "out_of_range": 0,
+        },
         "Q12": [],
         "Q13": (12, 12, 12, "22260000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (2, 0, 2),
@@ -76,7 +94,13 @@ EXPECTED = {
         "Q08": (0, 0),
         "Q09": (0, 0),
         "Q10": 1,
-        "Q11": {"missing": 0, "foreign_currency": 1, "unit_price_text": 1, "non_numeric": 0},
+        "Q11": {
+            "missing": 0,
+            "foreign_currency": 1,
+            "unit_price_text": 1,
+            "non_numeric": 0,
+            "out_of_range": 0,
+        },
         "Q12": [],
         "Q13": (7, 7, 5, "22750000"),  # CSV の件数、台帳の件数、数値の金額の行、合計
         "Q15": (3, 0, 3),

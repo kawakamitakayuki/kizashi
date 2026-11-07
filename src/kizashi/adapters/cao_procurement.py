@@ -272,8 +272,9 @@ _LAW_RE = re.compile(r"^(会計法令?|予算決算及び会計令|予決令)(�
 
 
 def reason_category(reason_raw: str | None) -> str:
-    """NFKC にした理由の文字列に含まれる語を、上から順に見て分類する（4.7）。"""
-    text = nz.nfkc(reason_raw or "")
+    """NFKC にし、空白・改行を除いた理由の文字列に含まれる語を、上から順に見て分類する（4.1・4.7。元の値は
+    reason_raw に残す。D-090⑤）。"""
+    text = nz.key_text(reason_raw)
     for word, category in REASON_CATEGORIES:
         if word in text:
             return category
@@ -281,12 +282,12 @@ def reason_category(reason_raw: str | None) -> str:
 
 
 def reason_articles(reason_raw: str | None) -> list[str]:
-    """NFKC にした理由の文字列から根拠条文を取り出す（4.7）。
+    """NFKC にし、空白・改行を除いた理由の文字列から根拠条文を取り出す（4.1・4.7。D-090⑤）。
 
     `予算決算及び会計令` と `予決令` は `予決令` にそろえ、法令名の後の `第` の有無をそろえて（付ける）、
     重複を除いて並べ替えた配列にする。
     """
-    text = nz.nfkc(reason_raw or "")
+    text = nz.key_text(reason_raw)
     found: set[str] = set()
     for match in ARTICLE_RE.finditer(text):
         article = match.group(0)
