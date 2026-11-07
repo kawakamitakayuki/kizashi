@@ -221,6 +221,15 @@ def officer_name_matcher(
 ) -> TermMatcher:
     """実行の担当官の氏名（V7 と同じ、姓名をつないだ3通り）を探す。氏名の一覧を作る原本の CSV が data/raw に
     なければ、伏せられないまま書かないよう E_V7 で止める（D-062）。様式が違えば E_FORMAT_CHANGED（D-059）。"""
+    if fetched_csv_count(conn) == 0:
+        # 取得済みの CSV が1本もなければ、氏名の一覧を作れず伏せられない（「氏名が0件」と区別する。D-092②）
+        raise KizashiError(
+            "E_V7",
+            stage,
+            "氏名の一覧を作る原本（公表一覧の CSV）を1本も取得していないため、ページ別テキストとリンクの文の"
+            "氏名を伏せられない（取得しない）。",
+            next_action="公表一覧の CSV を取得できる状態で、新しい実行を作る。",
+        )
     missing = _unreadable_csv(conn, root)
     if missing:
         raise KizashiError(

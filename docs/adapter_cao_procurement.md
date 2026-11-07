@@ -112,7 +112,7 @@
 ### 4.4 金額
 
 - `^\d{1,3}(,\d{3})*$` または `^\d+$` なら整数の円にして `amount_yen`（INTEGER）に入れる。
-- 整数の形でも、台帳の整数（SQLite の INTEGER）の範囲（2^63−1）を超える値は `amount_yen` を `NULL`、`amount_note` を `out_of_range` にする（数値なので `non_numeric` にしない。元の値は `amount_raw` に残し、合計から除き、Q11 に出す。2^63−1 は取り込む。別経路の読み込み処理にも同じ上限を独立に書く。D-091③）。原本照合（7.3）では `unverifiable` とする。
+- 整数の形でも、台帳の整数（SQLite の INTEGER）の範囲（2^63−1）を超える値は `amount_yen` を `NULL`、`amount_note` を `out_of_range` にする（数値なので `non_numeric` にしない。元の値は `amount_raw` に残し、合計から除き、Q11 に出す。2^63−1 は取り込む。別経路の読み込み処理にも同じ上限を独立に書く。D-091③）。検出SQL（S1）は、除く理由を `amount_out_of_range` と書き分け（D-092③）、原本照合（7.3）では数値として照らす（D-092④）。
 - それ以外は `amount_yen` を `NULL` にし、`amount_note` に種類を入れる：空欄・`-`・`－` は `missing`、外貨（`ドル`、`USD`、`EUR`、`ポンド`、`ウォン`、`ユーロ` などを含む）は `foreign_currency`、`単価` を含むものは `unit_price_text`、それ以外は `non_numeric`（例 `9ヵ月＠…円×…台ほか`）【確認済み】。
 
 ### 4.5 単価契約
@@ -242,7 +242,7 @@
 
 | 項目（照合の記録のキー） | 列 | 照らし方 |
 | --- | --- | --- |
-| `amount_yen` | 10 | CSVの金額が数値（4.4で `amount_yen` が整数）のとき：セルをNFKCにし、数値の並び（数字と桁区切り `,` の連なりで、前後が数字・`,`・`.` でないもの）を取り出す。桁区切りを除いた値がCSVの値と**等しい**ものがあれば `match`、数値の並びはあるが等しいものがなければ `mismatch`、なければ `unverifiable`。部分一致では照らさない（CSVの `1,000,000` はPDFの `11,000,000` に一致しない）。CSVの金額が数値でない（`amount_note` が `unit_price_text`・`foreign_currency`・`non_numeric`）とき：`amount_raw` とセルをNFKC・空白除去して、完全一致なら `match`、違えば `mismatch`、どちらかが空なら `unverifiable`。`amount_note` が `missing` なら `unverifiable` |
+| `amount_yen` | 10 | CSVの金額が数値（4.4で `amount_yen` が整数）のとき：セルをNFKCにし、数値の並び（数字と桁区切り `,` の連なりで、前後が数字・`,`・`.` でないもの）を取り出す。桁区切りを除いた値がCSVの値と**等しい**ものがあれば `match`、数値の並びはあるが等しいものがなければ `mismatch`、なければ `unverifiable`。部分一致では照らさない（CSVの `1,000,000` はPDFの `11,000,000` に一致しない）。CSVの金額が数値でない（`amount_note` が `unit_price_text`・`foreign_currency`・`non_numeric`）とき：`amount_raw` とセルをNFKC・空白除去して、完全一致なら `match`、違えば `mismatch`、どちらかが空なら `unverifiable`。`amount_note` が `missing` なら `unverifiable`。`out_of_range`（台帳の整数の範囲を超える整数。4.4）は、`amount_raw` の数値の並び（ちょうど1つ）を、数値のときと同じ等しさで照らす（D-092④） |
 | `corp_numbers` | 7 | CSVの法人番号が13桁（4.6の `digits13`）のとき、金額と同じ数値の並びの等しさで照らす。ほかの状態は `unverifiable`。PDFの13桁で補完した行（`valid_from_pdf`）も、CSV では有効桁までしか確かめられないので `unverifiable`（4.6。D-077） |
 | `contract_date` | 4 | CSVの表記（`R6.4.1` の形。NFKC・空白除去）が、セルの中に前後が数字・`.` でない形であれば `match`。セルに `R数字.数字.数字` の形があり等しいものがなければ `mismatch`、なければ `unverifiable`。CSVの表記が `R…` の形でなければ、セルとの完全一致で照らす（8本の日付はすべて `R…` の形だった） |
 | `title_raw`・`counterparty_raw`・`method_raw`・`reason_raw` | 1・5・8・8 | CSVの値とセルの文字列をNFKC・空白除去して、完全一致なら `match`、違えば `mismatch`、どちらかが空なら `unverifiable` |
@@ -334,7 +334,9 @@ g AS (
   SELECT group_key, fiscal_year,
          json_group_array(record_id) AS row_refs,
          json_group_array(json_object('ref', record_id,
-             'reason', CASE WHEN unit_price = 1 THEN 'unit_price' ELSE 'amount_not_numeric' END))
+             'reason', CASE WHEN unit_price = 1 THEN 'unit_price'
+                            WHEN amount_note = 'out_of_range' THEN 'amount_out_of_range'  -- D-092③
+                            ELSE 'amount_not_numeric' END))
            FILTER (WHERE unit_price = 1 OR amount_yen IS NULL) AS excluded,
          SUM(amount_yen) FILTER (WHERE unit_price = 0 AND amount_yen IS NOT NULL) AS total,
          SUM(unit_price = 0 AND amount_yen IS NOT NULL) AS n_sum,
@@ -360,7 +362,7 @@ FROM p
 WHERE (sf > 0 AND st > 0 AND tf <> tt) OR ((sf > 0) <> (st > 0));
 ```
 
-- `row_refs_*` は、候補に属するその年度の行すべてである。合計から除く行（単価契約 `unit_price`、数値にならない金額 `amount_not_numeric`）は `excluded_*` に理由と一緒に返す。CLIは `row_refs_*` から `excluded_*` を除いた行で合計し、除いた行と理由と件数を記録する（実装仕様4.8）。
+- `row_refs_*` は、候補に属するその年度の行すべてである。合計から除く行（単価契約 `unit_price`、整数の範囲外の金額 `amount_out_of_range`（4.4。D-092③）、数値にならない金額 `amount_not_numeric`）は `excluded_*` に理由と一緒に返す。CLIは `row_refs_*` から `excluded_*` を除いた行で合計し、除いた行と理由と件数を記録する（実装仕様4.8）。
 - 両年度とも合計できる行があり、合計が違えば `amount_up`・`amount_down`。片方の年度だけ合計できる行がなければ `amount_incomparable` とし、CLIは件数だけを登録して、差額と増減率を作らない。
 - 両方の年度とも合計できる行がない組（両年度とも単価契約など）は候補にせず、母集団の `incomparable` に数える。
 - 集約の `FILTER` 句（SQLite 3.30以上）を使う。3.44以上の条件に含まれる。
@@ -449,7 +451,9 @@ WHERE r1.fiscal_year = :year_from AND (c1.s <> c2.s OR a1.s <> a2.s);
 SELECT group_key AS lead_key, fiscal_year,
        json_group_array(record_id) AS row_refs,
        json_group_array(json_object('ref', record_id,
-           'reason', CASE WHEN unit_price = 1 THEN 'unit_price' ELSE 'amount_not_numeric' END))
+           'reason', CASE WHEN unit_price = 1 THEN 'unit_price'
+                          WHEN amount_note = 'out_of_range' THEN 'amount_out_of_range'  -- D-092③
+                          ELSE 'amount_not_numeric' END))
          FILTER (WHERE unit_price = 1 OR amount_yen IS NULL) AS excluded
 FROM procurement_contracts
 WHERE record_status = 'adopted' AND fiscal_year = :year

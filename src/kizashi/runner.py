@@ -886,8 +886,7 @@ def start_run(
     config_path = paths.resolve_inbox_file(root, config_arg, (".json",))
     config = validate_run_config(_load_config(config_path), adapter)
 
-    paths.runs_dir(root).mkdir(parents=True, exist_ok=True)
-    paths.ensure_in_data(root, paths.runs_dir(root))
+    paths.make_dir_in_data(root, paths.runs_dir(root))  # 作る前に data/ の中かを確かめる（D-092⑥）
     run_id, conn = _create_ledger(root)
     client = fetcher.make_client(transport)
     ctx = RunContext(

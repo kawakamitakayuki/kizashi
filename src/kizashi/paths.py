@@ -57,6 +57,14 @@ def ensure_in_data(root: Path, path: Path) -> Path:
     return resolved
 
 
+def make_dir_in_data(root: Path, path: Path) -> Path:
+    """data/ の中であることを確かめてから、フォルダーを作る（すでにあってもよい）。作る前に確かめるので、
+    実行のフォルダーなどが data/ の外へのリンクでも、外にフォルダーを作らない（3.4。D-092⑥）。"""
+    ensure_in_data(root, path)
+    path.mkdir(parents=True, exist_ok=True)
+    return ensure_in_data(root, path)
+
+
 # inbox/ のファイル名に使える文字（D-067）。氏名の一覧は日本語なので、英数字の名前には既知の氏名が入らない。
 # ファイル名は accepted/・queries/・events に残るため、氏名がファイル名から保存・表示される経路をなくす
 INBOX_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")

@@ -118,7 +118,8 @@ def test_run_completed_with_synthetic_data(
     # 25：D-080・D-083 で、補完の有効桁の検査が受け付ける指数の範囲を変えた
     # 26：bf1bede の実装レビューの修正（D-090・D-091）。分野の規則 cao-procurement/2：D-090⑤（理由の分類・
     # 根拠条文を空白・改行を除いて見る）と D-091③（整数の範囲外の金額を out_of_range にする）
-    assert (versions["rules_version"], versions["parser_version"]) == ("26", "cao-procurement/2")
+    # 27：D-092（判断を任された6点）
+    assert (versions["rules_version"], versions["parser_version"]) == ("27", "cao-procurement/2")
     assert versions["claude_code_version"] == "2.1.318 (Claude Code)"
     assert {"code_version", "git_commit"} <= set(versions)
     # 1ページ＋8ファイル（2年度×2方式×CSV・PDF）

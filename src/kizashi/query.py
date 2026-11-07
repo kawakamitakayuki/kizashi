@@ -254,8 +254,7 @@ def run_query(root: Path, run_id: str, sql_arg: str) -> dict:
     rows, shortened = shorten_cells(rows)
 
     queries = paths.run_dir(root, run_id) / "queries"
-    queries.mkdir(exist_ok=True)
-    paths.ensure_in_data(root, queries)
+    paths.make_dir_in_data(root, queries)  # 作る前に data/ の中かを確かめる（D-092⑥）
     stem = f"{inbox.next_serial(queries):04d}-{path.stem}"
     sql_copy, result_file = queries / f"{stem}.sql", queries / f"{stem}.json"
     at = ledger.now_iso()

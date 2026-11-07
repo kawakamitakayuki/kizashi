@@ -37,7 +37,8 @@ DERIVE_OPS = ("diff", "ratio", "rate", "sum", "product")
 PRECISION = 28
 
 _DOC_NUMBER_RE = re.compile(r"(?<![\d,.])[\d,.]*\d[\d,.]*(?![\d,.])")
-DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
+# 文書値・係数の value の十進数の文字列。数字は ASCII の 0〜9 だけ（re.ASCII。全角などの数字を通さない。D-092①）
+DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$", re.ASCII)
 # 数値の並びの直前の符号（NFKC の後。全角の －・＋ は - と + になる）と、意味を決めない印（D-033）。
 SIGNS = {"-": -1, "−": -1, "+": 1}
 MARKS = ("▲", "△")

@@ -382,6 +382,10 @@ def match_field(field_key: str, values: Mapping[str, object], cell: str) -> str:
         yen = values.get("amount_yen")
         if isinstance(yen, int):
             return match_number(str(yen), cell)
+        if values.get("amount_note") == "out_of_range":
+            # 台帳の整数の範囲を超える金額も数値なので、元の値の数字の並びで照らす（D-091③・D-092④）
+            digits = numbers_in(_str(values.get("amount_raw")))
+            return match_number(digits[0], cell) if len(digits) == 1 else UNVERIFIABLE
         if values.get("amount_note") in ("unit_price_text", "foreign_currency", "non_numeric"):
             return match_exact(_str(values.get("amount_raw")), cell)
         return UNVERIFIABLE  # missing（と、迷う場合）
