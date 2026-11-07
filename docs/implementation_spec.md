@@ -105,7 +105,7 @@ CLIのエントリーポイントは `pyproject.toml` の `[project.scripts]` �
 | 主張 | `C` ＋4桁 | `C0031` |
 | 対応 | `M` ＋3桁 | `M002` |
 
-CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否する。
+CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否する。数字は ASCII の `0`〜`9` だけとする（全角などの数字は書式に合わない。提案の中の ID も同じ書式で照らし、合わなければ `E_SCHEMA`。D-090 の 1-4）。
 
 ### 3.4 パス
 
@@ -165,7 +165,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 | `E_DOC_VALUE_MISMATCH` | 1 | 文書値が引用の数値と合わない |
 | `E_BAD_EXPR`・`E_DIV_ZERO` | 1 | 派生計算の誤り（知らない演算、引数の数、計算ID以外の引数、同じ計算IDの重複）、0での割り算 |
 | `E_NOT_ALLOWED_COLUMN` | 1 | 基礎集計に許可していない表・列 |
-| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す）。`query` の SQL・結果・SQLiteのエラーの文と、`run` の実行設定の氏名の検査の不合格（D-037・D-040） |
+| `E_V7` | 1 | `record` の時点の数値・氏名の検査の不合格（中身は `V7_RAW_NUMBER` などのコードで返す）。`query` の SQL・結果・SQLiteのエラーの文と、`run` の実行設定の氏名の検査（取り込まない列の値を含む。D-090①）の不合格（D-037・D-040）。氏名の一覧を作る原本がない（取得済みの CSV が1本もない、`data/raw` にない）ので検査できないとき（`record`・`query`・`run`。D-090②・1-6） |
 | `E_LIMIT_LEADS`・`E_LIMIT_EVIDENCE`・`E_LIMIT_HTTP`・`E_LIMIT_BYTES` | 1 | 探索上限への到達（設計書4.3）。保留にする |
 | `E_ROUNDS_EXCEEDED` | 1 | 修正の巡回数の上限。保留以外の結論を受け付けない |
 | `E_HOST_NOT_ALLOWED`・`E_REDIRECT_NOT_ALLOWED` | 1 | 許可リスト外のホスト、許可リスト外へのリダイレクト |
@@ -174,7 +174,7 @@ CLIは、引数のIDがこの書式に合わなければ `E_BAD_ID` で拒否す
 | `E_FORMAT_CHANGED` | 3 | 見出し・列の数が期待と違う（未知の様式）。開発側で直す |
 | `E_QUERY_REJECTED`・`E_QUERY_TIMEOUT` | 1 | 探索SQLの拒否、時間切れ |
 | `E_NOT_RESUMABLE`・`E_INPUT_CHANGED` | 3 | 再開できない状態、入力の変化（新しい実行を作る） |
-| `E_RULE_VERSION` | 3 | 規則の版の食い違い（新しい実行を作る） |
+| `E_RULE_VERSION` | 3 | 規則の版の食い違い（新しい実行を作る）。`check`・`record`・`render` で `dataset.yaml` がない・読めず、版を照らせないときも（ファイルがないことと、元に戻すことを書く。D-091①） |
 | `E_DENYLIST_MISSING` | 3 | 公開の検査に要る一覧がない、読めない、形が誤っている、補助資料4点がそろったと確かめられない（12.2。D-056③） |
 | `P_MANIFEST_MISMATCH`・`P_DENYLIST_HASH`・`P_DENYLIST_NAME`・`P_PERSONAL_NAME`・`P_EXCLUDED_VALUE`・`P_COUNTERPARTY`・`P_CORP_NUMBER` | 1 | `check --publish` の不合格（12.2 の P0 の4項目。D-053①） |
 | `E_INTERNAL` | 5 | 想定外のエラー |
@@ -198,14 +198,14 @@ kizashi run --resume <run_id>
 | --- | --- | --- |
 | `plan` | `dataset.yaml` の取得元から、対象の年度の論理資料（年度×方式×形式）の一覧を作り、`sources` に予定として登録する | 設定とdataset.yaml |
 | `fetch` | 予定の資料を取得する（4.2の規則）。資料ごとに確定する。成功した資料は再開時に取り直さない | 資料の一覧 |
-| `normalize` | 最初に、実行設定の文字列（`question`、`scope` の指示と条件の値など）に V7 の氏名の検査を当て、当たれば `E_V7` で止める（氏名の一覧は取得した原本から作るので、ここで行う。D-037）。氏名の一覧（と取り込まない列の値）を作る前に、各 CSV の様式（見出しの文字列・列の数。品質検査の Q02・Q03 と同じ）を確かめ、違えば担当官の列の位置を決められないので、氏名の検査ができたとみなさず `E_FORMAT_CHANGED` で止める（設定の全文を保存しない。D-059）。通れば、1つのトランザクションで `runs.config_json` を設定の全文にし、検査済みを `events`（`kind='check'`、対象は実行ID、`after` に `target: run_config`・`check: V7_PERSONAL_NAME`・`result: passed`・`config_sha256`）に残す（D-040①）。CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
+| `normalize` | 最初に、実行設定の文字列（`question`、`scope` の指示と条件の値など）に V7 の氏名の検査（取り込まない列の値を含む。D-032・D-090①）を当て、当たれば `E_V7` で止める（氏名の一覧は取得した原本から作るので、ここで行う。D-037）。取得済みの CSV が1本もなければ、一覧を作れないので検査済みにせず `E_V7` で止める（設定の全文を保存しない。「原本がない」と「原本を検査した結果、氏名が0件」を区別する。D-090②）。氏名の一覧（と取り込まない列の値）を作る前に、各 CSV の様式（見出しの文字列・列の数。品質検査の Q02・Q03 と同じ）を確かめ、違えば担当官の列の位置を決められないので、氏名の検査ができたとみなさず `E_FORMAT_CHANGED` で止める（設定の全文を保存しない。D-059）。通れば、1つのトランザクションで `runs.config_json` を設定の全文にし、検査済みを `events`（`kind='check'`、対象は実行ID、`after` に `target: run_config`・`check: V7_PERSONAL_NAME`・`result: passed`・`config_sha256`）に残す（D-040①）。CSVを正規化の経路で読み、`records` と `procurement_contracts` に書く。氏名を捨て、取り込まない列を除く | 資料のSHA-256、dataset.yaml、parser_version |
 | `quality` | 品質検査を行い、`quality_report.md` と `runs.counts_json` に書く。必須の検査が1つでも実行できなければ `failed` | 前の工程の出力 |
 | `reconcile_import` | 別経路の読み込み処理で読み直し、正規化した値と行ごとに比べる（T6a）。資料ごとに照合の計算を1つ登録する | 同上 |
 | `reconcile_source` | CSVの全行をPDFと照合する（T6b。アダプタ仕様7章）。資料の組ごとに照合の計算を1つ登録する | CSVとPDFのSHA-256 |
 | `detect` | 検出SQLを実行し、候補・自動の基礎集計・同じ区分の件数・年度の系列を登録する（4.8） | 前の工程の出力と検出SQLのハッシュ |
 
 4. すべて終われば `completed`。取得予定の一部が取れなかった、または一部の検出SQLが動かなかった場合は `partial` とし、欠けたものを `runs.stop_reason` に書く。欠けた資料に依存する検出SQL（`dataset.yaml` の `screens` の `requires`。4.8）は実行しない。それ以外の失敗は `failed`。
-5. 成功したら設定ファイルを `accepted/` に写し、`inbox/` から消す。
+5. 成功したら、設定ファイルを再開と同じ規則（下の D-038⑬）で扱う。開始時の `inbox/` のファイルが検査済みの設定と同じ中身なら `accepted/` に写して `inbox/` から消し、変わった・ない・JSON として読めないときは検査済みの設定を `accepted/` に書いて `inbox/` のファイルを触らない。照らした後に `inbox/` から読み直した中身を写さない（D-091④）。
 
 **再開（`--resume`）**
 
@@ -247,7 +247,8 @@ kizashi fetch <run_id> --recheck <source_id>
 - `--recheck <source_id>`：資料を取り直す。`kind='dataset'` の資料は、公表ページから同じ論理資料（`logical_key`）のリンクをたどり直す。それ以外は元のURLで取り直す。ハッシュが同じなら何もしない。違えば新しい資料IDで登録し（`supersedes` に古い資料ID）、古い資料を根拠にした主張を `stale` にし、`events` に `recheck` を記録する。通信の上限には数え、追加資料の上限には数えない。
   - 取得済みの資料だけを受け付ける（ほかと、新しい版がある資料は `E_USAGE`）。取り直しに失敗しても資料を足さない（通信の計上だけ残す）。ハッシュが同じなら `events` も書かない。公表一覧の新しい版は正規化せず、V1・検証が依存する資料・引用の CSV の引き当ては、実行が取得した版（`supersedes` のないもの）に限る（D-053⑬）。
   - `stale` にするのは、根拠の資料か、参照する計算（入れ子を含む）の行・文書値・照合の資料が古い版の主張。主張のほかに、検証が依存する資料（9章。判定・対応・係数の根拠、該当する行のない依存する CSV を含む）が古い版の候補を `affected_leads` として返す。その候補のメモは失効と表示され（11章）、`check` と `render` は `V2_STALE_OR_WITHDRAWN` で通らない。追加資料なら新しい版を根拠に登録し直し、公表一覧なら同じ設定で新しい実行を作る（D-056①）。
-- 取得に失敗した資料も `sources` に `failed` と理由を残す。ハッシュは求めない。
+- 取得に失敗した資料も `sources` に `failed` と理由を残す。ハッシュは求めない。一時的でない httpx の通信・応答の例外（`DecodingError`・`ProxyError` など）も `E_FETCH_FAILED`（`retryable` は false）とし、通信の回数を残す。httpx の例外でない予期しない例外は通信の失敗にしない（1-5）。
+- ページ別テキストの書き込みの途中で失敗したら、その取得が新しく作った `evidence/<source_id>/` だけを消す。登録済みの資料と `data/raw/` の原本は消さない（1-7）。
 
 ### 4.3 `inspect`
 
@@ -267,7 +268,7 @@ IDは実行ごとの台帳の中でだけ一意なので、実行ID以外を見�
 | 計算ID | 種類、依頼、結果、`row_refs` の件数とハッシュ（一覧はページ分け） |
 | 主張ID | 種類、本文、状態、根拠 |
 
-失効の判定：候補のメモがあれば、`hashing.check_hash` で計算し直したハッシュと `leads.memo_hash` を比べ、違えば「失効」と表示する。候補の `memo` に `memo_no`・`file`・`check_hash`・`current_hash`・`stale`・`status`（有効・失効・メモなし）・`note` を出す。規則の版の食い違いは表示を止めない（`check`・`render` が `E_RULE_VERSION`。D-053⑭）。
+失効の判定：候補のメモがあれば、`hashing.check_hash` で計算し直したハッシュと `leads.memo_hash` を比べ、違えば「失効」と表示する。候補の `memo` に `memo_no`・`file`・`check_hash`・`current_hash`・`stale`・`status`（有効・失効・メモなし）・`note` をいつも出す（値がなければ null。1-13）。規則の版の食い違いは表示を止めない（`check`・`render` が `E_RULE_VERSION`。D-053⑭）。
 
 ### 4.4 `query`
 
@@ -278,9 +279,9 @@ kizashi query <run_id> inbox/<名前>.sql
 - `file:<台帳>?mode=ro` で開き、`PRAGMA query_only = ON` にする。
 - SQLiteのauthorizerで、SELECT と読み取りの関数以外（INSERT、UPDATE、DELETE、CREATE、DROP、ATTACH、PRAGMA、拡張の読み込み）を拒否する。
 - 1つの文だけを実行する。`sqlite3.complete_statement` と文の区切りの検査で、複数の文を拒否する。
-- 実行の前に、SQLの全文（文字列とコメントを含む）に V7 の氏名の検査（9章）を当て、当たれば `E_V7` で拒否する。`queries/` にも `accepted/` にも保存せず、提案は `inbox/` に残す（D-037）。
+- 実行の前に、SQLの全文（文字列とコメントを含む）に V7 の氏名の検査（9章。取り込まない列の値を含む。D-090①。原本がなければ検査を飛ばさず `E_V7`。1-6）を当て、当たれば `E_V7` で拒否する。`queries/` にも `accepted/` にも保存せず、提案は `inbox/` に残す（D-037）。
 - 実行の後、`queries/` への保存・`events` の記録・結果の返却の前に、結果の列名と文字列のセルに同じ検査を当てる。SQLiteのエラーの文（`E_QUERY_REJECTED` に書く文）にも当てる。当たれば `E_V7` とし、元の結果もエラーの文も出さず、位置（`結果の3行目・2列目`、`列名の2列目`、`SQLite のエラーの文` と文字の位置）だけを書く。保存しないこと、提案を `inbox/` に残すことは本文の検査と同じ（文字列の結合などで本文の検査を通った氏名を出さないため。D-040②）。
-- 結果は最大50行。実行時間が10秒を超えたら中断する（`set_progress_handler`）。
+- 結果は最大50行。超えたら50行で切って `truncated` を true にする（`next_page` は返さない。続きは SQL で範囲を絞って書き直す。D-090⑩）。文字列のセルは2,000字までにし、切ったセルは「…（以下略。全N字）」と `cells_shortened`（行・列・元の字数）で示す。氏名などの検査は切る前の全文に当てる（D-090⑩）。実行時間が10秒を超えたら中断する（`set_progress_handler`）。
 - SQLと結果を `queries/` に保存し、`events` に記録する。返すJSONに `"citable": false` を付ける。
 - 成功したらSQLファイルを `accepted/` に写して消す。
 
@@ -290,7 +291,7 @@ kizashi query <run_id> inbox/<名前>.sql
 kizashi record <run_id> inbox/<名前>.json
 ```
 
-- `inbox.load_proposal` で場所と形を検査し、`kind` ごとの処理（6章）に渡す。
+- 最初に規則の版を照らす（この節の最後の箇条）。そのうえで `inbox.load_proposal` で場所と形を検査し、`kind` ごとの処理（6章）に渡す（D-090⑨）。
 - 管理項目（`state`、`checked`、`created_at`、`rounds` など）が提案にあれば `E_SELF_DECLARED` で拒否する。
 - 参照先（候補、資料、計算、レコード、主張）が存在しなければ `E_REF_NOT_FOUND`。
 - 引用があれば `quotes.verify_quote` で照合し、失敗すれば登録しない。
@@ -308,6 +309,7 @@ kizashi check --publish examples/publish.manifest --run <run_id>
 
 - 規則の版を照らす（3.5）。
 - V1〜V8（9章）を順に行い、不合格をすべて集めて返す（最初の1件で止めない。3.2の `failures`）。P0-6では V1〜V4・V8 を行い、V5・V6と check の時点の V7 は P0-8 で足す（V7 は `record` の時点で行っている）。
+- 不合格でも、得られた強い語の警告（`W7_STRONG_WORD`）は出力の最上位の `warnings` に返す（`error` の中に入れない。合否と終了コードは変えない。D-090④）。
 - 不合格でも、T6a・T6bの判定（9章の末尾）、巡回数、`events` の記録は確定する。主張は `checked` にしない（D-041②）。
 - 結論の案が登録されている場合、合格・不合格にかかわらず `leads.rounds` を1増やす。ただし結論の案が保留の場合は数えない。`render` の中の検査も数えない。`rounds` が上限を超えた候補は、保留以外の結論の案を `E_ROUNDS_EXCEEDED` で拒否する。上限は `record` の結論の案に加えて `check` でも強制し、巡回数が上限に達した候補で保留以外の結論の案の `check` は、数えず検査もせずに `E_ROUNDS_EXCEEDED` にする（設計書4.3 の「強制する場所：check」。D-053⑫）。上限は `MAX_ROUNDS`、保留にした候補（3.6）は＋1。
 - 合格したら、メモに出る主張を `checked` にする。
@@ -350,12 +352,13 @@ kizashi render <run_id> [--public]
 - 基礎集計は年度ごとに、`row_refs_*` から `excluded_*` を除いた行の件数（単位 `件`）を必ず登録する。`metric` が `<列>_sum`（列は分野アダプタの `SUM_LABELS`）の検出SQLでは、この件数は「合計対象行の件数」で（`meaning` にそう書く）、金額の合計ではない。両年度に合計できる行があれば合計も登録し、`calc_from`・`calc_to` を合計にする。`amount_incomparable` では `calc_from`・`calc_to` を合計対象行の件数（単位 `件`）にする。件数と派生計算は `lead_id` で候補に結ぶ（D-038②）。
 - 同じ実行の、同じ `change_category` の検出の候補（`screen_id` が検出SQLの名前のもの）の数から、自分を除いた数を `peer_count` に入れる。探索の候補（`screen_id='explore'`）は数えず、探索の候補の `peer_count` は空のまま。所属や部局の別では数えない（「ほかの部局の数」ではない。D-038①）。
 - 年度の系列：検出SQLと同じ名前の `datasets/<分野>/series/<名前>.sql` を、`series_years` の年度ごとに名前付きのパラメーター `:year` で実行する。列は `lead_key`・`fiscal_year`・`row_refs`（その年度の、まとめに属する行すべて）・`excluded`（合計から除く行と理由。書式は `excluded_*` と同じ）。行の選び方と除き方は検出SQLと同じにする。CLIは、比べる2年度で、系列のSQLの `row_refs` と `excluded` が検出SQLと同じかを候補ごとに照らす（違えば分野のSQLの誤りとして `E_INTERNAL`）。
-- 比べる2年度は `calc_from`・`calc_to` を系列に使う。ほかの年度も比べる2年度と同じ数え方で、合計対象行の件数を必ず登録し（除いた行と理由と件数を `request_json` に残す）、合計の候補で合計できる行があれば合計を登録して系列に入れる。件数の候補（`amount_incomparable` と S2・S3）は件数を系列に入れる。系列は `series_years` の順に計算IDを並べて `leads.calc_ids_json` に入れる。
+- 比べる2年度は `calc_from`・`calc_to` を系列に使う。ほかの年度も比べる2年度と同じ数え方で、合計対象行の件数を必ず登録し（除いた行と理由と件数を `request_json` に残す）、合計の候補で合計できる行があれば合計を登録して系列に入れる。件数の候補（`amount_incomparable` と S2・S3）は件数を系列に入れる。系列は `series_years` の年度の昇順に計算IDを並べて `leads.calc_ids_json` に入れる（設定の書き順によらない。D-090⑯）。
 - 合計の候補で、その年度に合計できる行がない（行がない、または行がすべて合計から除かれる）年度は、合計を作らず（0円にしない）系列に入れず、候補の `note` に年度と合計対象行の件数の計算IDを書く。その年度の資料（その検出SQLの `requires` の方式）が取得・品質検査を通っていなければ、系列のSQLを実行せず計算も作らず（0件・0円にしない。設計書5.2・M13）、`note` に年度と欠けた資料を書く。年度途中の年度（`dataset.yaml` の `files` の `partial_year`）の計算は `meaning` に「（年度途中）」を付ける（D-038④⑤）。
 - 検出SQLごとに、比べた組の数と、比較できなかった組の数を `runs.counts_json` に入れる。数え方は、検出SQLと同じ名前の `datasets/<分野>/populations/<名前>.sql`（`compared` と `incomparable` の2列を返す）で定める。`screens/` に置くと検出SQLとして実行されるため、場所を分ける。
 - 検出SQLを実行する前に、`dataset.yaml` の `screens.<名前>.requires`（`compare_years` の両年度でそろっていなければならない資料の種類）を確かめる。1つでも取得・品質検査を通っていなければ、検出SQLも母集団のSQLも実行せず、`runs.counts_json` に `{"<名前>": {"state": "not_run", "missing": ["kyoso:2025", ...]}}` と書く。`compared: 0` とは書かない（「比べた組が0」と「実行していない」を混同しないため）。実行した検出SQLは `{"state": "done", "compared": N, "incomparable": M, "leads": K}` と書く。資料がそろうかは、その年度・方式の CSV が `fetched` で、品質検査の結果（`counts_json` の `quality`）にあることで決める（D-038⑧）。実行しなかった検出SQLは `runs.stop_reason` の `screens_not_run`（`[{"screen": "<名前>", "missing": [...]}]`）に、取得できなかった資料（`missing`）と並べて書き、どちらかがあれば `partial` にする（D-038⑦）。
 - 分野のSQL・`dataset.yaml` の誤り（`screens/` のSQLと `dataset.yaml` の `screens` の名前が合わない、`requires` が方式の配列でない、母集団のSQL・系列のSQLがない、`comparison_defaults` が6項目でない、列が違う、`excluded` の行が `row_refs` にない・理由が空、期間が `compare_years` と違う、`change_category` が `reconcile.fields_by_category` にない、同じ候補を2回返す、比べる2年度で系列のSQLの行が検出SQLと違う）は `E_INTERNAL` で `detect` を `failed` にし、トランザクションを巻き戻して候補を残さない（D-038⑨）。
 - 候補の採番は、検出SQLの名前の順、その中で `(change_category, lead_key)` の順。検出の候補の `query_file` は空（D-038⑩）。
+- 分野の SQL の構文・実行時のエラー（SQLite の例外）と、`dataset.yaml` の `screens.<名前>` が `requires` を持つ形でないときも、分野の誤りとして `E_INTERNAL` で `detect` を `failed` と記録する（`stages_json` と `stop_reason` の工程は `detect`。1-8）。
 
 ## 5. 台帳（DDL）
 
@@ -475,7 +478,7 @@ CREATE TABLE claims (
   calc_ids_json TEXT NOT NULL DEFAULT '[]',
   evidence_json TEXT NOT NULL DEFAULT '[]',
   state TEXT NOT NULL DEFAULT 'draft' CHECK (state IN ('draft','checked','held','withdrawn','stale')),
-  replaces TEXT REFERENCES claims(claim_id),
+  replaces TEXT REFERENCES claims(claim_id),  -- P0 では使わない（登録の経路がない。D-090⑫）
   created_at TEXT NOT NULL,
   CHECK (type <> 'record' OR fiscal_year IS NOT NULL)
 );
@@ -511,6 +514,8 @@ CREATE TABLE events (
 
 `records.cells_json` は、`dataset.yaml` の `take` のキー（例 `title_raw`、`amount_raw`）をキー、CSVのセルの元の文字列（前後の空白だけ除いたもの）を値とするJSONオブジェクトである。`take` にない列（`drop`）は入れない。担当官のセル（`officer_raw`）は入れず、所属を分野の表の `officer_units_json` に入れる（氏名を保存しないため。アダプタ仕様4.3）。引用の照合（8章）、記者の確認リスト（10.1）、`inspect` はこのキーを使う。
 
+`claims.replaces` は P0 では使わない（`claim` の提案にこの項目はなく、値は常に空）。訂正は、新しい主張を登録したうえで古い主張を `withdraw` で取り下げて行う（D-090⑫）。
+
 分野の表（`procurement_contracts`、`procurement_matches`）はアダプタ仕様8章。根拠（`evidence_json`）、取材質問（`questions_json`）、`row_refs` はJSONの配列で持ち、参照先はCLIが検査する（外部キーでは検査できないため）。
 
 ## 6. 提案ファイル（inbox）の書式
@@ -533,10 +538,10 @@ CREATE TABLE events (
 | `kind` | 必須の項目 | 処理 |
 | --- | --- | --- |
 | `run_config` | `domain`、`compare_years`（連続した2年度。例 `[2024, 2025]`）、`series_years`（系列として読む年度。`compare_years` を含む。例 `[2023, 2024, 2025]`）、`question`、`model`。任意で `scope`（母集団の絞り込み。記者の指示があるときだけ。6.3。D-013） | `run` が読む。`record` では受け付けない。Claude Codeの版は `KIZASHI_CLAUDE_VERSION` から記録する（3.5） |
-| `calc` | `op`（`sum` / `count`）、`table`、`column`（sumのとき）、`filter`（`[{"col","op","value"}]`。`op` は `=`、`!=`、`in`、`is_null`、`not_null`。`fiscal_year` の値は整数（`in` は整数の配列）だけで、`"2024"` のような文字列は `E_SCHEMA`。D-042②）、`label`、`unit`。任意で `lead_id`（探索で見つけた候補を登録する前の計算では省く） | 7.1。計算IDを返す |
+| `calc` | `op`（`sum` / `count`）、`table`、`column`（sumのとき）、`filter`（`[{"col","op","value"}]`。`op` は `=`、`!=`、`in`、`is_null`、`not_null`。`fiscal_year` の値は整数（`in` は整数の配列）だけで、`"2024"` のような文字列は `E_SCHEMA`。D-042②。`table` は文字列、条件の値の整数は SQLite の整数の範囲（−2^63〜2^63−1）に限り、外れれば `E_SCHEMA`。1-14）、`label`、`unit`。任意で `lead_id`（探索で見つけた候補を登録する前の計算では省く） | 7.1。計算IDを返す |
 | `derive` | `op`（`diff`・`ratio`・`rate`・`sum`・`product`）、`args`（計算IDの配列）、`label`、`unit`。任意で `lead_id` | 7.3 |
 | `doc_value` | `lead_id`、`source_id`、`position`、`quote`、`value`（十進数の文字列）、`label`、`unit` | 7.2 |
-| `lead` | `query_file`（`accepted/` に写した探索SQLの名前）、`lead_key`、`change_category`、`period_from`、`period_to`、`calc_from`・`calc_to`（比べる2年度の基礎集計の計算ID）、`calc_ids`（ほかに関係する計算。空でよい）、`comparison`（母集団、1行の意味、期間、単位、主体の対応、算式）、`note` | 探索で見つけた候補を `screen_id='explore'` で登録し、`calc_from`・`calc_to`・`calc_ids` の計算の `lead_id` を埋める。`calc_from`・`calc_to` が基礎集計でない、または条件（`filter`）に `fiscal_year` = `period_from`・`period_to` をそれぞれ含まなければ `E_SCHEMA`。比べた組の数（探索）を1増やす |
+| `lead` | `query_file`（`accepted/` に写した探索SQLの名前）、`lead_key`、`change_category`、`period_from`、`period_to`、`calc_from`・`calc_to`（比べる2年度の基礎集計の計算ID）、`calc_ids`（ほかに関係する計算。空でよい）、`comparison`（母集団、1行の意味、期間、単位、主体の対応、算式）、`note` | 探索で見つけた候補を `screen_id='explore'` で登録し、`calc_from`・`calc_to`・`calc_ids` の計算の `lead_id` を埋める。`calc_from`・`calc_to` が基礎集計でない、または条件（`filter`）に `fiscal_year` = `period_from`・`period_to` をそれぞれ含まなければ `E_SCHEMA`。照合の計算（`kind='reconcile'`。実行の中で候補の間で共有する）を候補に所属させる指定も `E_SCHEMA`（照合の計算の `lead_id` は変えない。D-090⑬）。比べた組の数（探索）を1増やす |
 | `hypothesis` | `lead_id`、`text`、`withdraw_if`。結果を書くときは `result`（`kept` / `withdrawn`） | 最初の登録で候補を `investigating` にする（調べる候補が3件を超えるなら `E_LIMIT_LEADS`） |
 | `match` | `lead_id`、`left`・`right`（`row_ref` の配列）、`relation`（`1:1` / `1:n` / `n:1` / `n:m`）、`reason`、`evidence`、`status`（`confirmed` / `pending`） | 分野の対応表に登録する |
 | `claim` | `lead_id`、`type`、`text`、`calc_ids`、`evidence`。`type` が `record` のときは `fiscal_year` | 主張を `draft` で登録する |
@@ -585,7 +590,7 @@ CREATE TABLE events (
 
 ### 7.2 文書値
 
-- 引用を照合したうえで、引用の中の数値の並び（NFKCにした後の、数字と桁区切り `,` と小数点の連なり。前後が数字・`,`・`.` でないもの）を取り出し、桁区切りを除いてDecimalにしたもののどれかが `value` と等しいことを確かめる。部分一致では照らさない（`1,200` の中の `200` は一致としない）。等しいものがなければ `E_DOC_VALUE_MISMATCH`。
+- 引用を照合したうえで、引用の中の数値の並び（NFKCにした後の、数字と桁区切り `,` と小数点の連なり。前後が数字・`,`・`.` でないもの）を取り出し、桁区切りを除いてDecimalにしたもののどれかが `value` と等しいことを確かめる。部分一致では照らさない（`1,200` の中の `200` は一致としない）。並びの末尾の `.`（全角の `．` を含む）は、直後が数字でないので句点とみなして除く（`比は0.5．` は `0.5`。除いても数値にならない `1.2.3．` などは取り出さない。D-090⑪）。等しいものがなければ `E_DOC_VALUE_MISMATCH`。
 - 符号（D-033）：数値の並びの直前に `-`（NFKCの後。全角の `－` を含む）、`−`（U+2212）、`+` があり、その前が数字・英字でなければ、符号として値に含める（`増減は-12件` は `-12`。`10-15`・`2024-03-01`・`A-12` の `-` は符号にしない）。符号・印と数字の間と、符号の前の空白は飛ばして見る（8章の照合が空白を除いて比べるため。D-036）。先頭の `.` も数値の並びに含む（`.5` は `0.5`）。直前に `▲`・`△` がある数値は、負を示すかが資料ごとの決まりなので文書値にせず、`E_DOC_VALUE_MISMATCH` で記者に確かめるよう案内する（同じ引用に印のない同じ数値があれば、それと照らす）。
 
 ### 7.3 派生計算
@@ -603,7 +608,7 @@ CREATE TABLE events (
 - 引数には派生計算の計算IDも使える（V3(c)は基礎集計と文書値までさかのぼって計算し直す）。
 - 1つの依頼の中で同じ計算IDを2回使わない（`E_BAD_EXPR`）。`ratio(K1, K1)` のように、資料にない定数を作れないようにするためである。値の等しい別の計算IDを並べれば同じことができるので、その意味の通らない組は `review-lead` と記者の確認に委ねる（残る限界）。
 - `decimal.localcontext()` で精度28桁にして計算する。0での割り算は `E_DIV_ZERO`。`rate` の基準が0以下なら `E_DIV_ZERO` と同じく拒否する（V5_BAD_RATE と同じ考え方）。
-- 丸めない。表示の丸めは `render` が単位ごとに行い、丸め方は四捨五入（`decimal.ROUND_HALF_UP`）とする。`unit` の文字列と `dataset.yaml` の `display` の対応は、`円` → 整数・桁区切り、`比率` → 100倍して小数1桁の `%`、`件` → 整数、それ以外 → 丸めずに表示とする。
+- 丸めない。表示の丸めは `render` が単位ごとに行い、丸め方は四捨五入（`decimal.ROUND_HALF_UP`）とする。`unit` の文字列と `dataset.yaml` の `display` の対応は、`円` → 整数・桁区切り、`比率` → 100倍して小数1桁の `%`、`件` → 整数・桁区切り、それ以外 → 丸めずに表示とする（`dataset.yaml` の `display` に従う。D-090⑥）。
 - 提案の `label` は、計算の `meaning`（意味）として保存し、メモの展開に使う。
 
 ### 7.4 照合の記録
@@ -696,7 +701,7 @@ CREATE TABLE events (
 | V8 | `V8_HOLD_REASON` | 保留なのに `hold_reason` がない、または目的が `missing_documents`（不足資料の照会）の質問がない（照会先は質問の `to`、情報公開請求の候補は `foia`。D-041⑩） |
 | V8 | `V8_T6C_QUESTION` | 比較成立なのに、目的が `verify_record`（元の記載の確認）の質問がない（質問の中身の十分さは記者が確かめる。D-041⑩） |
 
-T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations` に登録する（`context='cli'`、根拠は照合の計算ID）。候補の行（メモに出る基礎集計の `row_refs` から、率の分母だけに使う行を除いたもの）について：
+T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations` に登録する（`context='cli'`、根拠は照合の計算ID）。候補の行（メモに出る基礎集計の `row_refs` から、率の分母だけに使う行を除いたもの。除くのは、メモに直接出ず、メモに出る派生計算での使い方がすべて `ratio` の第2引数である基礎集計の行だけで、派生計算を通じて別の用途にも使う行と `rate` の基準の行は残す。除いた行も、依存する資料の検査と検証記録のハッシュには含める。D-090③）について：
 
 - T6a：すべてが取り込みの照合で一致なら「否定」、1つでも不一致なら「支持」。
 - T6b：すべてが原本照合で `matched` で、変化の区分ごとの照合項目（アダプタ仕様7.4）がすべて `match` なら「否定」。受注先を扱う主張があれば、照合項目に受注者名と法人番号を加える。「受注先を扱う主張」は、メモに出る記載の根拠（主張・判定・対応・係数の手がかり・文書値。D-065）の位置の列が受注先の列（`counterparty_raw`・`corp_number_raw`）か、メモに出る基礎集計の条件に受注先の列（`corp_number_state`）があるもの（機械で見分けられる範囲。文で受注先を述べる主張は `review-lead` と記者が確かめる）。メモの7節も同じ項目で照合できなかった行を先頭に出す（D-058）。照合項目から除くのは、分野の規則でその行に当たらない項目（その年度・方式の `take` に `pdf_fields` の列がない項目。競争入札の行の `reason_raw` など）だけとし、当たる項目の照合の結果がなければ「未確認」とする（D-041④）。1つでも `mismatch` があれば「支持」（見かけの変化の検討へ）。`mismatch` がなく `unverifiable`・`not_found`・`ambiguous` があれば「未確認」（保留の理由 `source_check`）。分野アダプタが原本照合を対象外とした場合は「対象外」。
@@ -749,7 +754,8 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 - 4節の判定には、説明を反映した値、残る差（金額の候補は比較対象と引き算の向き、金額以外の候補は「説明できる行を除いた残りの行」。D-046）、説明によって足した・変えた条件（`reflected_conditions`）を出す（D-043②）。
 - 3節の末尾に「資料の一覧」を置き、検証が依存する資料（9章）のすべてについて、資料ID、URL、取得日時、保存場所（`data/raw/<sha256>.<拡張子>`）、SHA-256を出す。引用と行の表示は資料IDでこの一覧を引く（D-041⑭）。
 - 8節の版：Skill とルールのファイル（`CLAUDE.md`、`.claude/skills/` の Markdown）は、開始時の記録（3.5の `rule_files`。コミットとの一致を含む）と、`render` の時点の一覧・ハッシュを分けて出し、開始時からの追加・削除・変更を書く。開始時の記録のない実行は「未記録」とし、`render` の時点の値で補わない（D-041⑭・D-042④）。
-- 7節の各行：ファイル名、手元の原本の場所（`data/raw/<sha256>.csv`）、「NO」の値、表計算ソフトで開いたときの行番号（見出し4行＋論理レコード番号。セル内の改行がある行より後はずれうるため「目安」と書く）、PDFのページ、確かめる項目と値。照合できなかった行と項目を先頭に置く。
+- 7節の各行：ファイル名、手元の原本の場所（`data/raw/<sha256>.csv`）、「NO」の値、複合キー（件名・契約を締結した日・契約金額・相手方の元の値。アダプタ仕様4.9）、表計算ソフトで開いたときの行番号（見出し4行＋論理レコード番号。セル内の改行がある行より後はずれうるため「目安」と書く）、PDFのページ、確かめる項目と値。照合できなかった行と項目を先頭に置く。7節には、メモに出る引用を資料ID・位置（ページか `row_ref` と列）・掲載節（3節・4節・7節）でたどる一覧も置く。引用の全文は掲載節にあり、7節では再掲しない（D-090⑦）。
+- 係数の提案の文字列（4節と7節）も `{calc:ID}` を展開する（1-10）。1節の「止まった・欠けたもの」は `runs.stop_reason` を日本語の文にして出す（欠けた資料、実行しなかった検出SQL、止まった工程。JSON の原文を出さない。1-12）。
 
 ### 10.2 失効と規則の版
 
@@ -767,7 +773,7 @@ T6aとT6bの判定は機械で行い、CLIが `check` のたびに `explanations
 ## 候補（調べた候補の結論とメモへのリンク、調べずに残した候補、取り下げた仮説と理由・再開の条件）
 ```
 
-「比較できない理由の付いた候補の数」は、検出SQLごとの、比較できない理由（単価契約・年度途中・重複など）の付いた候補の数で、同種業務の対応の確認待ち（対応表の `pending`）や記者の原本の確認の未了とは別の数として書く（D-053⑥）。品質レポートの要約は、資料ごとの合否の数と、不合格・未実行の項目だけを書き、報告の項目は品質レポートの全文に任せる。番号は `memos/` の `run_summary.v<n>.md` の最大の次とし、`events` に `render`（対象は実行ID）を残す。
+「比較できない理由の付いた候補の数」は、検出SQLごとの、比較できない理由（単価契約・年度途中・重複など）の付いた候補の数で、同種業務の対応の確認待ち（対応表の `pending`）や記者の原本の確認の未了とは別の数として書く（D-053⑥）。品質レポートの要約は、資料ごとの合否の数（合格・報告・要確認・不合格・未実行）と、不合格・未実行・要確認の項目だけを書き、報告の項目は品質レポートの全文に任せる。要確認（Q05 の分けられないセル）は合格と混同せず、数と項目の両方に出す。項目には品質検査の記録の文（行ID）だけを書き、氏名の断片を出さない（D-091②）。番号は `memos/` の `run_summary.v<n>.md` の最大の次とし、`events` に `render`（対象は実行ID）を残す。
 
 候補が0件のときは「比べられたN組の中で該当なし」と書く。`partial`・`failed` のときは「候補なし」と書かない。`counts_json` が `not_run` の検出SQLは、比べた組の数の代わりに「未実行」と欠けた資料を書く。
 
@@ -815,7 +821,7 @@ kizashi check --publish examples/publish.manifest --run <run_id> [--run <run_id>
 3. すべての参照からたどれる履歴の中身（`git rev-list --objects --all` のblobを `git cat-file --batch` で読む。別名でコミットしてから消したファイルも、ここで見つかる）
 
 - 中身のSHA-256は3つの対象のすべてのblobで照らす。氏名・受注者名の検査は、UTF-8として読めて5MB以下のblobだけを対象にし、読めないblobはハッシュの照合だけにする。
-- テキストは、元の文字列と NFKC にした文字列の両方で照らす。氏名は V7 と同じ姓名をつないだ3通り。法人番号は実行の13桁の値。`disclosure.allow` の値は NFKC で比べ、受注者名と法人番号の両方に効く。不合格には場所（作業フォルダー・ステージ・履歴、パス、blob、行、履歴ならそれを含むコミット）だけを書き、語を書かない（D-053④）。
+- テキストは、元の文字列と NFKC にした文字列の両方で照らす。氏名は V7 と同じ姓名をつないだ3通り。法人番号は実行の13桁の値。`disclosure.allow` の値は NFKC で比べ、受注者名と法人番号の両方に効く。不合格には場所（作業フォルダー・ステージ・履歴、パス、blob、行、履歴ならそれを含むコミット）だけを書き、語を書かない（D-053④）。補助資料の名前を含むパスは、どの不合格（一覧の食い違い、ファイル名、中身）でも名前を「（補助資料の名前）」に伏せたパスで示し、ファイル名の当たりには場所の区分・blob・それを含むコミットを添える。文と構造化した欄の両方に当てる（D-090⑧）。
 - 当たったら、パス、blob、そのblobを含むコミット（履歴の場合）を返す。履歴にあった場合、作業フォルダーを直しても公開物からは消えない。履歴の書き換えは自動では行わず、新しいリポジトリを作り直すよう案内する。
 - 限界：まだ取り込んでいない遠隔の履歴、`--all` に入らない参照（reflogだけに残るもの）は検査しない。UTF-8 として読めないか5MBを超える中身は、氏名・受注者名などを検査しない（合格のメッセージと `targets.hash_only` にその数を出し、記者が中身を確かめる。D-070）。
 - 手順：一覧はステージと最新のコミットの一覧との一致を求めるので、公開用のコミットを手元で作り（push しない）、そのコミットで検査し、通ったそのコミット（検査の後に変えていないもの）だけを公開する。不合格なら push せず、直して手元のコミットを作り直す（`README.md` と `examples/README.md` に書く。D-069）。

@@ -70,8 +70,11 @@ from kizashi.hashing import sha256_bytes, sha256_file
 # 23：D-074（初回の run で、公表ページに同じ論理資料のリンクが2つ以上あるときの取得の失敗の理由に、候補の URL を
 #     書かず、資料ID・論理資料のキー・候補の数だけを書く）。run の結果（取得の失敗の記録）が変わる。
 # 26：bf1bede の実装レビューの修正（D-090・D-091。decisions.md の「bf1bede の実装レビューの記録」の 1-1〜1-17）。
-#     ID の書式の数字を ASCII に限る、record は提案の形より先に規則の版を照らす、dataset.yaml がなければ
-#     E_RULE_VERSION、accepted/ を上書きしない ほか。run・record・check・render・query・fetch の結果が変わる。
+#     ID の書式の数字を ASCII に限る、探索SQL と実行設定に取り込まない列の値の検査を当てる、CSV がないときの
+#     E_V7、check の failures を9章の表の順にする、率の分母にしか使わない行だけを候補の行から除く、文書値の句点、
+#     メモの7節の複合キーと引用の位置、公開の検査で補助資料の名前を伏せる ほか。分野の規則は cao-procurement/2
+#     （理由の分類・根拠条文、整数の範囲外の金額）。run・record・check・render・query・fetch・inspect・
+#     check --publish の結果が変わる。
 RULES_VERSION = "26"
 
 
