@@ -98,7 +98,7 @@ scripts/investigate
 
 流れ（`.claude/skills/investigate/SKILL.md`）：
 
-1. Claude が `datasets/cao-procurement/README.md` を読み、記者とともに、問いと比べる2つの年度を決めて `inbox/run-config.json` を書き、`kizashi run cao-procurement --config inbox/run-config.json` を実行します。実行IDは `20261106-132648-3zdx` の形です。
+1. Claude が `datasets/cao-procurement/README.md` を読み、記者とともに、調査内容と比べる2つの年度を決めて `inbox/run-config.json` を書き、`kizashi run cao-procurement --config inbox/run-config.json` を実行します。
 2. `kizashi inspect <run_id>` で品質検査・検出の件数と候補の一覧を読み、詳しく調べる候補を最大3件選びます（選んだ理由を記者に伝えます）。
 3. 候補ごとに、仮説と取り下げ条件、同種業務の対応、主張、6つの型の判定、取材質問を登録し、`kizashi fetch` で公表資料を取得して理由を調べます。
 4. `review-lead`（Skill）で点検し、結論の案を登録して `kizashi check <lead_id> --run <run_id>` を通します。
