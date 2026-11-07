@@ -4,6 +4,7 @@
     "allow": ["WebFetch(domain:*.go.jp)", "WebFetch(domain:*.lg.jp)"],
     "deny": [
       "Read(.env)",
+      "Read(.env.*)",
       "Edit(/data/**)",
       "Edit(/references/**)",
       "Bash(curl *)",

@@ -15,6 +15,7 @@
     "allow": ["WebFetch(domain:*.go.jp)", "WebFetch(domain:*.lg.jp)"],
     "deny": [
       "Read(.env)",
+      "Read(.env.*)",
       "Edit(/data/**)",
       "Edit(/references/**)",
       "Bash(curl *)",
@@ -99,6 +100,12 @@ __pycache__/
 *.pyc
 .claude/settings.local.json
 .env
+.env.*
+!.env.example
+CLAUDE-SECURITY-*/
+.pytest_cache/
+.ruff_cache/
+scratch/
 ```
 
 `inbox/` は空のフォルダーとして必要なので、`scripts/investigate` の中で `mkdir -p inbox` を実行する（リポジトリには入れない）。
