@@ -651,6 +651,9 @@ class _Memo:
                     f"{'・'.join(json.loads(m['left_json']))} と {'・'.join(json.loads(m['right_json']))}。"
                     f"理由：{self.expand(m['reason'])}"
                 )
+                # 対応の根拠の引用も出す（引用をたどる一覧が「7節に掲載」と案内する先。D-090⑦）
+                for e in json.loads(m["evidence_json"]):
+                    lines.append(f"  - 根拠：{self.evidence_text(e)}")
             lines.append("")
         return lines
 
