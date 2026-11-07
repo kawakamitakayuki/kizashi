@@ -75,7 +75,10 @@ from kizashi.hashing import sha256_bytes, sha256_file
 #     メモの7節の複合キーと引用の位置、公開の検査で補助資料の名前を伏せる ほか。分野の規則は cao-procurement/2
 #     （理由の分類・根拠条文、整数の範囲外の金額）。run・record・check・render・query・fetch・inspect・
 #     check --publish の結果が変わる。
-RULES_VERSION = "26"
+# 27：D-092（文書値・係数の value の数字を ASCII に限る、CSV のない実行の追加資料の取得を E_V7 にする、範囲外の
+#     金額の除く理由を amount_out_of_range と書き分け、原本照合で数値として照らす、リンクの文を伏せてから切る、
+#     data/ の中かを確かめてからフォルダーを作る）。record・fetch・run（検出と原本照合）の結果が変わる。
+RULES_VERSION = "27"
 
 
 def code_version() -> str:

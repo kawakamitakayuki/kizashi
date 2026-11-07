@@ -71,8 +71,7 @@ def load_proposal(root: Path, arg: str) -> Proposal:
 
 def accepted_dir(root: Path, run_id: str) -> Path:
     target = paths.run_dir(root, run_id) / "accepted"
-    target.mkdir(exist_ok=True)
-    paths.ensure_in_data(root, target)
+    paths.make_dir_in_data(root, target)  # 作る前に data/ の中かを確かめる（D-092⑥）
     return target
 
 

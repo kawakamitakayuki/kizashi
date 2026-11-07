@@ -335,9 +335,7 @@ def store_raw(
     check_suffix: bool = True,
 ) -> tuple[str, Path, int]:
     """一時ファイルに保存して検査し、data/raw/<sha256>.<拡張子> に移す。(SHA-256, パス, 大きさ) を返す。"""
-    raw = paths.raw_dir(root)
-    raw.mkdir(parents=True, exist_ok=True)
-    paths.ensure_in_data(root, raw)
+    raw = paths.make_dir_in_data(root, paths.raw_dir(root))
     fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", dir=raw)
     tmp = Path(tmp_name)
     try:
@@ -556,7 +554,8 @@ class _TextParser(HTMLParser):
                 return
             if all(link["url"] != absolute for link in self.links):
                 text = re.sub(r"\s+", " ", "".join(texts)).strip()
-                self.links.append({"url": absolute, "text": text[:100]})
+                # 文はここでは切らない。氏名を伏せてから LINK_TEXT_CHARS 字に切る（D-092⑤）
+                self.links.append({"url": absolute, "text": text})
 
     def handle_data(self, data: str) -> None:
         if self.skip:
@@ -759,6 +758,11 @@ def extract_page_texts(
     return [text], links, encoding
 
 
+LINK_TEXT_CHARS = (
+    100  # 取得の結果と links.json に残すリンクの文の長さ（氏名を伏せた後に切る。D-092⑤）
+)
+
+
 def mask_known_names(
     conn: sqlite3.Connection,
     root: Path,
@@ -788,7 +792,8 @@ def mask_known_names(
             dropped += 1
             continue
         text, n = check.mask_names(link.get("text") or "", matcher)
-        masked_links.append({**link, "text": text})
+        # 伏せてから切る（切れ目にかかった氏名の一部を残さない。D-092⑤）
+        masked_links.append({**link, "text": text[:LINK_TEXT_CHARS]})
         total += n
     return masked_pages, masked_links, total, dropped
 
@@ -807,7 +812,7 @@ def _write_evidence(
     source_id = ledger.next_id(conn, "S")
     folder = paths.run_dir(root, run_id) / "evidence" / source_id
     page_dir = folder / "pages"
-    paths.ensure_in_data(root, page_dir)  # 作る前に、data/ の中であることを確かめる
+    paths.ensure_in_data(root, page_dir)  # 作る前に、data/ の中であることを確かめる（1-7・D-092⑥）
     # 新しい資料IDのフォルダーを、この取得で新しく作る（すでにあれば FileExistsError で、消さずに止まる）
     folder.mkdir(parents=True)
     try:

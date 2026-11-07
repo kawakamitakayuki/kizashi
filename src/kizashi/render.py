@@ -814,8 +814,7 @@ def render_lead(root: Path, run_id: str, lead_id: str, *, public: bool = False) 
                 )
             digest = hashing.check_hash(conn, lead_id, adapter)
             memo_no = int(lead["memo_no"]) + 1
-            memos.mkdir(parents=True, exist_ok=True)
-            paths.ensure_in_data(root, memos)
+            paths.make_dir_in_data(root, memos)  # 作る前に data/ の中かを確かめる（D-092⑥）
             path = memos / f"{lead_id}.v{memo_no}.md"
             text = _Memo(conn, root, run_id, adapter, lead_id).text(memo_no, digest)
             _write_new(path, text, written, lead_id)
@@ -1394,8 +1393,7 @@ def render_run(root: Path, run_id: str, *, public: bool = False) -> dict:
         (domain,) = conn.execute("SELECT domain FROM runs").fetchone()
         adapter = load_adapter(root, domain)
         memos = paths.run_dir(root, run_id) / "memos"
-        memos.mkdir(parents=True, exist_ok=True)
-        paths.ensure_in_data(root, memos)
+        paths.make_dir_in_data(root, memos)  # 作る前に data/ の中かを確かめる（D-092⑥）
         number = _next_number(memos, SUMMARY_PREFIX)
         text = _RunSummary(conn, root, run_id, adapter).text(number)
         path = memos / f"{SUMMARY_PREFIX}.v{number}.md"
@@ -1512,8 +1510,7 @@ def _write_public(
     written: list[Path],
 ) -> Path:
     folder = paths.run_dir(root, run_id) / "public"
-    folder.mkdir(parents=True, exist_ok=True)
-    paths.ensure_in_data(root, folder)
+    paths.make_dir_in_data(root, folder)  # 作る前に data/ の中かを確かめる（D-092⑥）
     path = folder / memo.name
     _write_new(path, public_text(conn, root, adapter, text), written, run_id)
     return path
