@@ -243,3 +243,69 @@ def test_rd1_match_evidence_is_shown_in_section7(repo: Path, synthetic_run: str)
     assert f"根拠：S005 の {ROW_TO} の amount_raw「750,000」" in block
     quotes = section(section7, "### 引用をたどる（資料ID・位置・掲載節）", "###")
     assert "M001 の対応：S005 の" in quotes and "引用は7節に掲載" in quotes
+
+
+# ---------------------------------------------------------------------------
+# D-093（RD-1）：合計から除いた行を、2節の比較の条件と7節の記者の確認リストに出す（実装仕様4.8）
+# ---------------------------------------------------------------------------
+
+
+def _incomparable_lead(repo: Path, run_id: str):
+    conn = ledger_of(repo, run_id)
+    conn.row_factory = __import__("sqlite3").Row
+    lead = conn.execute(
+        "SELECT * FROM leads WHERE change_category = 'amount_incomparable' ORDER BY lead_id LIMIT 1"
+    ).fetchone()
+    excluded = []
+    for calc_id in (lead["calc_from"], lead["calc_to"]):
+        (request,) = conn.execute(
+            "SELECT request_json FROM computations WHERE calc_id = ?", (calc_id,)
+        ).fetchone()
+        excluded += [
+            (e["ref"], e["reason"], calc_id) for e in json.loads(request).get("excluded", [])
+        ]
+    conn.close()
+    return lead, excluded
+
+
+def test_rd1_excluded_rows_in_sections_2_and_7(repo: Path, synthetic_run: str) -> None:
+    """RD-1（D-093）：単価契約で合計から除いた行を、2節に件数と理由で、7節に原本の行・PDF のページ・確かめる項目と
+    除いた理由で出す（除いた行が判断の中心になる候補でも、記者が原本で確かめられるように）。"""
+    lead, excluded = _incomparable_lead(repo, synthetic_run)
+    assert excluded  # 合成データの「前年度は単価契約・翌年度は総額」の組
+    prepared = prepare(repo, synthetic_run, conclusion=False, match="none", lead=lead)
+    rec(
+        repo,
+        synthetic_run,
+        {
+            "kind": "conclusion",
+            "lead_id": prepared["lead"],
+            "outcome": "hold",
+            "comparison_state": "comparable",
+            "hold_reason": "comparison",
+        },
+    )
+    text = (repo / render.render_lead(repo, synthetic_run, prepared["lead"])["memo"]).read_text(
+        encoding="utf-8"
+    )
+    section2 = section(text, "## 2 検出した変化", "## 3")
+    line2 = next(x for x in section2.splitlines() if x.startswith("- 合計から除いた行："))
+    for _, _, calc_id in excluded:
+        assert f"計算{calc_id}" in line2
+    assert "単価契約" in line2
+    section7 = section(text, "## 7 記者の確認リスト", "## 8")
+    block = section7.split("### 合計から除いた行")[1].split("###")[0]
+    for ref, reason, calc_id in excluded:
+        row = next(x for x in block.splitlines() if x.startswith(f"- {ref}："))
+        assert "原本 data/raw/" in row and "確かめる項目：" in row
+        assert (
+            f"除いた理由：{'単価契約' if reason == 'unit_price' else reason}（計算{calc_id}）"
+            in row
+        )
+
+
+def test_rd1_no_excluded_rows_section_without_exclusions(repo: Path, synthetic_run: str) -> None:
+    """RD-1（D-093）：除いた行のない候補では、7節に「合計から除いた行」を出さず、2節は「なし」。"""
+    _, text = hold_memo(repo, synthetic_run)
+    assert "### 合計から除いた行" not in section(text, "## 7 記者の確認リスト", "## 8")
+    assert "- 合計から除いた行：なし" in section(text, "## 2 検出した変化", "## 3")
