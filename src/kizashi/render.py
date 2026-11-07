@@ -91,6 +91,12 @@ SOURCE_STATUS_NAMES = {
     "out_of_scope": "対象外",
 }
 ROLE_NAMES = {"support": "支える", "oppose": "反する", "background": "背景"}
+# 検出の基礎集計で合計から除いた行の理由（分野の検出SQL の excluded の reason）
+EXCLUDED_REASON_NAMES = {
+    "unit_price": "単価契約",
+    "amount_not_numeric": "数値にならない金額",
+    "amount_out_of_range": "台帳の整数の範囲を超える金額",
+}
 FIELD_STATE_NAMES = {"match": "一致", "mismatch": "不一致", "unverifiable": "照合不能"}
 PURPOSE_NAMES = {
     "verify_record": "元の記載の確認",
@@ -313,6 +319,25 @@ class _Memo:
         ]
         reasons = json.loads(lead["incomparable_reasons_json"])
         lines.append(f"- 比較できない理由：{'・'.join(reasons) if reasons else 'なし'}")
+        # 合計から除いた行の件数と理由（行は7節。実装仕様4.8。D-093）
+        by_calc: dict[str, dict[str, int]] = {}
+        for _, reason, calc_id in self.excluded_rows():
+            counts = by_calc.setdefault(calc_id, {})
+            counts[reason] = counts.get(reason, 0) + 1
+        lines.append(
+            "- 合計から除いた行："
+            + (
+                "、".join(
+                    f"計算{calc_id}で{sum(c.values())}行（"
+                    + "・".join(f"{_excluded_reason(r)} {n}" for r, n in c.items())
+                    + "）"
+                    for calc_id, c in by_calc.items()
+                )
+                + "。行は7節"
+                if by_calc
+                else "なし"
+            )
+        )
         lines.append(
             f"- 探索した比較の数：{compared if compared is not None else '（記録なし）'}組"
             f"（{'探索SQL' if lead['screen_id'] == 'explore' else '検出SQL ' + lead['screen_id']}）"
@@ -413,6 +438,18 @@ class _Memo:
         cells = json.loads(self.record(record_id).get("cells_json") or "{}")
         keys = ("title_raw", "contract_date_raw", "amount_raw", "counterparty_raw")
         return "／".join(str(cells.get(k, "")) for k in keys)
+
+    def excluded_rows(self) -> list[tuple[str, str, str]]:
+        """メモに出る基礎集計で合計から除いた行の (row_ref, 理由, 計算ID)。行ごとに最初の計算の1件（D-093）。"""
+        found: dict[str, tuple[str, str, str]] = {}
+        for calc_id in hashing.memo_calc_ids(self.conn, self.lead["lead_id"]):
+            comp = self.calc(calc_id)
+            if comp is None or comp["kind"] != "base":
+                continue
+            for e in json.loads(comp["request_json"]).get("excluded") or []:
+                if isinstance(e, dict) and isinstance(e.get("ref"), str):
+                    found.setdefault(e["ref"], (e["ref"], str(e.get("reason") or ""), calc_id))
+        return [found[k] for k in sorted(found)]
 
     def quote_locations(self) -> list[str]:
         """メモに出る引用の、資料ID・位置・掲載節の一覧（7節。D-090⑦）。引用の全文は書かない。"""
@@ -639,6 +676,16 @@ class _Memo:
         lines.append("### 原本で確かめる行")
         lines += [self.check_line(ref, fields, pdf_fields) for ref in verified] or ["- なし"]
         lines.append("")
+        excluded = self.excluded_rows()
+        if excluded:
+            # 合計から除いた行も、除いた理由とともに原本で確かめる（実装仕様4.8。D-093）
+            lines.append("### 合計から除いた行（除いた理由とともに原本で確かめる）")
+            lines += [
+                f"{self.check_line(ref, fields, pdf_fields)}。除いた理由：{_excluded_reason(reason)}"
+                f"（計算{calc_id}）"
+                for ref, reason, calc_id in excluded
+            ]
+            lines.append("")
         # 引用は、資料ID・位置・掲載節で原本をたどる（長い全文は3節・4節にあり、ここでは再掲しない。D-090⑦）
         lines.append("### 引用をたどる（資料ID・位置・掲載節）")
         lines += self.quote_locations() or ["- 引用なし"]
@@ -1314,6 +1361,10 @@ class _RunSummary:
             *self.section_leads(),
         ]
         return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _excluded_reason(reason: str) -> str:
+    return EXCLUDED_REASON_NAMES.get(reason, reason)
 
 
 def stop_summary(reason: object) -> str | None:
