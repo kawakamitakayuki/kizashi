@@ -40,6 +40,54 @@ KIZASHIは、ニュースの「ネタ（タネ）」を当事者や関係者か�
 2. Claude が候補を最大3件選び、仮説と取り下げ条件を先にまとめ、公表資料（追加資料は最大12件）で理由を調べ、6つの型を一つずつ当てはめます。
 3. `kizashi check` が8つの検証を行い、合格した内容だけを `kizashi render` が調査メモに出力します。
 
+## 構成図
+
+```mermaid
+flowchart TD
+    R["記者"]
+    subgraph S ["調査のセッション（Claude Code）<br>scripts/investigate で起動・許可したものだけが動く"]
+        C["Claude"]
+        CFG["CLAUDE.md・Skill（investigate／review-lead）<br>設定：.claude/settings.json ＋ investigate.settings.json"]
+    end
+    REF["references/ 知識ファイル3点<br>ID で引く・根拠にはしない"]
+    WEB["WebSearch<br>資料を探す"]
+    DS["datasets/分野/ 分野アダプタ<br>取得元・列の対応・検出SQL・分野の README"]
+    IN["inbox/<br>提案ファイル（JSON・SQL）"]
+    K["kizashi CLI<br>run・fetch・inspect・query・record・check・render"]
+    SRC["公表元の資料<br>*.go.jp・*.lg.jp の HTTPS だけ"]
+    subgraph D ["data/（公開しない）"]
+        RAW["raw/ 原本<br>SHA-256 の名前で保存・書き換えない"]
+        RUN["runs/実行ID/<br>台帳 ledger.sqlite・品質レポート・登録した提案・資料のページ別テキスト"]
+        MEMO["memos/ 調査メモ<br>8つの検証に合格した内容だけ・常に記者未確認"]
+        PUB["public/ 受注者名などを伏せた写し"]
+    end
+    RV["メモの読み直し（別のセッション）<br>scripts/review-memo・読み取りだけ"]
+    EX["examples/ 公開する生成例<br>check --publish を通したコミットだけを公開"]
+
+    R -->|"/investigate で問いと年度を決める"| C
+    CFG --> C
+    REF -.->|"Grep"| C
+    WEB -.-> C
+    DS -.->|"分野の README"| C
+    C -->|"提案を書く"| IN
+    C -->|"許可した7つの操作"| K
+    K -.->|"結果（JSON）"| C
+    IN -->|"record で検査して登録"| K
+    DS --> K
+    SRC -->|"run・fetch"| K
+    K --> RAW
+    K --> RUN
+    K -->|"check に合格したら render"| MEMO
+    K -->|"render --public"| PUB
+    MEMO -->|"記者の確認リスト"| R
+    MEMO -.-> RV
+    RV -.->|"指摘（台帳には入らない）"| R
+    R -->|"写しを選ぶ"| EX
+    PUB --> EX
+```
+
+実線は、指示・登録・書き出しの流れです。点線は、読むだけの流れです。取得した資料、知識ファイル、Web の検索結果の中の文は、調べる対象として扱い、指示としては扱いません。Claude が書けるのは `inbox/` の提案ファイルだけで、台帳・原本・メモへの書き込みは `kizashi` が行います。
+
 ## 記者・Claude・`kizashi` の役割
 
 | 誰が | すること |
