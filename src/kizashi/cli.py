@@ -372,7 +372,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 成功の出力も、JSON にしてから書く。JSON にできなければ下の想定外のエラーにする（3.2。1-17）
         text = _success_text(data)
     except KizashiError as exc:
-        _emit({"ok": False, "error": exc.to_dict()})
+        payload: dict = {"ok": False, "error": exc.to_dict()}
+        if exc.warnings:  # 不合格でも得られた警告は、error の外の最上位に置く（3.2。D-090④）
+            payload["warnings"] = exc.warnings
+        _emit(payload)
         return exc.exit_code
     # 想定外のエラー（バグ）も1つのJSONにして返す（3.2）。
     # スタックトレースは標準エラー出力だけに出し、JSONには要約だけを入れる。
