@@ -147,6 +147,8 @@ def screen_paths(adapter: Adapter) -> list[Path]:
 def _screens(adapter: Adapter, scope: dict | None) -> list[_Screen]:
     paths = screen_paths(adapter)
     declared = adapter.config.get("screens") or {}
+    if not isinstance(declared, dict):
+        raise _internal("dataset.yaml の screens が、検出SQLの名前をキーにした形でない。")
     names = [p.stem for p in paths]
     if set(names) != set(declared):
         raise _internal(
@@ -157,7 +159,9 @@ def _screens(adapter: Adapter, scope: dict | None) -> list[_Screen]:
     screens = []
     for path in paths:
         name = path.stem
-        requires = (declared.get(name) or {}).get("requires")
+        entry = declared.get(name)
+        # screens.<名前> は {requires: [...]} の形（配列などで書けば、requires がないものとして止める。1-8）
+        requires = entry.get("requires") if isinstance(entry, dict) else None
         if not (isinstance(requires, list) and requires and all(f in FAMILIES for f in requires)):
             raise _internal(
                 f"dataset.yaml の screens.{name}.requires が {'・'.join(FAMILIES)} の配列でない。"

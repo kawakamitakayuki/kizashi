@@ -703,6 +703,17 @@ def _detect(ctx: RunContext) -> None:
         ctx.counts = counts
     except KizashiError as exc:
         raise _fail_stage(ctx, "detect", input_hash, exc) from exc
+    except sqlite3.Error as exc:
+        # 分野の SQL の構文・実行時のエラーも、分野の SQL の誤りとして detect を failed にする（トランザクションは
+        # 巻き戻り、候補を残さない。4.8 の末尾。D-038⑨。1-8）
+        error = KizashiError(
+            "E_INTERNAL",
+            "detect",
+            f"分野の SQL（検出・母集団・系列）を実行できない（{type(exc).__name__}：{exc}）。",
+            affected_ids=[ctx.run_id],
+            next_action="開発側で datasets/<分野>/ の SQL を直す。調査のセッションでは直さず、記者に伝える。",
+        )
+        raise _fail_stage(ctx, "detect", input_hash, error) from exc
 
 
 STAGE_FUNCS: dict[str, Callable[[RunContext], None]] = {
@@ -907,10 +918,7 @@ def start_run(
                 after={"state": "running", "config_file": _relative(root, config_path)},
             )
         _run_stages(ctx, list(STAGES))
-        return _complete(
-            ctx,
-            lambda: _relative(root, inbox.accept(root, run_id, config_path, "run_config")),
-        )
+        return _complete(ctx, lambda: _accept_checked_config(ctx))
     finally:
         client.close()
         conn.close()
@@ -919,6 +927,10 @@ def start_run(
 # ---------------------------------------------------------------------------
 # 再開（4.1 の「再開」。kizashi run --resume <run_id>）
 # ---------------------------------------------------------------------------
+
+
+# 索引ページ（kind='index'）の原本の拡張子。run の公表ページは HTML、fetch --index は PDF のこともある（1-9）
+INDEX_EXTENSIONS = ("html", "pdf")
 
 
 def _not_resumable(run_id: str, why: str) -> KizashiError:
@@ -952,8 +964,11 @@ def _raw_problems(ctx: RunContext) -> list[str]:
         "SELECT source_id, kind, logical_key, url, sha256 FROM sources"
         " WHERE kind IN ('dataset', 'index') AND status = 'fetched' ORDER BY source_id"
     ):
-        ext = "html" if kind == "index" else str(key).rsplit("|", 1)[-1]
-        path = paths.raw_dir(ctx.root) / f"{sha}.{ext}"
+        # 索引ページは、run の公表ページ（HTML）のほか、fetch --index で取った PDF もある。保存したときの拡張子
+        # （data/raw/<sha256>.<拡張子>）で探す（1-9）
+        exts = INDEX_EXTENSIONS if kind == "index" else (str(key).rsplit("|", 1)[-1],)
+        candidates = [paths.raw_dir(ctx.root) / f"{sha}.{ext}" for ext in exts]
+        path = next((c for c in candidates if c.is_file() or c.is_symlink()), candidates[0])
         label = f"{source_id}（{key or url}）"
         if not sha or path.is_symlink() or not path.is_file():
             problems.append(f"{label}：保存した原本がない")
@@ -1012,17 +1027,35 @@ def _resume_config(root: Path, conn: sqlite3.Connection, run_id: str, stored: di
     return data
 
 
-def _accept_on_resume(ctx: RunContext) -> str:
-    """再開で成功したときの設定ファイルの扱い。開始時の inbox/ のファイルが同じ中身で残っていれば、accepted/
-    に写して inbox/ から消す。なければ（または中身が違えば）、台帳の設定を accepted/ に書き、inbox/ は触らない。"""
+def _accept_checked_config(ctx: RunContext) -> str:
+    """成功したとき（completed・partial）の設定ファイルの扱い。新しい実行も再開も同じ（D-038⑬・D-091④）。
+
+    開始時の inbox/ のファイル（最初の state_change の config_file）を1回だけ読み、キーの順と空白を問わず数値の
+    型を区別する正規化JSONで、検査済みの設定（ctx.config）と照らす。同じなら、読んだ中身を accepted/ に書いて
+    inbox/ から消す（読んだ後に変わっていれば消さない）。違う・ない・JSON として読めないなら、検査済みの設定を
+    accepted/ に書き、inbox/ のファイルは触らない。照らした後に inbox/ から読み直した中身を accepted/ に写さない
+    （氏名などの検査を通る前の中身を保存しないため。1-16）。"""
     name = _config_file(ctx.conn, ctx.run_id)
+    path: Path | None = None
     if name is not None:
         try:
             path = paths.resolve_inbox_file(ctx.root, name, (".json",))
         except KizashiError:
             path = None
-        if path is not None and _same_config(path, ctx.config):
-            return _relative(ctx.root, inbox.accept(ctx.root, ctx.run_id, path, "run_config"))
+    if path is not None:
+        try:
+            content = path.read_bytes()
+            same = canonical_json(json.loads(content.decode("utf-8"))) == canonical_json(ctx.config)
+        except (OSError, UnicodeDecodeError, ValueError):
+            same = False
+        if same:
+            target = inbox.write_accepted(ctx.root, ctx.run_id, "run_config", content)
+            try:
+                if path.read_bytes() == content:
+                    path.unlink()
+            except OSError:
+                pass  # 読んだ後に消えた・読めなくなったファイルは触らない
+            return _relative(ctx.root, target)
     target = inbox.write_accepted(
         ctx.root, ctx.run_id, "run_config", json.dumps(ctx.config, ensure_ascii=False, indent=2)
     )
@@ -1107,7 +1140,7 @@ def resume_run(root: Path, run_id: str, *, transport: httpx.BaseTransport | None
                 )
         client = ctx.client = fetcher.make_client(transport)  # 入力の検査を通ってから作る
         _run_stages(ctx, remaining)
-        result = _complete(ctx, lambda: _accept_on_resume(ctx))
+        result = _complete(ctx, lambda: _accept_checked_config(ctx))
         result["resumed"] = {"skipped": done, "ran": remaining}
         return result
     finally:

@@ -108,12 +108,14 @@ def copy_to_accepted(root: Path, run_id: str, path: Path, label: str) -> Path:
     return target
 
 
-def write_accepted(root: Path, run_id: str, label: str, content: str) -> Path:
-    """中身を accepted/<連番>-<label>.json に新しく書く。同じ名前のファイルがあれば上書きしない（1-15）。"""
+def write_accepted(root: Path, run_id: str, label: str, content: str | bytes) -> Path:
+    """中身（文字列は UTF-8 で書く）を accepted/<連番>-<label>.json に新しく書く。同じ名前のファイルがあれば
+    上書きしない（1-15）。"""
     target = _exclusive_target(accepted_dir(root, run_id), label)
+    data = content.encode("utf-8") if isinstance(content, str) else content
     try:
-        with target.open("x", encoding="utf-8") as fh:
-            fh.write(content)
+        with target.open("xb") as fh:
+            fh.write(data)
     except FileExistsError:
         raise _taken(target) from None
     return target
