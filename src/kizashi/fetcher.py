@@ -197,6 +197,11 @@ def _get_once(
             return status, response.headers, b"".join(chunks)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
         raise _Transient(f"{type(exc).__name__}") from exc
+    except httpx.RequestError as exc:
+        # ほかの httpx の通信・応答の例外（DecodingError・ProxyError・UnsupportedProtocol・LocalProtocolError など）は
+        # 一時的でない取得の失敗にする（再試行しない。D-029・D-090⑮の範囲のまま）。httpx の例外でない予期しない例外は
+        # 通信の失敗にしない（1-5）
+        raise _fetch_failed(url, f"通信の失敗：{type(exc).__name__}", retryable=False) from exc
 
 
 def _request(
@@ -802,14 +807,22 @@ def _write_evidence(
     source_id = ledger.next_id(conn, "S")
     folder = paths.run_dir(root, run_id) / "evidence" / source_id
     page_dir = folder / "pages"
-    page_dir.mkdir(parents=True)
-    paths.ensure_in_data(root, page_dir)
-    for number, page in enumerate(dl.pages, start=1):
-        (page_dir / f"{number}.txt").write_text(page, encoding="utf-8")
-    if dl.links:
-        (folder / "links.json").write_text(
-            json.dumps(dl.links, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+    paths.ensure_in_data(root, page_dir)  # 作る前に、data/ の中であることを確かめる
+    # 新しい資料IDのフォルダーを、この取得で新しく作る（すでにあれば FileExistsError で、消さずに止まる）
+    folder.mkdir(parents=True)
+    try:
+        page_dir.mkdir()
+        for number, page in enumerate(dl.pages, start=1):
+            (page_dir / f"{number}.txt").write_text(page, encoding="utf-8")
+        if dl.links:
+            (folder / "links.json").write_text(
+                json.dumps(dl.links, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+    except BaseException:
+        # 書き込みの途中で失敗したら、この取得が作ったフォルダーだけを消す（登録済みの資料と data/raw/ の原本は
+        # 消さない。1-7）。台帳は呼び出し側のトランザクションで巻き戻る
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     conn.execute(
         "INSERT INTO sources (source_id, kind, url, final_url, fetched_at, sha256, supersedes,"
         " media_type, encoding, size_bytes, page_count, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
