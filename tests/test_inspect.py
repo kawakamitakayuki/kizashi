@@ -181,7 +181,16 @@ def test_inspect_lead_shows_matches_and_coefficients(repo: Path, filled: dict) -
         ("tax_basis", "1.1", "proposed")
     ]
     assert [(c["claim_id"], c["state"]) for c in data["claims"]] == [(filled["claim"], "draft")]
-    assert data["memo"] == {"memo_no": 0, "file": None, "stale": None, "status": "メモなし"}
+    # 4.3：memo の7項目をいつも出す（メモがなければ値は null。1-13）
+    assert data["memo"] == {
+        "memo_no": 0,
+        "file": None,
+        "check_hash": None,
+        "current_hash": None,
+        "stale": None,
+        "status": "メモなし",
+        "note": None,
+    }
     assert (data["state"], data["rounds"]) == ("investigating", 0)
 
 

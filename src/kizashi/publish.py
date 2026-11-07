@@ -23,7 +23,7 @@ import os
 import re
 import subprocess
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -249,11 +249,29 @@ def _manifest_entries(root: Path, manifest_arg: str) -> tuple[str, list[str]]:
     return rel.as_posix(), entries
 
 
+WHERE_NAMES = {"worktree": "作業フォルダー", "staged": "ステージ", "history": "履歴"}
+WHERE_ORDER = {"worktree": 0, "staged": 1, "history": 2}
+MASKED_NAME = "（補助資料の名前）"
+
+
+def _masked_path(path: str) -> str:
+    """補助資料の名前を伏せたパス（最後の名前だけを替える。D-090⑧）。"""
+    parent = PurePosixPath(path).parent.as_posix()
+    return MASKED_NAME if parent in ("", ".") else f"{parent}/{MASKED_NAME}"
+
+
 def _fail(failures: list[dict], code: str, message: str, ids: Iterable[str] = (), **extra) -> None:
     failures.append({"code": code, "message": message, "affected_ids": list(ids), **extra})
 
 
-def _check_manifest(root: Path, manifest: str, entries: list[str], failures: list[dict]) -> None:
+def _check_manifest(
+    root: Path,
+    manifest: str,
+    entries: list[str],
+    failures: list[dict],
+    shown: Callable[[str], str] = lambda p: p,
+) -> None:
+    """一覧・ステージ・最新のコミットの一致。不合格の文のパスは shown で表す（補助資料の名前を伏せる。D-090⑧）。"""
     listed = set(entries) | {manifest}
     staged = set(_split_z(_git(root, "ls-files", "-z", "--", f"{EXAMPLES}/")))
     head = (
@@ -270,7 +288,9 @@ def _check_manifest(root: Path, manifest: str, entries: list[str], failures: lis
     )
     if outside:
         _fail(
-            failures, MANIFEST_MISMATCH, "一覧に examples/ の外のパスがある：" + "、".join(outside)
+            failures,
+            MANIFEST_MISMATCH,
+            "一覧に examples/ の外のパスがある：" + "、".join(map(shown, outside)),
         )
     for label, names in (
         ("ステージ（git ls-files）", staged),
@@ -278,9 +298,17 @@ def _check_manifest(root: Path, manifest: str, entries: list[str], failures: lis
     ):
         missing, extra = sorted(listed - names), sorted(names - listed)
         if missing:
-            _fail(failures, MANIFEST_MISMATCH, f"一覧にあるが{label}にない：" + "、".join(missing))
+            _fail(
+                failures,
+                MANIFEST_MISMATCH,
+                f"一覧にあるが{label}にない：" + "、".join(map(shown, missing)),
+            )
         if extra:
-            _fail(failures, MANIFEST_MISMATCH, f"{label}にあるが一覧にない：" + "、".join(extra))
+            _fail(
+                failures,
+                MANIFEST_MISMATCH,
+                f"{label}にあるが一覧にない：" + "、".join(map(shown, extra)),
+            )
     absent = sorted(
         e
         for e in listed
@@ -289,7 +317,11 @@ def _check_manifest(root: Path, manifest: str, entries: list[str], failures: lis
         and not (root / e).is_file()
     )
     if absent:
-        _fail(failures, MANIFEST_MISMATCH, "一覧にあるが作業フォルダーにない：" + "、".join(absent))
+        _fail(
+            failures,
+            MANIFEST_MISMATCH,
+            "一覧にあるが作業フォルダーにない：" + "、".join(map(shown, absent)),
+        )
 
 
 def _targets(root: Path, manifest: str, entries: list[str]) -> list[Target]:
@@ -374,20 +406,55 @@ def check_publish(root: Path, manifest_arg: str, run_ids: list[str]) -> dict:
         )
     manifest, entries = _manifest_entries(root, manifest_arg)
     failures: list[dict] = []
-    _check_manifest(root, manifest, entries, failures)
+
+    # 補助資料の名前を含むパスの全文は返さず、名前を伏せたパスで示す（どの不合格の文と構造化した欄でも。D-090⑧）
+    def denied(path: str) -> bool:
+        return bool(path) and _norm_name(PurePosixPath(path).name) in denylist.names
+
+    def shown(path: str) -> str:
+        return _masked_path(path) if denied(path) else path
+
+    _check_manifest(root, manifest, entries, failures, shown)
     terms = _terms(root, run_ids)
     targets = _targets(root, manifest, entries)
 
-    # ファイル名：対象のパスと、履歴のパス（git log --all --name-only）
-    paths = {t.path for t in targets}
-    paths |= set(
+    # ファイル名：対象のパスと、履歴のパス（git log --all --name-only）。場所の区分・blob・コミットで示す
+
+    def name_hit(where: str, path: str, blob: str | None, commits: list[str]) -> None:
+        masked = _masked_path(path)
+        location: dict = {"where": where, "path": masked}
+        if blob:
+            location["blob"] = blob
+        if commits:
+            location["commits"] = commits
+        _fail(
+            failures,
+            DENYLIST_NAME,
+            f"{WHERE_NAMES[where]}の {masked} に補助資料のファイル名がある。",
+            [blob] if blob else [],
+            path=masked,
+            location=location,
+        )
+
+    seen_paths: set[str] = set()
+    for target in sorted(targets, key=lambda t: (WHERE_ORDER[t.where], t.path, t.blob or "")):
+        seen_paths.add(target.path)
+        if denied(target.path):
+            commits = (
+                _commits_with(root, target.blob)
+                if target.where == "history" and target.blob
+                else []
+            )
+            name_hit(target.where, target.path, target.blob, commits)
+    logged = (
         _git(root, "log", "--all", "--name-only", "--format=")
         .decode("utf-8", "replace")
         .splitlines()
     )
-    for path in sorted(p for p in paths if p):
-        if _norm_name(PurePosixPath(path).name) in denylist.names:
-            _fail(failures, DENYLIST_NAME, f"補助資料のファイル名がパスにある：{path}", path=path)
+    for path in sorted({p for p in logged if p} - seen_paths):
+        if denied(path):
+            out = _git(root, "log", "--all", "--format=%H", "--", path)
+            name_hit("history", path, None, [c for c in out.decode().splitlines() if c])
 
     scanned: dict[str, dict[str, list[int]]] = {}
     text_checked = hash_only = 0
@@ -417,16 +484,14 @@ def check_publish(root: Path, manifest_arg: str, run_ids: list[str]) -> dict:
             history_hits[target.blob] = target
         for code, lines in hits.items():
             what = "補助資料と同じ中身" if code == DENYLIST_HASH else WHAT[code]
-            where = {"worktree": "作業フォルダー", "staged": "ステージ", "history": "履歴"}[
-                target.where
-            ]
+            where = WHERE_NAMES[target.where]
             at = f"（{'・'.join(map(str, lines[:20]))}行目）" if lines else ""
             _fail(
                 failures,
                 code,
-                f"{where}の {target.path}{at} に{what}がある。",
+                f"{where}の {shown(target.path)}{at} に{what}がある。",
                 [x for x in (target.blob,) if x],
-                location={**target.location(), "lines": lines},
+                location={**target.location(), "path": shown(target.path), "lines": lines},
             )
     if failures:
         next_action = (

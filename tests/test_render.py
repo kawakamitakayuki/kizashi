@@ -104,7 +104,8 @@ def test_rd1_memo_sections_and_expansions(repo: Path, synthetic_run: str) -> Non
     checklist = text.split("## 7 記者の確認リスト")[1].split("## 8 再現情報")[0]
     assert (
         f"- {ROW_FROM}：20250711-2_kohyo_kyoso.csv（原本 data/raw/" in checklist
-        and "NO 12。表計算ソフトの行 16行目（目安）。PDF S002 の3ページ。" in checklist
+        and "NO 12。複合キー 翻訳業務／R7.3.31／650,000／" in checklist  # D-090⑦
+        and "。表計算ソフトの行 16行目（目安）。PDF S002 の3ページ。" in checklist
     )
     assert (
         "「物品役務等の名称及び数量」=翻訳業務、「契約金額」=650,000" not in checklist
@@ -113,7 +114,10 @@ def test_rd1_memo_sections_and_expansions(repo: Path, synthetic_run: str) -> Non
         "「契約金額」=650,000、「契約を締結した日」=R7.3.31、「物品役務等の名称及び数量」=翻訳業務"
         in checklist
     )
-    assert f"- {ROW_TO}：" in checklist and "NO 7。表計算ソフトの行 11行目（目安）。" in checklist
+    assert (
+        f"- {ROW_TO}：" in checklist and "NO 7。複合キー 翻訳業務／R7.6.1／750,000／" in checklist
+    )
+    assert "。表計算ソフトの行 11行目（目安）。" in checklist  # 複合キーの後（D-090⑦）
     assert "### 同種業務の対応" in checklist and "（確認済み。1:1）" in checklist
     assert "原本照合ができなかった行" not in checklist
     body = text.split("## 8 再現情報")[0]
