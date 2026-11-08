@@ -280,7 +280,7 @@ scripts/review-memo <run_id> <lead_id>
 
 KIZASHI は、Built with Claude: Japan 2026（2026年11月2日〜10日）のハッカソンにて開発されました。本ハッカソンの開催にあたり、円滑な開催にご尽力くださった運営スタッフの皆様に深く御礼申し上げます。
 
-## Acknowledgements (参考・謝辞)
+## 参考・謝辞 (Acknowledgements)
 
 本プロジェクトを作成するにあたり、以下の素晴らしいプロジェクトを参考にさせていただきました。
 
