@@ -280,6 +280,28 @@ scripts/review-memo <run_id> <lead_id>
 
 KIZASHI は、Built with Claude: Japan 2026（2026年11月2日〜10日）のハッカソンにて開発されました。本ハッカソンの開催にあたり、円滑な開催にご尽力くださった運営スタッフの皆様に深く御礼申し上げます。
 
+## Acknowledgements (参考・謝辞)
+
+本プロジェクトを作成するにあたり、以下の素晴らしいプロジェクトを参考にさせていただきました。
+
+* **[Agentic Data Newsroom](https://github.com/emmapbingham/agentic-newsroom)** by [Emma Bingham](https://github.com/emmapbingham) & Ian Clester
+* **[Muck](https://github.com/comp-journalism/aaijc-workflows-release/tree/main/submissions/muck)** by Ulysses Pascal
+* **[Nako Investigations (Registry Nako)](https://github.com/comp-journalism/aaijc-workflows-release/tree/main/submissions/registry-nako)** by Nataliia Kobylchak
+* **[Phosphor](https://github.com/comp-journalism/aaijc-workflows-release/tree/main/submissions/phosphor)** by Piyush Aggarwal / Team Phosphor
+* **[Agentic AI Investigative Journalism Challenge (AAIJC) Workflows](https://github.com/comp-journalism/aaijc-workflows-release)** by [Computational Journalism
+Lab](https://github.com/comp-journalism)（Northwestern University / Generative AI in the Newsroom）
+* **[agentic-investigation-documents](https://github.com/NHagar/agentic-investigation-documents)** / **[Investigative Tipsheets with Claude
+Code](https://www.nickhagar.net/agentic-investigation-tipsheets/)** by [Nick Hagar](https://github.com/NHagar)
+* **[ja-news-skills](https://github.com/sgbms1/ja-news-skills)** by [sgbms1](https://github.com/sgbms1)
+* **[AI Editorial OS](https://github.com/h-mori-andg/ai-editorial-os)** by [h-mori-andg](https://github.com/h-mori-andg)
+* **[jp-diet-minutes-skill](https://github.com/HighBridgeDragon/jp-diet-minutes-skill)** / **[jp-law-skill](https://github.com/HighBridgeDragon/jp-law-skill)** by
+[HighBridgeDragon](https://github.com/HighBridgeDragon)
+* **[LLM-jp FactCheck](https://github.com/llm-jp/llm-jp-factcheck)** by [LLM-jp](https://github.com/llm-jp)
+
+>
+謝辞：本リポジトリのコードは独自に実装していますが、アーキテクチャや検証の設計思想は上記の先行プロジェクトから多くの示唆を得ています。素晴らしい成果と知見を公開してくださったすべての開発者・研究者の皆様
+に深く感謝いたします。
+
 ## 免責事項（Disclaimer）
 
 本リポジトリで公開しているプログラム、コード、およびドキュメント（以下「本ソフトウェア」）は、現状有姿で提供されるものであり、明示または黙示を問わず、その正確性、完全性、有用性、特定の目的への適合性、または第三者の権利を侵害していないことについて、一切の保証をいたしません。
